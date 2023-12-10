@@ -12,9 +12,9 @@ This repository is an extension that is developed based on QNN SDK. We need some
 
 QNNHelper is designed for developer to using QNN SDK to execute model on Windows on Snapdragon(WoS) platforms more easily. We encapsulated QNN SDK APIs to several simple APIs into QNNHelper for loading the models to HTP, running inference and releasing the resource.
 
-**libqnnhelper.dll** –– C++ projects can use this lib to run models in HTP.
+**libqnnhelper.dll {libqnnhelper.lib, libQNNHelper.hpp}** –– C++ projects can use this lib to run models in HTP.
 
-**qnnhelper.pyd** –– Python extension. Easier to develop QNN based GUI app for WoS.
+**qnnhelper{version}.pyd** –– Python extension. Easier to develop QNN based GUI app for WoS.
 
 **SvcQNNHelper.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions.
 
