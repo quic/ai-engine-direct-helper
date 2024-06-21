@@ -1,7 +1,9 @@
 # AI Engine Direct Helper 
 
 ## Introduction
-Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded here: https://qpm.qualcomm.com/#/main/tools/details/qualcomm_ai_engine_direct
+Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded here: <br>
+https://qpm.qualcomm.com/#/main/tools/details/qualcomm_ai_engine_direct <br>
+https://softwarecenter.qualcomm.com/#/catalog/catalog-suite/4a1eeaf9-db22-11ed-a260-063166a9270b?type=Tool%20SDK&prevPage=SDK
 
 AI Engine Direct Helper(this repository) is also referred to as *QNNHelper* in the source and documentation. QNNHelper is extension for QNN SDK. We need some libraries in QNN SDK for using QNNHelper. <br>
 QNNHelper is designed for developer to using QNN SDK to execute model on Windows on Snapdragon(WoS) platforms more easily. We encapsulated QNN SDK APIs to several simple APIs into QNNHelper for loading the models to CPU or HTP, running inference and releasing the resource.
@@ -24,16 +26,17 @@ Using the Python extensions with ARM64 Python will make it easier for developers
 ## Components
 There're two ways to use QNNHelper:
 ### 1. Using the QNNHelper C++ libraries to develop C++ based AI application.
-Download prebuild binary package *QNNHelper-win_arm64-{QNN SDK version}-Release.zip* to get these files. E.g: https://github.com/quic/ai-engine-direct-helper/releases/download/v2.19.0/QNNHelper-win_arm64-QNN2.19.0-Release.zip
+Download prebuild binary package *QNNHelper-win_arm64-{QNN SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
 
 **libqnnhelper.dll {libqnnhelper.lib, LibQNNHelper.hpp}** –– C++ projects can use this lib to run models in HTP.
 **SvcQNNHelper.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions.
 
 ### 2. Using the QNNHelper Python binding extension to develop Python based AI application.
-Download Python extension *qnnhelper-{version}-cp311-cp311-win_arm64.whl* and install it with the command below. E.g: https://github.com/quic/ai-engine-direct-helper/releases/download/v2.19.0/qnnhelper-2.19.0-cp311-cp311-win_arm64.whl
+Download Python extension *qnnhelper-{version}-cp311-cp311-win_arm64.whl* and install it with the command below:
+https://github.com/quic/ai-engine-direct-helper/releases
 
 ```
-pip install qnnhelper-2.19.0-cp311-cp311-win_arm64.whl
+pip install qnnhelper-2.23.0-cp311-cp311-win_arm64.whl
 ```
 
 ## User Guide
@@ -41,7 +44,7 @@ Please refere to [User Guide](Docs/User_Guide.md) on how to use QNNHelper in you
 
 ## Build
 Build project with Visual Studio 2022 on WoS device:<br>
-- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: QNN_SDK_ROOT = "C:\Qualcomm\AIStack\QNN\2.18.0.240101\"
+- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: QNN_SDK_ROOT = "C:\\Qualcomm\\AIStack\\QAIRT\\2.23.0.240531\\"
 - Install Visual Studio 2022: 
   - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
 - Install Python-3.11.5 ARM64: 
@@ -54,7 +57,7 @@ cd C:\Source\ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
-pip install dist\qnnhelper-0.1.0-cp311-cp311-win_arm64.whl
+pip install dist\qnnhelper-2.23.0-cp311-cp311-win_arm64.whl
 ```
 
 ## License
