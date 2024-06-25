@@ -1,9 +1,10 @@
 # AI Engine Direct Helper 
 
 ## Introduction
-Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded here: <br>
-https://qpm.qualcomm.com/#/main/tools/details/qualcomm_ai_engine_direct <br>
-https://softwarecenter.qualcomm.com/#/catalog/catalog-suite/4a1eeaf9-db22-11ed-a260-063166a9270b?type=Tool%20SDK&prevPage=SDK
+Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded from Qualcomm software center:<br>
+https://softwarecenter.qualcomm.com/#/catalog/catalog-suite/4a1eeaf9-db22-11ed-a260-063166a9270b?type=Tool%20SDK&prevPage=SDK <br>
+Or from QPM [this option expected to be deprecated soon]<br>
+https://qpm.qualcomm.com/#/main/tools/details/qualcomm_ai_engine_direct
 
 AI Engine Direct Helper(this repository) is also referred to as *QNNHelper* in the source and documentation. QNNHelper is extension for QNN SDK. We need some libraries in QNN SDK for using QNNHelper. <br>
 QNNHelper is designed for developer to using QNN SDK to execute model on Windows on Snapdragon(WoS) platforms more easily. We encapsulated QNN SDK APIs to several simple APIs into QNNHelper for loading the models to CPU or HTP, running inference and releasing the resource.
