@@ -2,7 +2,7 @@
 
 ## Introduction
 Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded from Qualcomm software center:<br>
-https://softwarecenter.qualcomm.com/#/catalog/catalog-suite/4a1eeaf9-db22-11ed-a260-063166a9270b?type=Tool%20SDK&prevPage=SDK <br>
+https://softwarecenter.qualcomm.com/#/catalog/item/a0844287-db23-11ed-a260-063166a9270b?type=Tool <br>
 Or from QPM [this option expected to be deprecated soon]<br>
 https://qpm.qualcomm.com/#/main/tools/details/qualcomm_ai_engine_direct
 
