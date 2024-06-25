@@ -50,6 +50,10 @@ Build project with Visual Studio 2022 on WoS device:<br>
   - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
 - Install Python-3.11.5 ARM64: 
   - https://www.python.org/ftp/python/3.11.5/python-3.11.5-arm64.exe
+- Use the commands below to install Python dependency: 
+```
+pip install wheel setuptools pybind11
+```
 - Download pybind11 repository to 'ai-engine-direct-helper\PyQNNHelper\pybind11': 
   - https://github.com/pybind/pybind11.git
 - Use the commands below to build and install Python extension(*.whl): 
