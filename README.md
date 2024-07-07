@@ -1,6 +1,6 @@
 # AI Engine Direct Helper 
 
-## <font color=red>We used a new name 'QAI AppBuilder' instead of 'qnnhelper'</font>
+## [ <font color=red>We used a new name 'QAI AppBuilder' instead of 'qnnhelper' ]</font>
 
 ## Introduction
 #### QNN SDK
