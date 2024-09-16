@@ -1,7 +1,5 @@
 # AI Engine Direct Helper 
 
-## [ <font color=red>We used a new name 'QAI AppBuilder' instead of 'qnnhelper' ]</font>
-
 ## Introduction
 #### QNN SDK
 Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded from Qualcomm software center:<br>
@@ -23,10 +21,10 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Easier for developing apps. <br>
 • Faster for testing models. <br>
 
-Using the Python extensions with ARM64 Python will make it easier for developers to build GUI app for Windows on Snapdragon(WoS) platforms. Python 3.11.5 ARM64 version has support for following modules: PyQt6, OpenCV, Numpy, PyTorch*, Torchvision*, ONNX*. Developers can design apps that benefit from rich Python ecosystem. <br>
+Using the Python extensions with ARM64 Python will make it easier for developers to build GUI app for Windows on Snapdragon(WoS) platforms. Python 3.12.6 ARM64 version has support for following modules: PyQt6, OpenCV, Numpy, PyTorch*, Torchvision*, ONNX*, ONNX Runtime*. Developers can design apps that benefit from rich Python ecosystem. <br>
 
 **PyTorch, Torchvision, ONNX, ONNX Runtime: need to compile from source code.*
-**Also support x64 Python.*
+**Also support using x64 Python to run QNN mode on WoS HTP.*
 
 ## Components
 There're two ways to use QAI AppBuilder:
@@ -34,14 +32,14 @@ There're two ways to use QAI AppBuilder:
 Download prebuild binary package *QAI_AppBuilder-win_arm64-{QNN SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
 
 **libappbuilder.dll {libappbuilder.lib, LibAppBuilder.hpp}** –– C++ projects can use this lib to run models in HTP.
-**QAIAppSvc.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions.
+**QAIAppSvc.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions. [*Depress: the above limitation has been fixed.*]
 
 ### 2. Using the QAI AppBuilder Python binding extension to develop Python based AI application.
-Download Python extension *qai_appbuilder-{version}-cp311-cp311-win_arm64.whl* and install it with the command below:
+Download Python extension *qai_appbuilder-{version}-cp312-cp312-win_arm64.whl* and install it with the command below:
 https://github.com/quic/ai-engine-direct-helper/releases
 
 ```
-pip install qai_appbuilder-2.24.0-cp311-cp311-win_arm64.whl
+pip install qai_appbuilder-{version}-cp312-cp312-win_arm64.whl
 ```
 
 ## User Guide
@@ -49,11 +47,11 @@ Please refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder i
 
 ## Build
 Build project with Visual Studio 2022 on WoS device:<br>
-- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: Set QNN_SDK_ROOT = "C:\\Qualcomm\\AIStack\\QAIRT\\2.24.0.240626\\"
+- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: Set QNN_SDK_ROOT = "C:\\Qualcomm\\AIStack\\QAIRT\\2.26.0.240828\\"
 - Install Visual Studio 2022: 
   - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
-- Install Python-3.11.5 ARM64: 
-  - https://www.python.org/ftp/python/3.11.5/python-3.11.5-arm64.exe
+- Install Python-3.12.6 ARM64: 
+  - https://www.python.org/ftp/python/3.12.6/python-3.12.6-arm64.exe
 - Use the commands below to install Python dependency: 
 ```
 pip install wheel setuptools pybind11
@@ -66,7 +64,7 @@ cd C:\Source\ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
-pip install dist\qai_appbuilder-2.24.0-cp311-cp311-win_arm64.whl
+pip install dist\qai_appbuilder-2.26.0-cp312-cp312-win_arm64.whl
 ```
 
 ## License
