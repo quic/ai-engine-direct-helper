@@ -16,6 +16,7 @@ QAI AppBuilder is designed for developer to using QNN SDK to execute model on Wi
 Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 • Support both C++ & Python <br>
+• Support both Windows & Linux. <br>
 • Support multiple models. <br>
 • Support multiple inputs & outputs. <br>
 • Easier for developing apps. <br>
@@ -23,8 +24,9 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 Using the Python extensions with ARM64 Python will make it easier for developers to build GUI app for Windows on Snapdragon(WoS) platforms. Python 3.12.6 ARM64 version has support for following modules: PyQt6, OpenCV, Numpy, PyTorch*, Torchvision*, ONNX*, ONNX Runtime*. Developers can design apps that benefit from rich Python ecosystem. <br>
 
-**PyTorch, Torchvision, ONNX, ONNX Runtime: need to compile from source code.*
-**Also support using x64 Python to run QNN mode on WoS HTP.*
+**PyTorch, Torchvision, ONNX, ONNX Runtime: need to compile from source code.* <br>
+**Also support using x64 Python to run QNN mode on WoS HTP, with this, we can install all the Python extension directly (Refer to the samples code here for detail: https://github.com/quic/ai-engine-direct-helper/tree/main/samples/python))* <br>
+**Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)*
 
 ## Components
 There're two ways to use QAI AppBuilder:
