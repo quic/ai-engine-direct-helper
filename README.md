@@ -50,7 +50,6 @@ Please refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder i
 
 ## Build
 Build project with Visual Studio 2022 on WoS device:<br>
-- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: Set QNN_SDK_ROOT = "C:\\Qualcomm\\AIStack\\QAIRT\\2.31.0.250130\\"
 - Install Visual Studio 2022: 
   - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
 - Install Python-3.12.6 ARM64: 
@@ -62,6 +61,10 @@ pip install wheel setuptools pybind11
 - Clone this repository to local: 
 ```
 git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
+```
+- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.:
+```
+Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.31.0.250130\
 ```
 - Use the commands below to build and install Python extension(*.whl): 
 ```
