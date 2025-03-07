@@ -17,6 +17,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 • Support both C++ & Python <br>
 • Support both Windows & Linux. <br>
+• Support Genie(LLM) [*NEW!*]. <br>
 • Support multiple models. <br>
 • Support multiple inputs & outputs. <br>
 • Easier for developing apps. <br>
@@ -49,7 +50,7 @@ Please refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder i
 
 ## Build
 Build project with Visual Studio 2022 on WoS device:<br>
-- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: Set QNN_SDK_ROOT = "C:\\Qualcomm\\AIStack\\QAIRT\\2.26.0.240828\\"
+- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.: Set QNN_SDK_ROOT = "C:\\Qualcomm\\AIStack\\QAIRT\\2.31.0.250130\\"
 - Install Visual Studio 2022: 
   - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
 - Install Python-3.12.6 ARM64: 
@@ -58,15 +59,17 @@ Build project with Visual Studio 2022 on WoS device:<br>
 ```
 pip install wheel setuptools pybind11
 ```
-- Download pybind11 repository to 'ai-engine-direct-helper\pybind\pybind11': 
-  - https://github.com/pybind/pybind11.git
+- Clone this repository to local: 
+```
+git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
+```
 - Use the commands below to build and install Python extension(*.whl): 
 ```
 cd C:\Source\ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
-pip install dist\qai_appbuilder-2.26.0-cp312-cp312-win_arm64.whl
+pip install dist\qai_appbuilder-2.31.0-cp312-cp312-win_arm64.whl
 ```
 
 ## License
