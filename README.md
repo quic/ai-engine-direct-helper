@@ -1,15 +1,15 @@
-# AI Engine Direct Helper 
+# QAI AppBuilder
 
 ## Introduction
-#### QNN SDK
-Qualcomm® AI Engine Direct is designed to provide unified, low-level APIs for AI development. Qualcomm® AI Engine Direct is also referred to as *QNN* in the source and documentation. The QNN SDK can be downloaded from Qualcomm software center:<br>
-https://softwarecenter.qualcomm.com/#/catalog/item/a0844287-db23-11ed-a260-063166a9270b?type=Tool <br>
+#### Qualcomm® AI Runtime SDK
+Qualcomm® AI Runtime SDK is designed to provide unified, low-level APIs for AI development. It can be downloaded from Qualcomm software center:<br>
+https://softwarecenter.qualcomm.com/#/catalog/item/Qualcomm_AI_Runtime_SDK <br>
 Or from QPM [this option expected to be deprecated soon]<br>
-https://qpm.qualcomm.com/#/main/tools/details/qualcomm_ai_engine_direct
+https://qpm.qualcomm.com/#/main/tools/details/Qualcomm_AI_Runtime_SDK
 
 #### QAI AppBuilder
-AI Engine Direct Helper(this repository) is also referred to as *QAI AppBuilder* in the source and documentation. QAI AppBuilder is extension for QNN SDK. We need some libraries in QNN SDK for using QAI AppBuilder. <br>
-QAI AppBuilder is designed for developer to using QNN SDK to execute model on Windows on Snapdragon(WoS) platforms easily. We encapsulated QNN SDK APIs to several simple APIs for loading the models to CPU or HTP and executing inference.
+AI Engine Direct Helper(this repository) is also referred to as *QAI AppBuilder* in the source and documentation. QAI AppBuilder is extension for Qualcomm® AI Runtime SDK. We need some libraries in Qualcomm® AI Runtime SDK for using QAI AppBuilder. <br>
+QAI AppBuilder is designed for developer to using Qualcomm® AI Runtime SDK to execute model on Windows on Snapdragon(WoS) platforms easily. We encapsulated Qualcomm® AI Runtime SDK APIs to several simple APIs for loading the models to CPU or HTP and executing inference.
 
 ## Advantage
 
@@ -32,7 +32,7 @@ Using the Python extensions with ARM64 Python will make it easier for developers
 ## Components
 There're two ways to use QAI AppBuilder:
 ### 1. Using the QAI AppBuilder C++ libraries to develop C++ based AI application.
-Download prebuild binary package *QAI_AppBuilder-win_arm64-{QNN SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
+Download prebuild binary package *QAI_AppBuilder-win_arm64-{Qualcomm® AI Runtime SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
 
 **libappbuilder.dll {libappbuilder.lib, LibAppBuilder.hpp}** –– C++ projects can use this lib to run models in HTP.
 **QAIAppSvc.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions. [*Depress: the above limitation has been fixed.*]
@@ -62,9 +62,9 @@ pip install wheel setuptools pybind11
 ```
 git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
 ```
-- Set environment 'QNN_SDK_ROOT' to the QNN SDK path which you're using. E.g.:
+- Set environment 'QNN_SDK_ROOT' to the Qualcomm® AI Runtime SDK path which you're using. E.g.:
 ```
-Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.31.0.250130\
+Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.33.0.250327\
 ```
 - Use the commands below to build and install Python extension(*.whl): 
 ```
@@ -72,7 +72,7 @@ cd C:\Source\ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
-pip install dist\qai_appbuilder-2.31.0-cp312-cp312-win_arm64.whl
+pip install dist\qai_appbuilder-2.33.0-cp312-cp312-win_arm64.whl
 ```
 
 ## License
