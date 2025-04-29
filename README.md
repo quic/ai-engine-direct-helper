@@ -1,19 +1,21 @@
-# AI AppBuilder
+# QAI AppBuilder (Quick AI Application Building)
 
 ## Introduction
+
+#### QAI AppBuilder
+Quick AI Application Building(this repository) is also referred to as *QAI AppBuilder* in the source and documentation. QAI AppBuilder is extension for Qualcomm® AI Runtime SDK. We need some libraries in Qualcomm® AI Runtime SDK for using QAI AppBuilder. <br>
+QAI AppBuilder is designed for developer to using Qualcomm® AI Runtime SDK to execute model on Windows on Snapdragon(WoS) and Linux platforms easily. We encapsulated Qualcomm® AI Runtime SDK APIs to several simple APIs for loading the models to CPU or HTP and executing inference.
+
 #### Qualcomm® AI Runtime SDK
+
 Qualcomm® AI Runtime SDK is designed to provide unified, low-level APIs for AI development. It can be downloaded from Qualcomm software center:<br>
 https://softwarecenter.qualcomm.com/#/catalog/item/Qualcomm_AI_Runtime_SDK <br>
 Or from QPM [this option expected to be deprecated soon]<br>
 https://qpm.qualcomm.com/#/main/tools/details/Qualcomm_AI_Runtime_SDK
 
-#### AI AppBuilder
-AI Engine Direct Helper(this repository) is also referred to as *AI AppBuilder* in the source and documentation. AI AppBuilder is extension for Qualcomm® AI Runtime SDK. We need some libraries in Qualcomm® AI Runtime SDK for using AI AppBuilder. <br>
-AI AppBuilder is designed for developer to using Qualcomm® AI Runtime SDK to execute model on Windows on Snapdragon(WoS) platforms easily. We encapsulated Qualcomm® AI Runtime SDK APIs to several simple APIs for loading the models to CPU or HTP and executing inference.
-
 ## Advantage
 
-Developers can use AI AppBuilder in both C++ and Python projects <br>
+Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 • Support both C++ & Python <br>
 • Support both Windows & Linux. <br>
@@ -30,14 +32,14 @@ Using the Python extensions with ARM64 Python will make it easier for developers
 **Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)*
 
 ## Components
-There're two ways to use AI AppBuilder:
-### 1. Using the AI AppBuilder C++ libraries to develop C++ based AI application.
+There're two ways to use QAI AppBuilder:
+### 1. Using the QAI AppBuilder C++ libraries to develop C++ based AI application.
 Download prebuild binary package *QAI_AppBuilder-win_arm64-{Qualcomm® AI Runtime SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
 
 **libappbuilder.dll {libappbuilder.lib, LibAppBuilder.hpp}** –– C++ projects can use this lib to run models in HTP.
 **QAIAppSvc.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions. [*Depress: the above limitation has been fixed.*]
 
-### 2. Using the AI AppBuilder Python binding extension to develop Python based AI application.
+### 2. Using the QAI AppBuilder Python binding extension to develop Python based AI application.
 Download Python extension *qai_appbuilder-{version}-cp312-cp312-win_arm64.whl* and install it with the command below:
 https://github.com/quic/ai-engine-direct-helper/releases
 
@@ -46,7 +48,7 @@ pip install qai_appbuilder-{version}-cp312-cp312-win_arm64.whl
 ```
 
 ## User Guide
-Please refere to [User Guide](docs/user_guide.md) on how to use AI AppBuilder in your project.
+Please refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder in your project.
 
 ## Build
 Build project with Visual Studio 2022 on WoS device:<br>
@@ -76,4 +78,4 @@ pip install dist\qai_appbuilder-2.33.0-cp312-cp312-win_arm64.whl
 ```
 
 ## License
-AI AppBuilder is licensed under the BSD 3-clause "New" or "Revised" License. Check out the [LICENSE](LICENSE) for more details.
+QAI AppBuilder is licensed under the BSD 3-clause "New" or "Revised" License. Check out the [LICENSE](LICENSE) for more details.
