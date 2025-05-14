@@ -24,6 +24,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Support multiple inputs & outputs. <br>
 • Easier for developing apps. <br>
 • Faster for testing models. <br>
+• Plenty of sample code. <br>
 
 Using the Python extensions with ARM64 Python will make it easier for developers to build GUI app for Windows on Snapdragon(WoS) platforms. Python 3.12.6 ARM64 version has support for following modules: PyQt6, OpenCV, Numpy, PyTorch*, Torchvision*, ONNX*, ONNX Runtime*. Developers can design apps that benefit from rich Python ecosystem. <br>
 
@@ -66,7 +67,7 @@ git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
 ```
 - Set environment 'QNN_SDK_ROOT' to the Qualcomm® AI Runtime SDK path which you're using. E.g.:
 ```
-Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.33.0.250327\
+Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.34.0.250424\
 ```
 - Use the commands below to build and install Python extension(*.whl): 
 ```
@@ -74,7 +75,7 @@ cd C:\Source\ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
-pip install dist\qai_appbuilder-2.33.0-cp312-cp312-win_arm64.whl
+pip install dist\qai_appbuilder-2.34.0-cp312-cp312-win_arm64.whl
 ```
 
 ## License
