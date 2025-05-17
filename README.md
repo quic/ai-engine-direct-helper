@@ -20,6 +20,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Support both C++ & Python <br>
 • Support both Windows & Linux. <br>
 • Support Genie(LLM) [*NEW!*]. <br>
+• Support Multi Graph [*NEW!*]. <br>
 • Support multiple models. <br>
 • Support multiple inputs & outputs. <br>
 • Easier for developing apps. <br>
