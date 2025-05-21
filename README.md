@@ -30,7 +30,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)*
 
 ## Environment Setup
-Refere to [python.md](docs/python.md) for instructions on setting up the Python environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
+Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
 
 ## Samples
 We have several [samples](samples/) which can be run directly:<br>
