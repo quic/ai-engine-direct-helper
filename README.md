@@ -4,7 +4,7 @@
 
 #### QAI AppBuilder
 Quick AI Application Builder(this repository) is also referred to as *QAI AppBuilder* in the source and documentation. QAI AppBuilder is extension for Qualcomm® AI Runtime SDK. We need some libraries in Qualcomm® AI Runtime SDK for using QAI AppBuilder. <br>
-QAI AppBuilder is designed for developer to using Qualcomm® AI Runtime SDK to execute model on Windows on Snapdragon(WoS) and Linux platforms easily. We encapsulated Qualcomm® AI Runtime SDK APIs to several simple APIs for loading the models to CPU or HTP and executing inference.
+QAI AppBuilder is designed for developer to using Qualcomm® AI Runtime SDK to execute model on Windows on Snapdragon(WoS) and Linux platforms easily. We encapsulated Qualcomm® AI Runtime SDK APIs to several simple APIs for loading the models to CPU and HTP and executing inference.
 
 #### Qualcomm® AI Runtime SDK
 
@@ -27,37 +27,41 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Faster for testing models. <br>
 • Plenty of sample code. <br>
 
-Using the Python extensions with ARM64 Python will make it easier for developers to build GUI app for Windows on Snapdragon(WoS) platforms. Python 3.12.6 ARM64 version has support for following modules: PyQt6, OpenCV, Numpy, PyTorch*, Torchvision*, ONNX*, ONNX Runtime*. Developers can design apps that benefit from rich Python ecosystem. <br>
+** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)*
 
-**PyTorch, Torchvision, ONNX, ONNX Runtime: need to compile from source code.* <br>
-**Also support using x64 Python to run QNN mode on WoS HTP, with this, we can install all the Python extension directly (Refer to the samples code here for detail: https://github.com/quic/ai-engine-direct-helper/tree/main/samples/python))* <br>
-**Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)*
+## Environment Setup
+Refere to [python.md](docs/python.md) on how to setup Python environment for using QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
+
+## Samples
+We have several [samples](samples/) which can be run directly:<br>
+1. [Sample code](samples/python/README.md): Guide to run several [AI-Hub](https://aihub.qualcomm.com/compute/models) models throug sample code.
+2. OpenAI Compatibility API Service(LLM Service):<br>
+2.1 [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatibility API services developed with python.<br>
+2.2 [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatibility API services developed with C++.<br>
+3. [WebUI samples](samples/webui/README.md): Guide to run several WebUI based AI applications.
 
 ## Components
 There're two ways to use QAI AppBuilder:
 ### 1. Using the QAI AppBuilder C++ libraries to develop C++ based AI application.
 Download prebuild binary package *QAI_AppBuilder-win_arm64-{Qualcomm® AI Runtime SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
 
-**libappbuilder.dll {libappbuilder.lib, LibAppBuilder.hpp}** –– C++ projects can use this lib to run models in HTP.
-**QAIAppSvc.exe** –– Due to HTP limitations, we can only load models smaller than 4GB in one process. This app is used to help us load the models in new processes(Multiple processes can be created) and inference to avoid HTP restrictions. [*Depress: the above limitation has been fixed.*]
-
 ### 2. Using the QAI AppBuilder Python binding extension to develop Python based AI application.
-Download Python extension *qai_appbuilder-{version}-cp312-cp312-win_arm64.whl* and install it with the command below:
+Download Python extension *qai_appbuilder-{version}-cp312-cp312-win_amd64.whl* and install it with the command below:
 https://github.com/quic/ai-engine-direct-helper/releases
 
 ```
-pip install qai_appbuilder-{version}-cp312-cp312-win_arm64.whl
+pip install qai_appbuilder-{version}-cp312-cp312-win_amd64.whl
 ```
 
 ## User Guide
-Please refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder in your project.
+Refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder to program AI application.
 
 ## Build
-Build project with Visual Studio 2022 on WoS device:<br>
+Build QAI AppBuilder from source with Visual Studio 2022 on WoS device:<br>
 - Install Visual Studio 2022: 
   - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
-- Install Python-3.12.6 ARM64: 
-  - https://www.python.org/ftp/python/3.12.6/python-3.12.6-arm64.exe
+- Install x64 version Python-3.12.6: 
+  - https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe
 - Use the commands below to install Python dependency: 
 ```
 pip install wheel setuptools pybind11
@@ -76,7 +80,7 @@ cd C:\Source\ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
-pip install dist\qai_appbuilder-2.34.0-cp312-cp312-win_arm64.whl
+pip install dist\qai_appbuilder-2.34.0-cp312-cp312-win_amd64.whl
 ```
 
 ## License
