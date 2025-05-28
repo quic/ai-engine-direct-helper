@@ -70,6 +70,10 @@ pip install wheel setuptools pybind11
 ```
 git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
 ```
+- If you have cloned it before, you can update the code by the following command:
+```
+git pull --recurse-submodules
+```
 - Set environment 'QNN_SDK_ROOT' to the Qualcomm® AI Runtime SDK path which you're using. E.g.:
 ```
 Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.34.0.250424\
