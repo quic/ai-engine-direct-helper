@@ -72,6 +72,7 @@ git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
 ```
 - If you have cloned it before, you can update the code by the following command:
 ```
+cd ai-engine-direct-helper
 git pull --recurse-submodules
 ```
 - Set environment 'QNN_SDK_ROOT' to the Qualcomm® AI Runtime SDK path which you're using. E.g.:
@@ -80,7 +81,7 @@ Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.34.0.250424\
 ```
 - Use the commands below to build and install Python extension(*.whl): 
 ```
-cd C:\Source\ai-engine-direct-helper
+cd ai-engine-direct-helper
 python setup.py bdist_wheel
 
 # Install the extension:
