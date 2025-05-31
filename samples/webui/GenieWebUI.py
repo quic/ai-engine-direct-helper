@@ -26,7 +26,7 @@ APP_PATH="genie\\python\\"
 DOCS_MAX_SIZE = 4096 - 1024  # TODO, calculate this value.
 
 FILE_TYPES = [".pdf", ".docx", ".pptx", ".txt", ".md", ".py", ".c", ".cpp", ".h", ".hpp" ]
-FUNC_LIST = ["📐 解题答疑", "📚 文档总结", "🗛 AI 翻 译", "🌐 AI 搜 索", "✒️ 帮我写作", "🎨 图像生成", "🍸 美食指南", "✈️ 旅游规划"]
+FUNC_LIST = ["📐 解题答疑", "📚 文档总结", "🗛 AI 翻 译", "🌐 AI 搜 索", "✒️ 帮我写作", "🎨 图像生成", "🍸 定制功能", "✈️ 旅游规划"]
 
 FILE_PATH = "files"
 
@@ -46,6 +46,7 @@ llm = None
 sumllm = None
 _func_mode = 0
 _question = None
+_sys_prompt = ""
 
 ###########################################################################
 
@@ -136,6 +137,7 @@ def chat(chatbot, max_length, temp, top_k, top_p):
 
 def predict(chatbot, max_length, temp, top_k, top_p):
     global _question
+    global _sys_prompt
 
     if not llm or not llm.is_ready():
         gr.Warning("请先选择模型并等待模型加载完成！", duration=5)
@@ -147,11 +149,23 @@ def predict(chatbot, max_length, temp, top_k, top_p):
         for chunk in chat(chatbot, max_length, temp, top_k, top_p):
             yield chunk
 
+
     elif FUNC_LIST[_func_mode] == "🗛 AI 翻 译":
         if has_chinese(_question):
             _question = f"Translate the following content to English: \n{_question}\n\n"
         else:
             _question = f"将以下内容翻译成中文：\n{_question}\n\n"
+
+        for chunk in chat(chatbot, max_length, temp, top_k, top_p):
+            yield chunk
+
+    elif FUNC_LIST[_func_mode] == "🍸 定制功能":
+ 
+        _question = _sys_prompt + _question
+       # _question = f"词源：\n{_question}\n\n"
+        print("\nsys prompt:", _sys_prompt)
+        print("\nquestion:",_question)
+        user_prompt = _question
 
         for chunk in chat(chatbot, max_length, temp, top_k, top_p):
             yield chunk
@@ -269,7 +283,16 @@ def reset_state():
 
 ###################
 
+def update_text(value):
+    global _sys_prompt
+    _sys_prompt=value
+    # print("input:", _sys_prompt) 
+    return value
+
+
+
 def main():
+    global _sys_prompt
     model_root = APP_PATH + "models"
     model_list = [f for f in os.listdir(model_root) if os.path.isdir(os.path.join(model_root, f))]
     model_list.insert(0, "")
@@ -294,6 +317,7 @@ def main():
                         f_latency = gr.Textbox(label="First Latency", visible=True)
                         p_speed = gr.Textbox(label="Prompt Speed", visible=True)
                         e_speed = gr.Textbox(label="Eval Speed", visible=True)
+                        cust_prompt = gr.Textbox(label="Customer Prompt", value="分析单词的词源:", visible=True, interactive=True)
 
                 with gr.Column(scale=8):
                     chatbot = gr.Chatbot(scale=9, type='messages', show_copy_button=True, group_consecutive_messages=True, height="52vh",)
@@ -304,17 +328,17 @@ def main():
                                                    file_types=FILE_TYPES, label=FUNC_LIST[_func_mode])
 
                     with gr.Row():
-                        # ["📐 解题答疑", "📚 文档总结", "🗛 AI 翻 译", "🌐 AI 搜 索", "✒️ 帮我写作", "🎨 图像生成", "🍸 美食指南", "✈️ 旅游规划"]
+                        # ["📐 解题答疑", "📚 文档总结", "🗛 AI 翻 译", "🌐 AI 搜 索", "✒️ 帮我写作", "🎨 图像生成", "定制功能", "✈️ 旅游规划"]
                         func_1_btn = gr.Button(FUNC_LIST[0], elem_classes="button_cls")
                         func_2_btn = gr.Button(FUNC_LIST[1], elem_classes="button_cls")
                         func_3_btn = gr.Button(FUNC_LIST[2], elem_classes="button_cls")
                         #func_4_btn = gr.Button(FUNC_LIST[3], elem_classes="button_cls")
                         #func_5_btn = gr.Button(FUNC_LIST[4], elem_classes="button_cls")
                         func_6_btn = gr.Button(FUNC_LIST[5], elem_classes="button_cls")
-                        #func_7_btn = gr.Button(FUNC_LIST[6], elem_classes="button_cls")
+                        func_7_btn = gr.Button(FUNC_LIST[6], elem_classes="button_cls")
                         #func_8_btn = gr.Button(FUNC_LIST[7], elem_classes="button_cls")
 
-                    gr.Examples(["总结文档内容", "分析源代码，给出逐行注释", "查询今天上海的天气", "帮我检查一下如下英语语法，如果有误，帮我修正：\n"], chatmsg, label="快捷输入")
+                    gr.Examples(["分析单词的词源", "分析源代码，给出逐行注释", "帮我检查一下如下英语语法，如果有误，帮我修正：\n"], chatmsg, label="快捷输入")
 
         model_select.change(model_change, inputs=model_select)
 
@@ -323,6 +347,9 @@ def main():
         chat_run.then(lambda: gr.MultimodalTextbox(interactive=True, submit_btn=True, stop_btn=False), None, [chatmsg])
 
         chatmsg.stop(fn=stop)
+ 
+        cust_prompt.change(update_text, inputs=cust_prompt, outputs=cust_prompt)
+        _sys_prompt = cust_prompt.value
 
         def func_change(func_mode):
             global _func_mode
@@ -340,7 +367,7 @@ def main():
         #func_4_btn.click(lambda: func_change(3), None, [chatmsg])
         #func_5_btn.click(lambda: func_change(4), None, [chatmsg])
         func_6_btn.click(lambda: func_change(5), None, [chatmsg])
-        #func_7_btn.click(lambda: func_change(6), None, [chatmsg])
+        func_7_btn.click(lambda: func_change(6), None, [chatmsg])
         #func_8_btn.click(lambda: func_change(7), None, [chatmsg])
 
     demo.queue().launch(server_name=HOST, share=False, inbrowser=True, server_port=PORT)

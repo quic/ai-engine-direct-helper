@@ -1,0 +1,12 @@
+{
+  "devices": [
+    {
+      "soc_id": 69,
+      "dsp_arch": "v79",
+      "cores":[{
+        "perf_profile": "burst",
+        "rpc_control_latency": 100
+      }]
+    }
+  ]
+}

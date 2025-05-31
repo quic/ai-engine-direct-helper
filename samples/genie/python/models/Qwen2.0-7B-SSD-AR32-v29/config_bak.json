@@ -1,0 +1,69 @@
+{
+  "dialog" : {
+    "version" : 1,
+    "type" : "ssd-q1",
+    "ssd-q1" : {
+      "version" : 1,
+      "ssd-version" : 1,
+      "forecast-token-count" : 4,
+      "forecast-prefix" : 16,
+      "forecast-prefix-name" : ".\\models\\qwen-v2-ar32-ssd\\",
+      "branches" : [3, 2],
+      "n-streams" : 1,
+      "p-threshold" : 0.0
+    },
+    "max-num-tokens" : 4096,
+    "context" : {
+      "version" : 1,
+      "size": 4096,
+      "n-vocab":   152064,
+      "bos-token": 151644,
+      "eos-token": 151645,
+      "eot-token": 151643
+    },
+    "sampler" : {
+      "version" : 1,
+      "seed" : 42,
+      "temp" : 0.800000,
+      "top-k" : 40,
+      "top-p" : 0.950000
+    },
+    "tokenizer" : {
+      "version" : 1,
+      "path" : ".\\models\\qwen-v2-ar32-ssd\\tokenizer.json"
+    },
+    "engine" : {
+      "version" : 1,
+      "n-threads" : 1,
+      "backend" : {
+        "version" : 1,
+        "type" : "QnnHtp",
+        "QnnHtp" : {
+          "version" : 1,
+          "debug-qnn" : false,
+          "use-mmap" : false,
+          "spill-fill-bufsize" : 0,
+          "mmap-budget" : 0,
+          "poll" :false,
+          "pos-id-dim" : 64,
+          "cpu-mask" : "0xe0",
+          "kv-dim" : 128,
+          "neg-val" : -7100,
+          "rope-theta": 1000000.000000,
+          "dynamic-load": true
+        },
+        "extensions" : "htp_backend_ext_config.json"
+      },
+      "model" : {
+        "version" : 1,
+        "type" : "binary",
+        "binary" : {
+          "version" : 1,
+          "ctx-bins" : [
+            "model_memory"
+          ]
+        }
+      }
+    }
+  }
+}
