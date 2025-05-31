@@ -138,6 +138,7 @@ def chat(chatbot, max_length, temp, top_k, top_p):
 def predict(chatbot, max_length, temp, top_k, top_p):
     global _question
     global _sys_prompt
+ 
 
     if not llm or not llm.is_ready():
         gr.Warning("请先选择模型并等待模型加载完成！", duration=5)
@@ -348,11 +349,15 @@ def main():
 
         chatmsg.stop(fn=stop)
  
-        cust_prompt.change(update_text, inputs=cust_prompt, outputs=cust_prompt)
+        cust_prompt.change(update_text, inputs=cust_prompt, outputs=None)
         _sys_prompt = cust_prompt.value
 
         def func_change(func_mode):
             global _func_mode
+            global _sys_prompt
+
+            _sys_prompt = cust_prompt.value
+            print("\nchange:sys prompt:", _sys_prompt)
 
             _func_mode = func_mode
             func_name = FUNC_LIST[func_mode]
