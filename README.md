@@ -1,7 +1,7 @@
 <br><br><br>
 
 <div align="center">
-  <img src="docs/images/qai_appbuilder.png" alt="Quick AI Application Builder" width="400" height="100"> <!-- 插入图标 -->
+  <img src="docs/images/qai_appbuilder.png" alt="Quick AI Application Builder" width="360" height="90">
 </div>
 
 <br><br><br>
