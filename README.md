@@ -13,10 +13,9 @@
   <a href="https://www.python.org/downloads/windows/"><img src="https://img.shields.io/badge/Python-00599C?logo=Python" alt="Python"></a>
   <a href="https://en.cppreference.com/w/cpp/compiler_support"><img src="https://img.shields.io/badge/C++-00599C?logo=c%2B%2B" alt="C++"></a>
 </div>
-<br><br>
+<br>
 
 ---
-<br>
 
 ## Introduction
 
