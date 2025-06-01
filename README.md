@@ -7,7 +7,7 @@
 <br><br><br>
 
 <div align="center">
-  <h2>A simple way to build AI application based on Qualcomm® AI Runtime SDK.</h2>
+  <h3>A simple way to build AI application based on Qualcomm® AI Runtime SDK.</h3>
   <p><i>"Simple and easy!"</i></p>
   <a href="https://opensource.org/license/BSD-3-clause"><img src="https://img.shields.io/badge/License-BSD--3--Clause-green" alt="License: BSD 3-Clause"></a>
   <a href="https://www.python.org/downloads/windows/"><img src="https://img.shields.io/badge/Python-00599C?logo=Python" alt="Python"></a>
