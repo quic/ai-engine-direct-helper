@@ -1,4 +1,22 @@
-# QAI AppBuilder (Quick AI Application Builder)
+<br><br><br>
+
+<div align="center">
+  <img src="docs/images/qai_appbuilder.png" alt="Quick AI Application Builder" width="400" height="100"> <!-- 插入图标 -->
+</div>
+
+<br><br><br>
+
+<div align="center">
+  <h2>A simple way to build AI application based on Qualcomm® AI Runtime SDK.</h2>
+  <p><i>"Simple and easy!"</i></p>
+  <a href="https://opensource.org/license/BSD-3-clause"><img src="https://img.shields.io/badge/License-BSD--3--Clause-green" alt="License: BSD 3-Clause"></a>
+  <a href="https://www.python.org/downloads/windows/"><img src="https://img.shields.io/badge/Python-00599C?logo=Python" alt="Python"></a>
+  <a href="https://en.cppreference.com/w/cpp/compiler_support"><img src="https://img.shields.io/badge/C++-00599C?logo=c%2B%2B" alt="C++"></a>
+</div>
+<br><br>
+
+---
+<br>
 
 ## Introduction
 
@@ -90,3 +108,13 @@ pip install dist\qai_appbuilder-2.34.0-cp312-cp312-win_amd64.whl
 
 ## License
 QAI AppBuilder is licensed under the BSD 3-clause "New" or "Revised" License. Check out the [LICENSE](LICENSE) for more details.
+
+## Star History
+
+<a href="https://www.star-history.com/#quic/ai-engine-direct-helper&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=quic/ai-engine-direct-helper&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=quic/ai-engine-direct-helper&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=quic/ai-engine-direct-helper&type=Date" />
+ </picture>
+</a>
