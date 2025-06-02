@@ -288,12 +288,18 @@ def update_text(value):
     global _sys_prompt
     _sys_prompt=value
     # print("input:", _sys_prompt) 
+    with open("customprompt.txt", "w") as file:
+        file.write(value)
+
+
     return value
 
 
 
 def main():
     global _sys_prompt
+    file_name="customprompt.txt"
+
     model_root = APP_PATH + "models"
     model_list = [f for f in os.listdir(model_root) if os.path.isdir(os.path.join(model_root, f))]
     model_list.insert(0, "")
@@ -349,6 +355,16 @@ def main():
 
         chatmsg.stop(fn=stop)
  
+
+        if not os.path.exists(file_name):
+            with open(file_name, "w") as file:
+                file.write("")  # Create an empty file
+
+
+
+        with open(file_name, "r") as file:
+            cust_prompt.value = file.read()
+
         cust_prompt.change(update_text, inputs=cust_prompt, outputs=None)
         _sys_prompt = cust_prompt.value
 
