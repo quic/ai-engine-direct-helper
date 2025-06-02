@@ -24,8 +24,8 @@
 ## Introduction
 
 #### QAI AppBuilder
-Quick AI Application Builder(this repository) is also referred to as *QAI AppBuilder* in the source and documentation. QAI AppBuilder is extension for Qualcomm® AI Runtime SDK. We need some libraries in Qualcomm® AI Runtime SDK for using QAI AppBuilder. <br>
-QAI AppBuilder is designed for developer to using Qualcomm® AI Runtime SDK to execute model on Windows on Snapdragon(WoS) and Linux platforms easily. We encapsulated Qualcomm® AI Runtime SDK APIs to several simple APIs for loading the models to CPU and HTP and executing inference.
+Quick AI Application Builder(this repository) is also referred to as QAI AppBuilder in the source code and documentation. QAI AppBuilder is an extension of the Qualcomm® AI Runtime SDK, which is used to simplify the deployment of QNN models. Some libraries from the Qualcomm® AI Runtime SDK are required to use QAI AppBuilder.
+QAI AppBuilder is designed for developers to easily use the Qualcomm® AI Runtime SDK to execute models on Windows on Snapdragon (WoS) and Linux platforms. We have encapsulated the Qualcomm® AI Runtime SDK model execution APIs into several simple APIs for loading models onto the NPU/HTP and performing inference.
 
 #### Qualcomm® AI Runtime SDK
 
@@ -40,7 +40,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 • Support both C++ & Python <br>
 • Support both Windows & Linux. <br>
-• Support Genie(LLM) [*NEW!*]. <br>
+• Support Genie(Large Language Model) [*NEW!*]. <br>
 • Support Multi Graph [*NEW!*]. <br>
 • Support multiple models. <br>
 • Support multiple inputs & outputs. <br>
@@ -48,7 +48,8 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Faster for testing models. <br>
 • Plenty of sample code. <br>
 
-** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)*
+** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)* <br>
+** Support OpenAI Compatibility API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
 
 ## Environment Setup
 Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
