@@ -283,12 +283,12 @@ def reset_state():
     return [], [], "", "", ""
 
 ###################
-
+ #FR0001:Add customized prompt
 def update_text(value):
     global _sys_prompt
     _sys_prompt=value
     # print("input:", _sys_prompt) 
-    with open("customprompt.txt", "w") as file:
+    with open("customprompt.txt", "w",encoding="utf-8" ) as file:
         file.write(value)
 
 
@@ -297,8 +297,10 @@ def update_text(value):
 
 
 def main():
+    #FR0001:Add customized prompt
     global _sys_prompt
     file_name="customprompt.txt"
+    #FR0001:Add customized prompt
 
     model_root = APP_PATH + "models"
     model_list = [f for f in os.listdir(model_root) if os.path.isdir(os.path.join(model_root, f))]
@@ -324,6 +326,7 @@ def main():
                         f_latency = gr.Textbox(label="First Latency", visible=True)
                         p_speed = gr.Textbox(label="Prompt Speed", visible=True)
                         e_speed = gr.Textbox(label="Eval Speed", visible=True)
+                        #FR0001:Add customized prompt
                         cust_prompt = gr.Textbox(label="Customer Prompt", value="分析单词的词源:", visible=True, interactive=True)
 
                 with gr.Column(scale=8):
@@ -342,6 +345,7 @@ def main():
                         #func_4_btn = gr.Button(FUNC_LIST[3], elem_classes="button_cls")
                         #func_5_btn = gr.Button(FUNC_LIST[4], elem_classes="button_cls")
                         func_6_btn = gr.Button(FUNC_LIST[5], elem_classes="button_cls")
+                        #FR0001:Add customized prompt
                         func_7_btn = gr.Button(FUNC_LIST[6], elem_classes="button_cls")
                         #func_8_btn = gr.Button(FUNC_LIST[7], elem_classes="button_cls")
 
@@ -355,19 +359,19 @@ def main():
 
         chatmsg.stop(fn=stop)
  
-
+    #FR0001:Add customized prompt
         if not os.path.exists(file_name):
-            with open(file_name, "w") as file:
+            with open(file_name, "w",encoding="utf-8") as file:
                 file.write("")  # Create an empty file
 
 
 
-        with open(file_name, "r") as file:
+        with open(file_name, "r",encoding="utf-8") as file:
             cust_prompt.value = file.read()
 
         cust_prompt.change(update_text, inputs=cust_prompt, outputs=None)
         _sys_prompt = cust_prompt.value
-
+    #FR0001:Add customized prompt
         def func_change(func_mode):
             global _func_mode
             global _sys_prompt
@@ -388,6 +392,7 @@ def main():
         #func_4_btn.click(lambda: func_change(3), None, [chatmsg])
         #func_5_btn.click(lambda: func_change(4), None, [chatmsg])
         func_6_btn.click(lambda: func_change(5), None, [chatmsg])
+            #FR0001:Add customized prompt
         func_7_btn.click(lambda: func_change(6), None, [chatmsg])
         #func_8_btn.click(lambda: func_change(7), None, [chatmsg])
 
