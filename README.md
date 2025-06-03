@@ -64,7 +64,8 @@ We have several [samples](samples/) which can be run directly:<br>
 2. OpenAI Compatibility API Service(LLM Service):<br>
 2.1 [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatibility API services developed with python.<br>
 2.2 [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatibility API services developed with C++.<br>
-3. [WebUI samples](samples/webui/README.md): Guide to run several WebUI based AI applications.
+3. [WebUI samples](samples/webui/README.md): Guide to run several WebUI based AI applications.<br>
+4. Tools: [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework.
 
 ## Components
 There're two ways to use QAI AppBuilder:
