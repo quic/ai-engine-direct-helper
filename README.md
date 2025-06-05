@@ -28,7 +28,8 @@ Note: Contributions are welcome. Please ensure thorough testing before deploying
 ## Introduction
 
 #### QAI AppBuilder
-Quick AI Application Builder(this repository) is also referred to as QAI AppBuilder in the source code and documentation. QAI AppBuilder is an extension of the Qualcomm® AI Runtime SDK, which is used to simplify the deployment of QNN models. Some libraries from the Qualcomm® AI Runtime SDK are required to use QAI AppBuilder.
+The Quick AI Application Builder (this repository) is also referred to as "QAI AppBuilder" in the source code and documentation.<br>
+QAI AppBuilder is an extension of the Qualcomm® AI Runtime SDK, which is used to simplify the deployment of QNN models. Some libraries from the Qualcomm® AI Runtime SDK are required to use QAI AppBuilder.<br>
 QAI AppBuilder is designed for developers to easily use the Qualcomm® AI Runtime SDK to execute models on Windows on Snapdragon (WoS) and Linux platforms. We have encapsulated the Qualcomm® AI Runtime SDK model execution APIs into several simple APIs for loading models onto the NPU/HTP and performing inference.
 
 #### Qualcomm® AI Runtime SDK
