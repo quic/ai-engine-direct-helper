@@ -56,11 +56,16 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu)* <br>
 ** Support OpenAI Compatibility API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
 
+<div align="center">
+  <a href="README.md"><img src="docs/images/diagram.png" alt="Quick AI Application Builder" width="1036" height="608"></a>
+</div>
+
 ## Environment Setup
 Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
 
 ## Samples
-We have several [samples](samples/) which can be run directly:<br>
+We have several [samples](samples/) which can be run directly. <br>
+*We suggest that you try to run these sample code before you actually start writing your own code.*<br>
 1. [Sample code](samples/python/README.md): Guide to run several [AI-Hub](https://aihub.qualcomm.com/compute/models) models throug sample code.
 2. OpenAI Compatibility API Service(LLM Service):<br>
 2.1 [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatibility API services developed with python.<br>
@@ -85,36 +90,7 @@ pip install qai_appbuilder-{version}-cp312-cp312-win_amd64.whl
 Refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder to program AI application.
 
 ## Build
-Build QAI AppBuilder from source with Visual Studio 2022 on WoS device:<br>
-- Install Visual Studio 2022: 
-  - https://docs.qualcomm.com/bundle/publicresource/topics/80-62010-1/Install-Visual-Studio-2022.html?product=Windows%20on%20Snapdragon
-- Install x64 version Python-3.12.6: 
-  - https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe
-- Use the commands below to install Python dependency: 
-```
-pip install wheel setuptools pybind11
-```
-- Clone this repository to local: 
-```
-git clone https://github.com/quic/ai-engine-direct-helper.git --recursive
-```
-- If you have cloned it before, you can update the code by the following command:
-```
-cd ai-engine-direct-helper
-git pull --recurse-submodules
-```
-- Set environment 'QNN_SDK_ROOT' to the Qualcomm® AI Runtime SDK path which you're using. E.g.:
-```
-Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.34.0.250424\
-```
-- Use the commands below to build and install Python extension(*.whl): 
-```
-cd ai-engine-direct-helper
-python setup.py bdist_wheel
-
-# Install the extension:
-pip install dist\qai_appbuilder-2.34.0-cp312-cp312-win_amd64.whl
-```
+You can use the pre-compiled version directly and download the version you need from [Release](https://github.com/quic/ai-engine-direct-helper/releases). But if you really want to compile it yourself, you can refer to the [BUILD.md](BUILD.md).
 
 ## License
 QAI AppBuilder is licensed under the BSD 3-clause "New" or "Revised" License. Check out the [LICENSE](LICENSE) for more details.
