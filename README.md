@@ -57,7 +57,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 ** Support OpenAI Compatibility API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
 
 <div align="center">
-  <a href="README.md"><img src="docs/images/diagram.png" alt="Quick AI Application Builder" width="1036" height="608"></a>
+  <a href="README.md"><img src="docs/images/diagram.png" alt="Quick AI Application Builder" width="777" height="456"></a>
 </div>
 
 ## Environment Setup
