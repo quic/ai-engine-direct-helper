@@ -44,14 +44,14 @@ https://qpm.qualcomm.com/#/main/tools/details/Qualcomm_AI_Runtime_SDK
 Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 • Support both C++ & Python <br>
-• Support both Windows & Linux. <br>
-• Support Genie(Large Language Model) [*NEW!*]. <br>
-• Support Multi Graph [*NEW!*]. <br>
-• Support multiple models. <br>
-• Support multiple inputs & outputs. <br>
-• Easier for developing apps. <br>
-• Faster for testing models. <br>
-• Plenty of sample code. <br>
+• Support both Windows & Linux <br>
+• Support Genie(Large Language Model) [*NEW!*] <br>
+• Support Multi Graph [*NEW!*] <br>
+• Support multiple models <br>
+• Support multiple inputs & outputs <br>
+• Easier for developing apps <br>
+• Faster for testing models <br>
+• Plenty of sample code <br>
 
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu). <br>
 ** Support OpenAI Compatibility API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
