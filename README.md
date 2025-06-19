@@ -66,7 +66,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
 
 ## WebUI Application
-[WebUI Application](samples/webui/README.md): You can try these WebUI AI applications quickly.<br>
+[WebUI Application](samples/webui/README.md): We have developed several WebUI AI applications based on QAI AppBuilder, and you can experience these applications quickly.<br>
 
 ## OpenAI Compatible API Service (GenieLLMService):<br>
 1. [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatible API services developed with python.<br>
