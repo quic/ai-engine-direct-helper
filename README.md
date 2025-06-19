@@ -54,7 +54,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Plenty of sample code <br>
 
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu). <br>
-** Support OpenAI Compatibility API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
+** Support OpenAI Compatible API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
 
 ## Diagram
 <br>
@@ -65,17 +65,21 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 ## Environment Setup
 Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
 
-## Samples
-We have several [samples](samples/) which can be run directly. <br>
-*We suggest that you try to run these sample code before you actually start writing your own code.*<br>
-1. [Sample code](samples/python/README.md): Guide to run several [AI-Hub](https://aihub.qualcomm.com/compute/models) models throug sample code.
-2. OpenAI Compatibility API Service(LLM Service):<br>
-2.1 [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatibility API services developed with python.<br>
-2.2 [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatibility API services developed with C++.<br>
-3. [WebUI samples](samples/webui/README.md): Guide to run several WebUI based AI applications.<br>
-4. Tools: [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework.
+## WebUI Application
+[WebUI Application](samples/webui/README.md): You can try these WebUI AI applications quickly.<br>
 
-## Components
+## OpenAI Compatible API Service (GenieLLMService):<br>
+1. [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatible API services developed with python.<br>
+2. [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatible API services developed with C++.<br>
+
+## Samples
+We have many [samples](samples/python/README.md) which can be run directly. The models used in these samples are from [AI-Hub](https://aihub.qualcomm.com/compute/models).<br>
+*We suggest that you try to run these sample code before you actually start writing your own code.*<br>
+
+## Tools
+We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework.
+
+## QAI AppBuilder Components
 There're two ways to use QAI AppBuilder:
 ### 1. Using the QAI AppBuilder C++ libraries to develop C++ based AI application.
 Download prebuild binary package *QAI_AppBuilder-win_arm64-{Qualcomm® AI Runtime SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
