@@ -64,10 +64,15 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 </div>
 
 ## Environment Setup
-Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms.
+Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms. <br>
 
 ## WebUI Application
-[WebUI Application](samples/webui/README.md): We have developed several WebUI AI applications based on QAI AppBuilder, and you can experience these applications quickly.<br>
+[WebUI Application](samples/webui/README.md): We have developed several WebUI AI applications based on QAI AppBuilder, allowing you to experience them quickly. All these applications run on a local PC, requiring no internet connection and are completely free. <br>
+|  App   | Description  |
+|  ----  | :----    |
+| ImageRepairApp | An image restoration tool designed to repair old or damaged photographs. |
+| StableDiffusionApp  | A text-to-image generation tool that creates images based on user input. |
+| GenieWebUI  | A large language model (LLM) interface that enables interactive conversations.|
 
 ## OpenAI Compatible API Service (GenieLLMService):<br>
 1. [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatible API services developed with python.<br>
