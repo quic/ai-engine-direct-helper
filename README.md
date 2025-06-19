@@ -66,8 +66,8 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 ## Environment Setup
 Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms. <br>
 
-## WebUI Application
-We have developed several [WebUI AI Application](samples/webui/README.md) based on QAI AppBuilder, allowing you to experience them quickly. <br>
+## WebUI AI Application
+We have developed several [WebUI AI applications](samples/webui/README.md) based on QAI AppBuilder, allowing you to experience them quickly. <br>
 All these applications run on a local PC, requiring *no internet connection* and are *completely free*. <br>
 Before trying other functions, we suggest that you try these applications first. <br>
 
