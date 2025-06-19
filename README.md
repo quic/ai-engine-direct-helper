@@ -30,7 +30,7 @@ Note: Contributions are welcome. Please ensure thorough testing before deploying
 #### QAI AppBuilder
 The Quick AI Application Builder (this repository) is also referred to as "QAI AppBuilder" in the source code and documentation.<br>
 QAI AppBuilder is an extension of the Qualcomm® AI Runtime SDK, which is used to simplify the deployment of QNN models. Some libraries from the Qualcomm® AI Runtime SDK are required to use QAI AppBuilder.<br>
-QAI AppBuilder is designed to help developers easily use the Qualcomm® AI Runtime SDK to execute models on Windows on Snapdragon (WoS) and Linux platforms. It encapsulates the model execution APIs into a set of simplified interfaces for loading models onto the NPU/HTP and performing inference.
+QAI AppBuilder is designed to help developers easily use the Qualcomm® AI Runtime SDK to execute models on Windows on Snapdragon (WoS) and Linux platforms. It encapsulates the model execution APIs into a set of simplified interfaces for loading models onto the NPU/HTP and performing inference. It substantially lowers the complexity of model deployment for developers.
 
 #### Qualcomm® AI Runtime SDK
 
@@ -78,6 +78,9 @@ All these applications run on a local PC, requiring *no internet connection* and
 | GenieWebUI  | A large language model (LLM) interface that enables interactive conversations.|
 
 ## OpenAI Compatible API Service (GenieLLMService):<br>
+Considering that the current mainstream method for invoking LLMs is based on OpenAI-compatible APIs, we have implemented such interfaces in both C++ and Python. This allows application developers to interact with the local large language model running on NPU in a familiar way. Many third-party applications that support the OpenAI API can seamlessly switch to the local NPU-based model by simply changing the API IP endpoint. 
+We have also implemented the client sample code of Genie API Service through both C++ and Python for the reference of developers.
+
 1. [Python based service](samples/genie/python/README.md): Guide to run OpenAI compatible API services developed with python.<br>
 2. [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatible API services developed with C++.<br>
 
