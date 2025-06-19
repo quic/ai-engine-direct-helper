@@ -67,7 +67,9 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 Refere to [python.md](docs/python.md) for instructions on setting up the Python(x64 version) environment to use QAI AppBuilder on Windows on Snapdragon (WoS) platforms. <br>
 
 ## WebUI Application
-[WebUI Application](samples/webui/README.md): We have developed several WebUI AI applications based on QAI AppBuilder, allowing you to experience them quickly. All these applications run on a local PC, requiring no internet connection and are completely free. We suggest you try these applications first. <br>
+We have developed several [WebUI AI Application](samples/webui/README.md) based on QAI AppBuilder, allowing you to experience them quickly. All these applications run on a local PC, requiring no internet connection and are completely free. <br>
+Before trying other functions, we suggest that you try these applications first. <br>
+
 |  App   | Description  |
 |  ----  | :----    |
 | ImageRepairApp | An image restoration tool designed to repair old or damaged photographs. |
