@@ -69,7 +69,7 @@ Refere to [python.md](docs/python.md) for instructions on setting up the Python(
 ## WebUI AI Application
 We have developed several [WebUI AI applications](samples/webui/README.md) based on QAI AppBuilder, allowing you to experience them quickly. <br>
 All these applications run on a local PC, requiring *no internet connection* and are *completely free*. <br>
-*Before trying other functions, we suggest that you try these applications first.* <br>
+<b style="color:blue;">*Before trying other functions, we suggest that you try these applications first.*</b><br>
 
 |  App   | Description  |
 |  ----  | :----    |
