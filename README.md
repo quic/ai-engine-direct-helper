@@ -109,7 +109,8 @@ pip install qai_appbuilder-{version}-cp312-cp312-win_amd64.whl
 ```
 
 ## User Guide
-Refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder to program AI application.
+Refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder to program AI application. <br>
+Refer to [tutorial.ipynb](docs/tutorial.ipynb) to setup and run a cv model step by step.
 
 ## Build
 You can use the pre-compiled version directly and download the version you need from [Release](https://github.com/quic/ai-engine-direct-helper/releases). But if you really want to compile it yourself, you can refer to the [BUILD.md](BUILD.md).
