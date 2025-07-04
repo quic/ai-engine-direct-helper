@@ -66,7 +66,7 @@ You can also run the batch file from [QAI AppBuilder Launcher](tools/launcher/) 
 ## WebUI AI Application
 We have developed several [WebUI AI applications](samples/webui/README.md) based on QAI AppBuilder, allowing you to experience them quickly. <br>
 All these applications run on a local PC, requiring *no internet connection* and are *completely free*. <br>
-You can run these WebUI AI applications througn the batch file [3.Start_WebUI.bat](tools/launcher/) automatically.
+You can run WebUI AI applications througn the batch file [3.Start_WebUI.bat](tools/launcher/).
 <br><br>
 <a href="samples/webui/README.md"><img src="https://img.shields.io/badge/Note: - Before trying other functions, we suggest that you try these WebUI AI Application first.-important"></a>
 
