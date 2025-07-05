@@ -87,7 +87,11 @@ We have many [samples](samples/python/README.md) which can be run directly. The 
 *We suggest that you try to run these sample code before you actually start writing your own code.*<br>
 
 ## Tools
-We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework.
+###  1. LangFlow Package
+We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework. You can get more information [here](tools/langflow/).
+
+### 2. QAI AppBuilder Launcher
+We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities of QAI AppBuilder within an hour.
 
 ## QAI AppBuilder Components
 There're two ways to use QAI AppBuilder:
