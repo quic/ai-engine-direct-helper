@@ -1,3 +1,7 @@
+# ---------------------------------------------------------------------
+# Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
+# SPDX-License-Identifier: BSD-3-Clause
+# ---------------------------------------------------------------------
 import time
 import sys
 import os
@@ -12,6 +16,7 @@ from gradio.data_classes import FileData
 sys.path.append("python")
 sys.path.append("genie\\python")
 
+import utils.install as install
 from ChainUtils import GenieLLM
 from DocUtils import DocSummarize
 
@@ -26,7 +31,11 @@ APP_PATH="genie\\python\\"
 DOCS_MAX_SIZE = 4096 - 1024  # TODO, calculate this value.
 
 FILE_TYPES = [".pdf", ".docx", ".pptx", ".txt", ".md", ".py", ".c", ".cpp", ".h", ".hpp" ]
+
 FUNC_LIST = ["📐 解题答疑", "📚 文档总结", "🗛 AI 翻 译", "🌐 AI 搜 索", "✒️ 帮我写作", "🎨 图像生成", "🍸 定制功能", "✈️ 旅游规划"]
+
+FUNC_LIST_EN = ["📐 Q & A", "📚 Doc Summary", "🗛 AI Translation", "🌐 AI Searching", "✒️ Writing Assistant", "🎨 Text To Image", "🍸 Customerized Function", "✈️ Tourism planning"]
+
 
 FILE_PATH = "files"
 
@@ -38,7 +47,7 @@ class Colors:
     MAGENTA = '\033[95m'
     CYAN = '\033[96m'
     WHITE = '\033[97m'
-    END = '\033[0m'  # 重置颜色
+    END = '\033[0m'  # Reset color.
 
 ###########################################################################
 
@@ -75,9 +84,9 @@ footer{display:none !important}
 
 ###########################################################################
 
-def has_chinese(string):
+def has_chinese(text):
     pattern = re.compile(r'[\u4e00-\u9fff]')
-    match = pattern.search(string)
+    match = pattern.search(text)
     return match is not None
 
 def model_unload():
@@ -87,8 +96,33 @@ def model_unload():
         del(llm)
         llm = None
 
+def download_tokenizer(model_path, url):
+    if not os.path.exists(model_path):
+        install.download_url(url, model_path)
+
+        if "Phi-3.5-mini" in model_path:
+            import re
+            with open(model_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            pattern = r',\s*{\s*"type":\s*"Strip",\s*"content":\s*"\s*",\s*"start":\s*\d+,\s*"stop":\s*\d+\s*}'
+            new_content = re.sub(pattern, '', content)
+            with open(model_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+def download():
+    download_tokenizer(
+        APP_PATH + "\\models\\IBM-Granite-v3.1-8B\\tokenizer.json",
+        "https://gitee.com/hf-models/granite-3.1-8b-base/raw/main/tokenizer.json"
+    )
+    download_tokenizer(
+        APP_PATH + "\\models\\Phi-3.5-mini\\tokenizer.json",
+        "https://gitee.com/hf-models/Phi-3.5-mini-instruct/raw/main/tokenizer.json"
+    )
+
 def model_change(value):
     global llm
+
+    download()
 
     print()
     print(f"{Colors.GREEN}INFO:     loading model <<<", value, f">>>{Colors.END}")
@@ -191,6 +225,10 @@ def predict(chatbot, max_length, temp, top_k, top_p):
         sumllm = None
 
     elif FUNC_LIST[_func_mode] == "🎨 图像生成":
+        if not stable_diffusion.model_exist():
+            gr.Warning("请先下载图像生成模型！参考：<a href='https://github.com/quic/ai-engine-direct-helper/blob/main/samples/python/README.md#prepare-stable-diffusion-models-manually'>samples/python/README.md</a>", duration=10)
+            return reset_state()
+
         image_data = {"path": ""}
 
         def callback(result):
@@ -310,7 +348,7 @@ def main():
         demo.title = "Genie App"
 
         gr.set_static_paths(paths=["resources/", "files/"])
-        gr.HTML("""<div align="center"><div style="width:500px"><font size="6" style="color:rgb(42, 42, 234);">Genie App</font></div></div>""")
+        gr.HTML("""<div align="center"><div style="width:500px"><font size="6" style="color:rgb(255, 255, 234);">Genie App</font></div></div>""")
         # gr.HTML("""<div align="center"><div style="width:500px"><img style="display: inline" src="/gradio_api/file=resources/icon.png"> <font size="6" style="color:rgb(42, 42, 234);"> Genie App</font>&nbsp;&nbsp;</div></div>""")
 
         with gr.Tab("Settings") as tab:
@@ -335,9 +373,10 @@ def main():
 
                     chatmsg = gr.MultimodalTextbox(scale=1, interactive=True, file_count="multiple", placeholder="Enter message or upload file...", show_label=True, autofocus=True,
                                                    max_plain_text_length=3000, sources=[],      # sources=["upload", "microphone"],
-                                                   file_types=FILE_TYPES, label=FUNC_LIST[_func_mode])
+                                                   file_types=FILE_TYPES, label=FUNC_LIST_EN[_func_mode])
 
                     with gr.Row():
+
                         # ["📐 解题答疑", "📚 文档总结", "🗛 AI 翻 译", "🌐 AI 搜 索", "✒️ 帮我写作", "🎨 图像生成", "定制功能", "✈️ 旅游规划"]
                         func_1_btn = gr.Button(FUNC_LIST[0], elem_classes="button_cls")
                         func_2_btn = gr.Button(FUNC_LIST[1], elem_classes="button_cls")
@@ -349,7 +388,9 @@ def main():
                         func_7_btn = gr.Button(FUNC_LIST[6], elem_classes="button_cls")
                         #func_8_btn = gr.Button(FUNC_LIST[7], elem_classes="button_cls")
 
-                    gr.Examples(["分析单词的词源", "分析源代码，给出逐行注释", "帮我检查一下如下英语语法，如果有误，帮我修正：\n"], chatmsg, label="快捷输入")
+                    
+                    gr.Examples(["Summarize the document content", "Analyze the source code and give line-by-line comments.", "Inquire about the weather in Shanghai today", "Help me check the following English grammar, and correct it if it is wrong:\n"], chatmsg, label="Quick Input")
+
 
         model_select.change(model_change, inputs=model_select)
 

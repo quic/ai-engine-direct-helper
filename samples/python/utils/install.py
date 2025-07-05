@@ -12,7 +12,6 @@ import shutil
 from tqdm import tqdm
 from pathlib import Path
 import qai_hub
-import wget
 import urllib.request as request
 
 qnn_sdk_version =  {
@@ -35,6 +34,8 @@ HUB_ID_Q="a916bc04400e033f60fdd73c615e5780e2ba206a"
 QAI_HUB_CONFIG = os.path.join(Path.home(), ".qai_hub", "client.ini")
 QAI_HUB_CONFIG_BACKUP = os.path.join(Path.home(), ".qai_hub", "client.ini.bk")
 
+WGET_URL = "https://eternallybored.org/misc/wget/releases/wget-1.21.4-winarm64.zip"
+ARIA2C_URL = "https://github.com/aria2/aria2/releases/download/release-1.36.0/aria2-1.36.0-win-64bit-build1.zip"
 
 def setup_qai_hub(hub_id):
     if os.path.isfile(QAI_HUB_CONFIG):
@@ -120,13 +121,17 @@ def verify_package(url, filepath, filesize, desc=None, fail=None):
     return False
 
 
-class tqdmWget(tqdm):
-    last_block = 0
-    def update_progress(self, block_num=1, block_size=1, total_size=None):
-        if total_size is not None:
-            self.total = total_size
-        self.update((block_num - self.last_block) * block_size)
-        self.last_block = block_num
+# import wget
+
+# class tqdmWget(tqdm):
+#    last_block = 0
+#    def update_progress(self, block_num=1, block_size=1, total_size=None):
+#        if total_size is not None:
+#            self.total = total_size
+#        self.update((block_num - self.last_block) * block_size)
+#        self.last_block = block_num
+
+from py3_wget import download_file
 
 def download_url_pywget(url, filepath, filesize=None, desc=None, fail=None):
     ret = True
@@ -143,11 +148,12 @@ def download_url_pywget(url, filepath, filesize=None, desc=None, fail=None):
 
     try:
         # wget.download(url, filepath, wget.bar_adaptive)
-        with tqdmWget(unit='B', unit_scale=True, unit_divisor=1024, desc=os.path.basename(filepath)) as t:
-            def download_callback(blocks, block_size, total_size, bar_function):
-                t.update_progress(blocks, block_size, total_size)
-            wget.callback_progress = download_callback
-            wget.download(url, filepath, wget.bar_adaptive)
+        #with tqdmWget(unit='B', unit_scale=True, unit_divisor=1024, desc=os.path.basename(filepath)) as t:
+        #    def download_callback(blocks, block_size, total_size, bar_function):
+        #        t.update_progress(blocks, block_size, total_size)
+        #    wget.callback_progress = download_callback
+        #    wget.download(url, filepath, wget.bar_adaptive)
+        download_file(url, output_path=filepath, overwrite=True)
 
     except Exception as e:
         # print(str(e))
@@ -222,10 +228,8 @@ def download_url_wget(url, filepath, filesize=None, desc=None, fail=None):
         if not os.path.exists(wget_exe_path):
             wget_exe_path = "..\\python\\tools\\wget\\wget.exe"
 
-        wget_url = "https://eternallybored.org/misc/wget/releases/wget-1.21.4-winarm64.zip"
-
         if not os.path.exists(wget_exe_path):
-            print(f"wget.exe not found. Please download it manually from '{wget_url}' and unzip it to '{wget_exe_path}'")
+            print(f"wget.exe not found. Please download it manually from '{WGET_URL}' and unzip it to '{wget_exe_path}'")
             return
 
         command = f'"{wget_exe_path}" --no-check-certificate -q --show-progress --continue -P "{path}" -O "{filepath}" {url}'
@@ -315,27 +319,47 @@ def run_uninstall_pip(command, desc=None, live=False):
 
 def install_tools():
     tool_path = "tools"
+
+    os.makedirs(tool_path, exist_ok=True)
+
+    # install wget.exe
     wget_path = tool_path + "\\wget"
     wget_zip_path = tool_path + "\\wget.zip"
     wget_exe_path = wget_path + "\\wget.exe"
+    if not os.path.exists(wget_exe_path):
+        fail = f"Failed to download tool from '{WGET_URL}'. Please download it manually and unzip it to '{tool_path}'. " + TEXT_RUN_SCRIPT_AGAIN
+        desc = f"Downloading '{WGET_URL}' to {wget_path}"
+        ret = download_url_pywget(WGET_URL, wget_zip_path, desc=desc, fail=fail)
+        if not ret:
+            exit()
+        print(f"Install 'wget.exe' to {wget_exe_path}")
+        with zipfile.ZipFile(wget_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(wget_path)
+            print()
 
-    if os.path.exists(wget_exe_path):
-        return
+    # install aria2c.exe
+    aria2c_path = tool_path + "\\aria2c"
+    aria2c_zip_path = tool_path + "\\aria2c.zip"
+    aria2c_exe_path = aria2c_path + "\\aria2c.exe"
+    if not os.path.exists(aria2c_exe_path):
+        fail = f"Failed to download tool from '{ARIA2C_URL}'. Please download it manually and unzip it to '{tool_path}'. " + TEXT_RUN_SCRIPT_AGAIN
+        desc = f"Downloading '{ARIA2C_URL}' to {aria2c_path}"
+        ret = download_url_pywget(ARIA2C_URL, aria2c_zip_path, desc=desc, fail=fail)
+        if not ret:
+            exit()
+        print(f"Install 'aria2c.exe' to {aria2c_exe_path}")
+        with zipfile.ZipFile(aria2c_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(aria2c_path)
+            print()
 
-    url = "https://eternallybored.org/misc/wget/releases/wget-1.21.4-winarm64.zip"
-    fail = f"Failed to download tool from '{url}'. Please download it manually and unzip it to '{tool_path}'. " + TEXT_RUN_SCRIPT_AGAIN
-    desc = f"Downloading '{url}' to {wget_path}"
-
-    os.makedirs(tool_path, exist_ok=True)
-    
-    ret = download_url_pywget(url, wget_zip_path, desc=desc, fail=fail)
-    if not ret:
-        exit()
-    
-    print(f"Install 'wget.exe' to {wget_exe_path}")
-    with zipfile.ZipFile(wget_zip_path, 'r') as zip_ref:
-        zip_ref.extractall(wget_path)
-        print()
+        # Move all files from subdirectories to aria2c_path.
+        for root, dirs, files in os.walk(aria2c_path):
+            if root == aria2c_path:
+                continue
+            for file in files:
+                src = os.path.join(root, file)
+                dst = os.path.join(aria2c_path, file)
+                shutil.move(src, dst)
 
 
 def install_clean(directory, zip_name):
@@ -354,7 +378,8 @@ def setup_qai_env(version, lib_arch = DEFAULT_LIB_ARCH, dsp_arch = DEFAULT_DSP_A
         SDK_lib_dir = qnn_root_path + "\\lib\\" + lib_arch
         SDK_hexagon_dir = qnn_root_path + "\\lib\\hexagon-v{}\\unsigned".format(dsp_arch)
 
-        os.makedirs(qnn_libs_dir, exist_ok=True)
+        if not os.path.exists(qnn_libs_dir):
+            os.makedirs(qnn_libs_dir, exist_ok=True)
 
         libs = [
             "QnnHtp.dll",
@@ -379,6 +404,48 @@ def setup_qai_env(version, lib_arch = DEFAULT_LIB_ARCH, dsp_arch = DEFAULT_DSP_A
                 os.remove(os.path.join(qnn_libs_dir, lib))
             shutil.copy(os.path.join(SDK_hexagon_dir, lib), qnn_libs_dir)
 
+
+def install_qai_runtime(version, lib_arch = DEFAULT_LIB_ARCH, dsp_arch = DEFAULT_DSP_ARCH, qnn_libs_dir="qai_libs"):
+    if version in qnn_sdk_version:
+        ret = True
+
+        zip_name = f"QAIRT_Runtime_{version}_v{dsp_arch}.zip"
+        url = f"https://github.com/quic/ai-engine-direct-helper/releases/download/v{version}.0/" + zip_name
+        qnn_zip_path = os.path.join(qnn_libs_dir, zip_name)
+
+        if not os.path.exists(qnn_libs_dir):
+            os.makedirs(qnn_libs_dir, exist_ok=True)
+
+        desc = f"Downloading QAIRT runtime libraries to {qnn_libs_dir}\n"\
+               f"If the downloading speed is too slow, please download it manually from below link and copy it to path {qnn_libs_dir}." + TEXT_RUN_SCRIPT_AGAIN + f"\n{url}"
+        fail = f"Failed to download file from {url}: \n\t1. Please try again a few times.\n\t2. If still doesn't work, please try to download it manually"\
+               f" from {url} and copy it to path {qnn_libs_dir}. " + TEXT_RUN_SCRIPT_AGAIN
+
+        if not os.path.exists(qnn_zip_path):
+            print(desc)
+            ret = download_url(url, qnn_zip_path, desc=desc, fail=fail)
+
+        if not ret:
+            exit()
+
+        print(f"Install QAIRT runtime libraries to '{qnn_libs_dir}'")
+        with zipfile.ZipFile(qnn_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(qnn_libs_dir)
+    
+        src_dir = qnn_libs_dir + "/" + lib_arch
+        for filename in os.listdir(src_dir):
+            src_file = os.path.join(src_dir, filename)
+            if os.path.isfile(src_file):
+                shutil.copy2(src_file, qnn_libs_dir)
+
+        print(f"Install QAIRT runtime libraries to '{qnn_libs_dir}' successfully.")
+
+        return qnn_zip_path
+    else:
+        keys_list = list(qnn_sdk_version.keys())
+        print("Supported versions are:")
+        print(keys_list)
+        return None
 
 def install_qai_sdk(version):
     if version in qnn_sdk_version:

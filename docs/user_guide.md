@@ -1,12 +1,30 @@
 # User Guide
 
+## Disclaimer
+This software is provided “as is,” without any express or implied warranties. The authors and contributors shall not be held liable for any damages arising from its use. The code may be incomplete or insufficiently tested. Users are solely responsible for evaluating its suitability and assume all associated risks. <br>
+Note: Contributions are welcome. Please ensure thorough testing before deploying in critical systems.
+
 ## Environment Setup
 
-### 1. Libraries from QNN SDK:
+### Qualcomm® AI Runtime SDK
 
-<b>We need below libraries from QNN SDK for using AppBuilder on Snapdragon X Elite(Windows on Snapdragon device):</b>
+Qualcomm® AI Runtime SDK is designed to provide unified, low-level APIs for AI development. It can be downloaded from Qualcomm software center:<br>
+https://softwarecenter.qualcomm.com/#/catalog/item/Qualcomm_AI_Runtime_SDK <br>
+Or from QPM [this option expected to be deprecated soon]<br>
+https://qpm.qualcomm.com/#/main/tools/details/Qualcomm_AI_Runtime_SDK
 
-If use x64 Python, use the libraries below from QNN SDK:
+### 1. Libraries from Qualcomm® AI Runtime SDK:
+
+<b>We need below libraries from Qualcomm® AI Runtime SDK for using AppBuilder on Snapdragon X Elite(Windows on Snapdragon device).</b><br>
+
+<a href="https://github.com/quic/ai-engine-direct-helper/blob/main/docs/user_guide.md"><img src="https://img.shields.io/badge/Note: - Windows on Snapdragon (WoS) device support running X86, X64, ARM64EC and ARM64 applications.-important"></a> <br>
+*Note: For X64 and [ARM64EC](https://learn.microsoft.com/en-us/windows/arm/arm64ec) program, use the libraries under the folder 'arm64x-windows-msvc'; for ARM64 program, use the libraries under the folder 'aarch64-windows-msvc'.* <br>
+
+We have 2 options to get these runtime libraries:
+1. Download [QAIRT Runtime](https://github.com/quic/ai-engine-direct-helper/releases/download/v2.34.0/QAIRT_Runtime_2.34_v73.zip) and extract the dependency libraries to app folder.
+2. Install [Qualcomm® AI Runtime SDK](https://softwarecenter.qualcomm.com/#/catalog/item/Qualcomm_AI_Runtime_SDK) and copy the dependency libraries to app folder. <br>
+
+If use x64 Python, use the libraries below from Qualcomm® AI Runtime SDK:
 ```
 C:\Qualcomm\AIStack\QAIRT\{SDK Version}\lib\arm64x-windows-msvc\QnnHtp.dll  (backend for running model on HTP)
 C:\Qualcomm\AIStack\QAIRT\{SDK Version}\lib\arm64x-windows-msvc\QnnCpu.dll  (backend for running model on CPU)
@@ -17,7 +35,7 @@ C:\Qualcomm\AIStack\QAIRT\{SDK Version}\lib\hexagon-v73\unsigned\libQnnHtpV73Ske
 C:\Qualcomm\AIStack\QAIRT\{SDK Version}\lib\hexagon-v73\unsigned\libqnnhtpv73.cat
 ```
 
-If use ARM64 Python, use the libraries below from QNN SDK(ARM64 Python has better performance in Snapdragon X Elite platform):
+If use ARM64 Python, use the libraries below from Qualcomm® AI Runtime SDK(ARM64 Python has better performance in Snapdragon X Elite platform):
 ```
 C:\Qualcomm\AIStack\QAIRT\{SDK Version}\lib\aarch64-windows-msvc\QnnHtp.dll  (backend for running model on HTP)
 C:\Qualcomm\AIStack\QAIRT\{SDK Version}\lib\aarch64-windows-msvc\QnnCpu.dll  (backend for running model on CPU)
@@ -32,12 +50,12 @@ We can copy these libraries to one folder. E.g.: ```C:\<Project Name>\qnn\``` <b
 * [python.md](python.md) can help setup the x64 Python environment automatically.
 * In WoS platform, ARM64 Python has better performance, but some Python extensions such as 'PyTorch' don't work for ARM64 Python today. For detailed help information on how to setup environment for using ARM64 Python, you can refer to [python_arm64.md](python_arm64.md)
 
-## API from AppBuilder Python binding extension for Python projects.<br>
+### 2. API from AppBuilder Python binding extension for Python projects.<br>
 There're several Python classes from this extension:
 - QNNContext - The context of QNN model, used to initialize the QNN model, run the inference and destroy the model resource.
 - QNNContextProc - It's similar with QNNContext but support load the model into a separate processes. [*Depress*]
 - QNNShareMemory - It's used to create processes share memory while using *QNNContextProc*.
-- QNNConfig - It's for configuring  QNN SDK libraries path, runtime(CPU/HTP), log leverl, profiling level.
+- QNNConfig - It's for configuring  Qualcomm® AI Runtime SDK libraries path, runtime(CPU/HTP), log leverl, profiling level.
 - PerfProfile - Set the HTP perf profile.
 ## Sample Code(Python)
 
@@ -82,7 +100,7 @@ PerfProfile.RelPerfProfileGlobal()
 del(text_encoder)
 ```
 
-## API from 'libappbuilder.dll' for C++ projects.
+### 3. API from 'libappbuilder.dll' for C++ projects.
 
 ##### bool LibAppBuilder::ModelInitialize(...) <br>
 *std::string model_name*: Model name such as "unet", "text_encoder", "controlnet_canny". Model name must be unique for different model files. <br>

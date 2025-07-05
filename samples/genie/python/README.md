@@ -1,7 +1,24 @@
-# README
+<br>
+
+<div align="center">
+  <h3>Run the large language model on the local NPU.</h3>
+  <p><i> OpenAI Compatible API Service (Python) </i></p>
+</div>
+<br>
+
+## Disclaimer
+This software is provided “as is,” without any express or implied warranties. The authors and contributors shall not be held liable for any damages arising from its use. The code may be incomplete or insufficiently tested. Users are solely responsible for evaluating its suitability and assume all associated risks. <br>
+Note: Contributions are welcome. Please ensure thorough testing before deploying in critical systems.
 
 ## Introduction 
 This sample helps developers use QAI AppBuilder + Python to build Genie based Open AI compatibility API service on Windows on Snapdragon (WoS) platform.
+
+## Features
+• Support both stream and none stream mode <br> 
+• Support tools call [*NEW!*] <br> 
+• Support enable/disable thinking mode [*NEW!*] <br> 
+• Support switching between models <br>
+• Support to extend the use of your own model <br>
 
 ## Setting Up Environment For Service:
 
@@ -11,7 +28,7 @@ Refer to [python.md](../../../docs/python.md) on how to setup x64 version Python
 ### Step 2: Install basic Python dependencies for service
 Run following commands in Windows terminal:
 ```
-pip install uvicorn pydantic_settings fastapi langchain langchain_core langchain_community sse_starlette pypdf python-pptx docx2txt openai
+pip install uvicorn pydantic_settings fastapi langchain langchain_core langchain_community sse_starlette pypdf python-pptx docx2txt openai json-repair
 ```
 
 ### Step 3: Download models and tokenizer files
@@ -39,7 +56,7 @@ cd ai-engine-direct-helper\samples
 ### Step 5: Run service
 Run the following commands to launch Genie API Service (Do *not* close this terminal window while service is running)
 ```
-python genie\python\GenieAPIService.py --modelname "IBM-Granite-v3.1-8B" --loadmodel
+python genie\python\GenieAPIService.py --modelname "IBM-Granite-v3.1-8B" --loadmodel --profile
 ```
 The service prints the following log, indicating that GenieAPIService started successfully.
 ```
@@ -52,6 +69,14 @@ INFO:     Started service process [7608]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8910 (Press CTRL+C to quit)
+```
+#### More parameters: <br>
+--all-text: Output all text includes tool calls text. Disabled by default.<br>
+--enable-thinking: Enable thinking mode. Disabled by default.<br>
+*. It is recommended to disable thinking mode when using the tools call function.<br>
+*. You can refer to [GenieAPIClientTools.py](../python/GenieAPIClientTools.py) on how to use tools call.<br>
+```
+python genie\python\GenieAPIService.py --modelname "Qwen3.0-8B-v31" --loadmodel --profile --all-text --enable-thinking
 ```
 
 ### Step 6: Now you can access the API service
@@ -67,6 +92,16 @@ python genie\python\GenieAPIClientImage.py --prompt "spectacular view of norther
 ```
 * When you run the client, you can see the current status of processing client requests from the service terminal window. 
 * When you run the request of image generation for the first time, the service may have to download the Stable Diffusion model from AI-Hub, and it will take a long time.
+
+### Sample List:
+|  Sample   | Description  |
+|  ----  | :----    |
+| GenieAPIClient.py | A client sample code to call GenieAPIService to generate text. |
+| GenieAPIClientTools.py | A client sample code to make tool call to GenieAPIService. |
+| GenieAPIClientImage.py * | A client sample code to call GenieAPIService to generate image. |
+| GenieSample.py  | Use GenieContext to load and run the LLM model in local process.|
+
+*. Image generation is only supported in the Python version of GenieAPIService. <br>
 
 ### AI-Hub LLM models:
 

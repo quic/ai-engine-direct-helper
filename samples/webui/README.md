@@ -1,9 +1,20 @@
-# README
+<br>
+
+<div align="center">
+  <h3>Run the WebUI AI application locally on NPU.</h3>
+  <p><i> SIMPLE | EASY | FAST </i></p>
+</div>
+<br>
+
+## Disclaimer
+This software is provided “as is,” without any express or implied warranties. The authors and contributors shall not be held liable for any damages arising from its use. The code may be incomplete or insufficiently tested. Users are solely responsible for evaluating its suitability and assume all associated risks. <br>
+Note: Contributions are welcome. Please ensure thorough testing before deploying in critical systems.
 
 ## Introduction 
 These samples helps developers use QAI AppBuilder + Python Gradio extension to build *WebUI* AI apps on Windows on Snapdragon (WoS) platforms.
 
 ## Setting Up Environment For WebUI Apps:
+You can also run the batch file from [QAI AppBuilder Launcher](../../tools/launcher/) to setup the environment automatically.
 
 ### Step 1: Install basic dependencies
 Refer to [python.md](../../docs/python.md) on how to setup x64 version Python environment.
@@ -11,7 +22,7 @@ Refer to [python.md](../../docs/python.md) on how to setup x64 version Python en
 ### Step 2: Install basic Python dependencies for WebUI
 Run below commands in Windows terminal:
 ```
-pip install gradio
+pip install gradio qai_hub_models huggingface_hub Pillow numpy opencv-python torch torchvision torchaudio transformers diffusers
 ```
 
 ### Step 3: Switch to samples directory:
@@ -21,17 +32,17 @@ cd ai-engine-direct-helper\samples
 ```
 
 ### Step 4: Run WebUI Apps:
-Run the commands in below table to start WebUI apps.
+Run the commands in below table to start WebUI apps. <br>
+You can also launch them by double-clicking the corresponding batch files: start_ImageRepairApp.bat, start_StableDiffusionApp.bat and start_GeneWebUI.bat
 
 ### WebUI App List:
 
-|  Model   | Command  |
+|  App   | Command  |
 |  ----  | :----    |
 | ImageRepairApp | python webui\ImageRepairApp.py |
 | StableDiffusionApp * | python webui\StableDiffusionApp.py |
 | GenieWebUI ** | python webui\GenieWebUI.py |
 
-*. Refer to here to [setup Stable Diffusion v2.1 models](../python/README.md) before run 'GenieWebUI.py'. <br>
 *. StableDiffusionApp only support English prompt.<br>
 **. Refer to step 3 here to [setup LLM models](../genie/python/README.md) before run 'GenieWebUI.py'.<br>
 

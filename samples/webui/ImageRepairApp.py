@@ -17,6 +17,9 @@ import gradio as gr
 
 ####################################################################
 
+HOST="0.0.0.0"
+PORT=8977
+
 IMAGE_PATH = "images/"
 IMAGE_OLD = IMAGE_PATH + "old.jpeg"
 IMAGE_NEW = IMAGE_PATH + "new.jpeg"
@@ -344,8 +347,8 @@ def image_repair():
 if __name__ == '__main__':
 
     with gr.Blocks(head=headjs, css=css, theme=gr.themes.Glass(), fill_width=True, fill_height=True) as demo:
-        demo.title = "图片修复应用"
-        #gr.HTML("""<h1 align="center">图片修复应用</h1>""")
+        demo.title = "Image Repair App"
+        #gr.HTML("""<h1 align="center">Image Repair App</h1>""")
         gr.set_static_paths(paths=[IMAGE_PATH])
 
         image_gr = None
@@ -353,18 +356,18 @@ if __name__ == '__main__':
 
         with gr.Row():
             with gr.Column(scale=1):
-                with gr.Tab("图片修复"):
+                with gr.Tab("Image Repair"):
                     with gr.Row():
                         with gr.Column(scale=1, visible=True):
                             image_gr = gr.Image(type="filepath", sources=['upload', 'clipboard', 'webcam'], width=256, height=256, elem_classes="radio-group", format="jpeg",
-                                                label="选择图片", scale=1, interactive=True, show_label=True, show_download_button=True)
+                                                label="Select Image", scale=1, interactive=True, show_label=True, show_download_button=True)
 
-                            #outpath_gr = gr.Button("选择输出文件夹", elem_classes="button")
+                            #outpath_gr = gr.Button("Output Folder", elem_classes="button")
                             #outpath_gr.click(directory_select)
 
-                            reapir_gr = gr.Button("修复图片 🚀️ ", elem_classes="button")
+                            reapir_gr = gr.Button("Repair Picture 🚀️ ", elem_classes="button")
 
-                            imagesave_gr = gr.Button("保存图片 💿 ", elem_classes="button")
+                            imagesave_gr = gr.Button("Save Picture 💿 ", elem_classes="button")
                             imagesave_gr.click(image_save)
 
                     with gr.Row():
@@ -406,4 +409,4 @@ if __name__ == '__main__':
 
     real_esrgan.Init()
 
-    demo.queue().launch(share=False, inbrowser=True)
+    demo.queue().launch(server_name=HOST, share=False, inbrowser=True, server_port=PORT)
