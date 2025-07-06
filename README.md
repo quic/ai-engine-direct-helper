@@ -49,7 +49,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Plenty of sample code <br>
 
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu). <br>
-** Support OpenAI Compatible API Service([GenieAPIService](samples/genie/c++/README.md#run-the-service-on-mobilesnapdragon-8-elite-mobile-device-)) on WoS, Android and Linux.
+** Support OpenAI Compatible API Service([GenieAPIService](samples/genie/c++/README.md)) on WoS, Android and Linux.
 
 ## Diagram
 <br>
