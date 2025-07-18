@@ -33,6 +33,11 @@ QAI AppBuilder is designed to help developers easily use the Qualcomm® AI Runti
 ## QAI AppBuilder Launcher
 We provide a wealth of samples to help you quickly explore the features of QAI AppBuilder. For some key examples, we also offer scripts to assist in setting up the relevant environment efficiently. You can learn how to use these scripts through [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities within an hour.
 
+## Blog
+[大语言模型系列(1): 3分钟上手，在骁龙AI PC上部署DeepSeek!](https://blog.csdn.net/csdnsqst0050/article/details/149425691) <br>
+[Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
+[Qwen2.5 3B 使用教程](https://www.aidevhome.com/?id=36) <br>
+
 ## Advantage
 
 Developers can use QAI AppBuilder in both C++ and Python projects <br>
@@ -92,6 +97,15 @@ We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [
 
 ### 2. QAI AppBuilder Launcher
 We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities of QAI AppBuilder within an hour.
+
+## Thrid Party App List
+[stable-diffusion-webui Extension](https://github.com/quic/wos-ai-plugins/tree/main/plugins/stable-diffusion-webui/qairt_accelerate) <br>
+[Blender ControlNet Plugin](https://github.com/quic/wos-ai-plugins/tree/main/plugins/blender/SnapdragonImageGeneration) <br>
+[无痕修图软件](https://www.aidevhome.com/?id=30) <br>
+[图片超分器](https://www.aidevhome.com/?id=5) <br>
+[图片消除器](https://www.aidevhome.com/?id=4) <br>
+[图片超分应用](https://www.aidevhome.com/?id=37) <br>
+[图片搜索应用](https://www.aidevhome.com/?id=31) <br>
 
 ## QAI AppBuilder Components
 There're two ways to use QAI AppBuilder:
