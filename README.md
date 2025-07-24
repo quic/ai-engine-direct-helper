@@ -79,7 +79,7 @@ You can run WebUI AI applications througn the batch file [3.Start_WebUI.bat](too
 | StableDiffusionApp  | A text-to-image generation tool that creates images based on user input. |
 | GenieWebUI  | A large language model (LLM) interface that enables interactive conversations.|
 
-## OpenAI Compatible API Service (GenieLLMService):<br>
+## OpenAI Compatible API Service (GenieAPIService):<br>
 Considering that the current mainstream method for invoking LLMs is based on OpenAI-compatible APIs, we have implemented such interfaces in both C++ and Python. This allows application developers to interact with the local large language model running on NPU in a familiar way. <br>
 Many third-party applications that support the OpenAI API can seamlessly switch to the local NPU-based model by simply changing the API IP endpoint. <br>
 We have also implemented the client sample code of Genie API Service through both C++ and Python for the reference of developers.
