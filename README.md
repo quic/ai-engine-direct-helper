@@ -103,8 +103,9 @@ We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experienc
 [Blender ControlNet Plugin](https://github.com/quic/wos-ai-plugins/tree/main/plugins/blender/SnapdragonImageGeneration) <br>
 [无痕修图软件](https://www.aidevhome.com/?id=30) <br>
 [图片超分器](https://www.aidevhome.com/?id=5) <br>
-[图片消除器](https://www.aidevhome.com/?id=4) <br>
 [图片超分应用](https://www.aidevhome.com/?id=37) <br>
+[视频超分应用](https://www.aidevhome.com/?id=44) <br>
+[图片消除器](https://www.aidevhome.com/?id=4) <br>
 [图片搜索应用](https://www.aidevhome.com/?id=31) <br>
 
 ## QAI AppBuilder Components
