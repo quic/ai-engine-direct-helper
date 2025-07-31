@@ -98,6 +98,15 @@ We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [
 ### 2. QAI AppBuilder Launcher
 We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities of QAI AppBuilder within an hour.
 
+## Models
+### Model Hub
+[AI Hub](https://aihub.qualcomm.com/compute/models) <br>
+[AI Dev Home](https://www.aidevhome.com/data/models/) <br>
+
+### LLM Models
+[Qwen2 7B SSD](https://www.aidevhome.com/data/adh2/models/8380/qwen2_7b_ssd_250702.html) <br>
+[DeepSeek-R1-Distill-Qwen-7B](https://aiot.aidlux.com/zh/models/detail/78) <br>
+
 ## Thrid Party App List
 [stable-diffusion-webui Extension](https://github.com/quic/wos-ai-plugins/tree/main/plugins/stable-diffusion-webui/qairt_accelerate) <br>
 [Blender ControlNet Plugin](https://github.com/quic/wos-ai-plugins/tree/main/plugins/blender/SnapdragonImageGeneration) <br>
