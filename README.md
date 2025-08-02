@@ -98,6 +98,9 @@ We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [
 ### 2. QAI AppBuilder Launcher
 We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities of QAI AppBuilder within an hour.
 
+### 3. DLC2BIN
+[DLC2BIN](./tools/convert/dlc2bin/) is a guide to help you convert the general DLC model format into the BIN format optimized for a specific platform.
+
 ## Models
 ### Model Hub
 [AI Hub](https://aihub.qualcomm.com/compute/models) <br>
