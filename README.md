@@ -35,6 +35,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 
 ## Blog
 [大语言模型系列(1): 3分钟上手，在骁龙AI PC上部署DeepSeek!](https://blog.csdn.net/csdnsqst0050/article/details/149425691) <br>
+[大语言模型系列(2): 本地 OpenAI 兼容 API 服务的配置与部署](https://blog.csdn.net/csdnsqst0050/article/details/150208814) <br>
 [Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
 [Qwen2.5 3B 使用教程](https://www.aidevhome.com/?id=36) <br>
 
@@ -88,7 +89,7 @@ We have also implemented the client sample code of Genie API Service through bot
 2. [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatible API services developed with C++.<br>
 
 ## Samples
-We have many [samples](samples/python/README.md) which can be run directly. The models used in these samples are from [AI-Hub](https://aihub.qualcomm.com/compute/models).<br>
+We have many [Python](samples/python/README.md) and [C++](samples/c++/) samples which can be run directly. The models used in these samples are from [AI-Hub](https://aihub.qualcomm.com/compute/models).<br>
 *We suggest that you try to run these sample code before you actually start writing your own code.*<br>
 
 ## Tools
