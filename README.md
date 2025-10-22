@@ -39,6 +39,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [QAI AppBuilder on Linux (QCS6490)](https://docs.radxa.com/en/dragon/q6a/app-dev/npu-dev/qai-appbuilder) <br>
 [Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
 [Qwen2.5 3B 使用教程](https://www.aidevhome.com/?id=36) <br>
+[GenieChat：使用 Genie API 构建 LLM 驱动的安卓应用](https://www.aidevhome.com/?id=50) <br>
 
 ## Advantage
 
