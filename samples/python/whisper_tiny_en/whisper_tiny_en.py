@@ -32,6 +32,7 @@ from qai_hub_models.models._shared.whisper.model import (
 )
 
 from qai_appbuilder import (QNNContext, Runtime, LogLevel, ProfilingLevel, PerfProfile, QNNConfig)
+from pathlib import Path
 
 ####################################################################
 
@@ -48,22 +49,22 @@ JFK_WAV_PATH_URL = "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-
 JFK_NPZ_PATH_URL = "https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/whisper_asr_shared/v1/audio/jfk.npz"
 ####################################################################
 
-execution_ws = os.getcwd()
-qnn_dir = execution_ws + "\\qai_libs"
+execution_ws = Path(os.getcwd())
+qnn_dir = execution_ws / "qai_libs"
 
-if not "python" in execution_ws:
-    execution_ws = execution_ws + "\\" + "python"
+if not "python" in str(execution_ws):
+    execution_ws = execution_ws / "python"
 
-if not MODEL_NAME in execution_ws:
-    execution_ws = execution_ws + "\\" + MODEL_NAME
+if not MODEL_NAME in str(execution_ws):
+    execution_ws = execution_ws / MODEL_NAME
 
-model_dir = execution_ws + "\\models"
-encoder_model_path = model_dir + "\\" + ENCODER_MODEL_NAME + ".bin"
-decoder_model_path = model_dir + "\\" + DECODER_MODEL_NAME + ".bin"
+model_dir = execution_ws / "models"
+encoder_model_path = model_dir / "{}.bin".format(ENCODER_MODEL_NAME)
+decoder_model_path = model_dir / "{}.bin".format(DECODER_MODEL_NAME)
 
-jfk_wav_path = execution_ws + "\\jfk.wav"
-jfk_npz_path = execution_ws + "\\jfk.npz"
-mel_filter_path= execution_ws+"\\mel_filters.npz"
+jfk_wav_path = execution_ws / "jfk.wav"
+jfk_npz_path = execution_ws / "jfk.npz"
+mel_filter_path= execution_ws / "mel_filters.npz"
 ####################################################################
 
 
@@ -257,12 +258,12 @@ def Init():
     whisper_tiny_en =WhisperTinyEn.from_pretrained() 
 
     # Config AppBuilder environment.
-    QNNConfig.Config(qnn_dir, Runtime.HTP, LogLevel.WARN, ProfilingLevel.BASIC)
+    QNNConfig.Config(str(qnn_dir), Runtime.HTP, LogLevel.WARN, ProfilingLevel.BASIC)
 
     # Instance for Decoder 
-    decoder = Decoder("whisper_decoder", decoder_model_path)
+    decoder = Decoder("whisper_decoder", str(decoder_model_path))
         # Instance for Encoder 
-    encoder = Encoder("whisper_encoder", encoder_model_path)
+    encoder = Encoder("whisper_encoder", str(encoder_model_path))
 
 
 
@@ -270,7 +271,7 @@ def Init():
 
 def Inference(audio_path):
     # Read and preprocess the audio.
-    audio, audio_sample_rate = a2n.audio_from_file(audio_path)
+    audio, audio_sample_rate = a2n.audio_from_file(str(audio_path))
 
     # Burst the HTP.
     PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
@@ -528,7 +529,7 @@ def main():
     parser.add_argument(
         "--audio_file",
         type=str,
-        default=execution_ws+"\\jfk.wav",
+        default=execution_ws / "jfk.wav",
         help="Audio file path ",
     )
     args = parser.parse_args()
