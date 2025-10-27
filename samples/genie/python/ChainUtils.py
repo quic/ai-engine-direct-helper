@@ -495,7 +495,7 @@ def main():
     print("[main ChainUtils.py]")
 
     prompt = "hello"
-    model_name = "Qwen2.0-7B-AR32-v29"
+    model_name = "IBM-Granite-v3.1-8B"
     llm = GenieLLM() # callback_manager=callback_manager
     llm.init(model_name=model_name)
 

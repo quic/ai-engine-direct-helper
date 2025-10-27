@@ -24,7 +24,7 @@
         },
         "tokenizer": {
             "version": 1,
-            "path": "genie\\python\\models\\IBM-Granite-v3.1-8B\\tokenizer.json"
+            "path": "genie/python/models/IBM-Granite-v3.1-8B/tokenizer.json"
         },
         "engine": {
             "version": 1,
@@ -42,7 +42,7 @@
                     "kv-dim": 128,
                     "allow-async-init": false
                 },
-                "extensions": "genie\\python\\config\\htp_backend_ext_config.json"
+                "extensions": "genie/python/config/htp_backend_ext_config.json"
             },
             "model": {
                 "version": 1,
@@ -50,11 +50,11 @@
                 "binary": {
                     "version": 1,
                     "ctx-bins": [
-                        "genie\\python\\models\\IBM-Granite-v3.1-8B\\weight_sharing_model_1_of_5.serialized.bin",
-                        "genie\\python\\models\\IBM-Granite-v3.1-8B\\weight_sharing_model_2_of_5.serialized.bin",
-                        "genie\\python\\models\\IBM-Granite-v3.1-8B\\weight_sharing_model_3_of_5.serialized.bin",
-                        "genie\\python\\models\\IBM-Granite-v3.1-8B\\weight_sharing_model_4_of_5.serialized.bin",
-                        "genie\\python\\models\\IBM-Granite-v3.1-8B\\weight_sharing_model_5_of_5.serialized.bin"
+                        "genie/python/models/IBM-Granite-v3.1-8B/weight_sharing_model_1_of_5.serialized.bin",
+                        "genie/python/models/IBM-Granite-v3.1-8B/weight_sharing_model_2_of_5.serialized.bin",
+                        "genie/python/models/IBM-Granite-v3.1-8B/weight_sharing_model_3_of_5.serialized.bin",
+                        "genie/python/models/IBM-Granite-v3.1-8B/weight_sharing_model_4_of_5.serialized.bin",
+                        "genie/python/models/IBM-Granite-v3.1-8B/weight_sharing_model_5_of_5.serialized.bin"
                     ]
                 },
                 "positional-encoding": {
