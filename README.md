@@ -33,7 +33,7 @@ QAI AppBuilder is designed to help developers easily use the Qualcomm® AI Runti
 ## QAI AppBuilder Launcher
 We provide a wealth of samples to help you quickly explore the features of QAI AppBuilder. For some key examples, we also offer scripts to assist in setting up the relevant environment efficiently. You can learn how to use these scripts through [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities within an hour.
 
-## Blog & documentation
+## Blog & Documentation
 [QAI_AppBuilder: 让本地 AI 部署触手可及！](https://docs.qualcomm.com/bundle/publicresource/80-94755-1_REV_AA_QAI_AppBuilder_-_WoS.pdf) <br>
 [大语言模型系列(1): 3分钟上手，在骁龙AI PC上部署DeepSeek!](https://blog.csdn.net/csdnsqst0050/article/details/149425691) <br>
 [大语言模型系列(2): 本地 OpenAI 兼容 API 服务的配置与部署](https://blog.csdn.net/csdnsqst0050/article/details/150208814) <br>
