@@ -37,6 +37,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [QAI_AppBuilder: 让本地 AI 部署触手可及！](https://docs.qualcomm.com/bundle/publicresource/80-94755-1_REV_AA_QAI_AppBuilder_-_WoS.pdf) <br>
 [大语言模型系列(1): 3分钟上手，在骁龙AI PC上部署DeepSeek!](https://blog.csdn.net/csdnsqst0050/article/details/149425691) <br>
 [大语言模型系列(2): 本地 OpenAI 兼容 API 服务的配置与部署](https://blog.csdn.net/csdnsqst0050/article/details/150208814) <br>
+[高通平台大语言模型精选](https://www.aidevhome.com/?id=51) <br>
 [QAI AppBuilder on Linux (QCS6490)](https://docs.radxa.com/en/dragon/q6a/app-dev/npu-dev/qai-appbuilder) <br>
 [Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
 [Qwen2.5 3B 使用教程](https://www.aidevhome.com/?id=36) <br>
