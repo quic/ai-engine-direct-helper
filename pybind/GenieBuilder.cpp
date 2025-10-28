@@ -391,6 +391,6 @@ PYBIND11_MODULE(geniebuilder, m) {
         .def("GetProfile", &GenieContext::GetProfile)
         .def("TokenLength", &GenieContext::TokenLength)
         .def("SetStopSequence", &GenieContext::SetStopSequence)
-        .def("Stop", &GenieContext::Stop);
-		.def("SetLora", &GenieContext::SetLora);
+        .def("Stop", &GenieContext::Stop)
+	.def("SetLora", &GenieContext::SetLora);
 }
