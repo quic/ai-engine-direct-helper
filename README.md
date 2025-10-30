@@ -106,6 +106,9 @@ We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experienc
 ### 3. DLC2BIN
 [DLC2BIN](./tools/convert/dlc2bin/) is a guide to help you convert the general DLC model format into the BIN format optimized for a specific platform.
 
+### 4. ONNX2BIN
+[ONNX2BIN](./tools/convert/onnx2bin/) is a guide to help you convert the ONNX model format into the BIN format optimized for a specific platform.
+
 ## Models
 ### Model Hub
 [AI Hub](https://aihub.qualcomm.com/compute/models) <br>
