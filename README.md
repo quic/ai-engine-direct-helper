@@ -10,7 +10,7 @@
   <h3>A simple way to build AI application based on Qualcomm® AI Runtime SDK.</h3>
   <p><i> SIMPLE | EASY | FAST </i></p>
   <a href="https://github.com/quic/ai-engine-direct-helper"><img src="https://img.shields.io/github/stars/quic/ai-engine-direct-helper" alt="stars"></a>
-  <a href="https://github.com/quic/ai-engine-direct-helper/releases/tag/v2.38.0"><img src="https://img.shields.io/badge/Release-v1.0.0-green" alt="Release"></a>
+  <a href="https://github.com/quic/ai-engine-direct-helper/releases/tag/v2.38.0"><img src="https://img.shields.io/badge/Release-v2.0.0-green" alt="Release"></a>
   <a href="https://opensource.org/license/BSD-3-clause"><img src="https://img.shields.io/badge/License-BSD--3--Clause-blue" alt="License: BSD 3-Clause"></a>
   <a href="https://www.python.org/downloads/windows/"><img src="https://img.shields.io/badge/Python-00599C?logo=Python" alt="Python"></a>
   <a href="https://en.cppreference.com/w/cpp/compiler_support"><img src="https://img.shields.io/badge/C++-999999?logo=c%2B%2B" alt="C++"></a>
@@ -51,8 +51,9 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 • Support both C++ & Python <br>
 • Support both Windows & Linux <br>
-• Support Genie(Large Language Model) [*NEW!*] <br>
-• Support Multi Graph [*NEW!*] <br>
+• Support Genie(Large Language Model) <br>
+• Support LLM on both CPU & NPU [*NEW!*] <br>
+• Support Multi Graph <br>
 • Support LoRA <br> 
 • Support multiple models <br>
 • Support multiple inputs & outputs <br>
