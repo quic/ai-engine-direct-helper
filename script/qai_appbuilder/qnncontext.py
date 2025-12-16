@@ -121,7 +121,7 @@ class QNNConfig():
                log_path : str = "None"
     ):
         global g_backend_lib_path, g_system_lib_path
-
+        qnn_lib_path = ""
         if not os.path.exists(qnn_lib_path):
             base_path = os.path.dirname(os.path.abspath(__file__))
             qnn_lib_path = base_path + "/libs"
@@ -373,3 +373,4 @@ class LoraAdapter:   # this will just hold data
     
     def __init__(self, graph_name, lora_file_paths):
         self.m_adapter = appbuilder.LoraAdapter(graph_name, lora_file_paths)  # cpp object
+
