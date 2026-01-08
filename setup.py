@@ -158,6 +158,11 @@ def build_cmake():
     if os.path.exists(LIB_PATH + "/Genie.lib"):
         shutil.copy(LIB_PATH + "/Genie.lib", "lib/Release")
 
+    if sys.platform.startswith('win'):
+        dll_file = "C:\Windows\System32\msvcp140.dll"
+        if os.path.exists(dll_file):
+            shutil.copy(dll_file, binary_path)
+
     DSP_LIB_PATH = QNN_SDK_ROOT + f"/lib/hexagon-v{dsp_arch}/unsigned"
 
     if os.path.exists(DSP_LIB_PATH + f"/libqnnhtpV{dsp_arch}.cat"):
