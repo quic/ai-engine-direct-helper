@@ -65,7 +65,7 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu). <br>
 ** Support OpenAI Compatible API Service([GenieAPIService](samples/genie/c++/README.md)) on WoS, Android and Linux. <br>
-** Use "native" input & output can improve data conversation performance obviously. Refer to [Wisper](samples/python/whisper_base_en/whisper_base_en.py) sample code. <br>
+** Use "native" mode input & output can improve data conversation performance obviously. Refer to [User Guide](https://github.com/quic/ai-engine-direct-helper/blob/main/docs/user_guide.md#native-mode) & [Wisper](samples/python/whisper_base_en/whisper_base_en.py) sample code. <br>
 
 ## Diagram
 <br>
