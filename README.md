@@ -53,6 +53,8 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Support both Windows & Linux <br>
 • Support Genie(Large Language Model) <br>
 • Support LLM on both CPU & NPU [*NEW!*] <br>
+• Support Multimodal LLM [*NEW!*] <br>
+• Support Float & Native Input & Output Data [*NEW!*] <br>
 • Support Multi Graph <br>
 • Support LoRA <br> 
 • Support multiple models <br>
@@ -62,7 +64,8 @@ Developers can use QAI AppBuilder in both C++ and Python projects <br>
 • Plenty of sample code <br>
 
 ** Support ARM64 Windows, Linux and Ubuntu (e.g.: X Elite Windows, QCS8550 Linux and QCM6490 Ubuntu). <br>
-** Support OpenAI Compatible API Service([GenieAPIService](samples/genie/c++/README.md)) on WoS, Android and Linux.
+** Support OpenAI Compatible API Service([GenieAPIService](samples/genie/c++/README.md)) on WoS, Android and Linux. <br>
+** Use "native" input & output can improve data conversation performance obviously. Refer to [Wisper](samples/python/whisper_base_en/whisper_base_en.py) sample code. <br>
 
 ## Diagram
 <br>
