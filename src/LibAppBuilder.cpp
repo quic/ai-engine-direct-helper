@@ -15,6 +15,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <algorithm>
+#include <execution>
+#include <vector>
+
 
 #include "BuildId.hpp"
 #include "DynamicLoadUtil.hpp"
@@ -36,6 +40,8 @@ using namespace qnn::tools;
 
 static void* sg_backendHandle{nullptr};
 static void* sg_modelHandle{nullptr};
+static void* sg_systemLibraryHandle{nullptr};
+
 static QNN_INTERFACE_VER_TYPE sg_qnnInterface;
 
 QnnHtpDevice_Infrastructure_t *gs_htpInfra(nullptr);
@@ -48,11 +54,21 @@ namespace qnn {
 namespace tools {
 namespace libappbuilder {
 
-std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBinaryPath,
-                                                           std::string backEndPath,
-                                                           std::string systemLibraryPath,
-                                                           bool loadFromCachedBinary,
-                                                           std::vector<LoraAdapter>& lora_adapters) {
+void warmup_parallel_stl()
+{
+    static std::once_flag once;
+    std::call_once(once, []{
+        constexpr size_t N = 1 << 18;
+        static std::vector<int> dummy(N, 0);
+        std::for_each(std::execution::par, dummy.begin(), dummy.end(),
+                      [](int& x){ x += 1; });
+    });
+    QNN_WAR("warmup_parallel_stl");
+}
+
+std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBinaryPath, std::string backEndPath, std::string systemLibraryPath,
+                                                           bool loadFromCachedBinary, std::vector<LoraAdapter>& lora_adapters,
+                                                           const std::string& input_data_type, const std::string& output_data_type) {
   // Just keep blank for below paths.
   std::string modelPath;
   std::string cachedBinaryPath2;
@@ -66,8 +82,10 @@ std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBin
       modelPath = cachedBinaryPath;
   }
 
-  iotensor::OutputDataType parsedOutputDataType   = iotensor::OutputDataType::FLOAT_ONLY;
-  iotensor::InputDataType parsedInputDataType     = iotensor::InputDataType::FLOAT;
+  QNN_WAR("input_data_type: %s, output_data_type: %s\n", input_data_type.c_str(), output_data_type.c_str());
+
+  iotensor::InputDataType parsedInputDataType     = iotensor::parseInputDataType(input_data_type);
+  iotensor::OutputDataType parsedOutputDataType   = iotensor::parseOutputDataType(output_data_type);
 
   bool dumpOutputs                                = true;
   bool debug                                      = false;
@@ -93,11 +111,14 @@ std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBin
   }
 
   if (loadFromCachedBinary) {
-    statusCode = dynamicloadutil::getQnnSystemFunctionPointers(systemLibraryPath, &qnnFunctionPointers);
+    statusCode = dynamicloadutil::getQnnSystemFunctionPointers(systemLibraryPath, &qnnFunctionPointers, &sg_systemLibraryHandle);
     if (dynamicloadutil::StatusCode::SUCCESS != statusCode) {
       sample_app::exitWithMessage("Error initializing QNN System Function Pointers", EXIT_FAILURE);
     }
   }
+
+  if ((input_data_type == "float") || (output_data_type == "float")) // We need 'std::transform' only for ‘float’ mode. It need data conversation.
+      warmup_parallel_stl();
 
   sg_qnnInterface = qnnFunctionPointers.qnnInterface;
   std::unique_ptr<sample_app::QnnSampleApp> app(new sample_app::QnnSampleApp(qnnFunctionPointers, "null", opPackagePaths, sg_backendHandle, "null",
@@ -289,7 +310,7 @@ bool DeleteShareMemory(std::string share_memory_name) {
 bool ModelInitializeEx(const std::string& model_name, const std::string& proc_name, const std::string& model_path,
                        const std::string& backend_lib_path, const std::string& system_lib_path, 
                        std::vector<LoraAdapter>& lora_adapters,
-                       bool async) {
+                       bool async, const std::string& input_data_type, const std::string& output_data_type) {
   QNN_INF("LibAppBuilder::ModelInitialize: %s \n", model_name.c_str());
 
 #ifdef _WIN32
@@ -297,7 +318,7 @@ bool ModelInitializeEx(const std::string& model_name, const std::string& proc_na
 
   if(!proc_name.empty()) {
     // If proc_name, create process and save process info & model name to map, load model in new process.
-    result = TalkToSvc_Initialize(model_name, proc_name, model_path, backend_lib_path, system_lib_path, async);
+    result = TalkToSvc_Initialize(model_name, proc_name, model_path, backend_lib_path, system_lib_path, async, input_data_type, output_data_type);
     return result;
   }
 #endif
@@ -326,7 +347,7 @@ bool ModelInitializeEx(const std::string& model_name, const std::string& proc_na
   }
 
   {
-    std::unique_ptr<sample_app::QnnSampleApp> app = libappbuilder::initQnnSampleApp(cachedBinaryPath, backEndPath, systemLibraryPath, loadFromCachedBinary, lora_adapters);
+    std::unique_ptr<sample_app::QnnSampleApp> app = libappbuilder::initQnnSampleApp(cachedBinaryPath, backEndPath, systemLibraryPath, loadFromCachedBinary, lora_adapters, input_data_type, output_data_type);
 
     if (nullptr == app) {
       return false;
@@ -510,10 +531,10 @@ bool ModelDestroyEx(std::string model_name, std::string proc_name) {
 
 bool LibAppBuilder::ModelInitialize(const std::string& model_name, const std::string& proc_name, const std::string& model_path,
                                     const std::string& backend_lib_path, const std::string& system_lib_path,
-                                    bool async) {
+                                    bool async, const std::string& input_data_type, const std::string& output_data_type) {
 #ifdef _WIN32
     if (!proc_name.empty()) {   // Create process and save process info & model name to map, load model in new process.
-        return TalkToSvc_Initialize(model_name, proc_name, model_path, backend_lib_path, system_lib_path, async);
+        return TalkToSvc_Initialize(model_name, proc_name, model_path, backend_lib_path, system_lib_path, async, input_data_type, output_data_type);
     }
 #endif
     return false;
@@ -521,16 +542,16 @@ bool LibAppBuilder::ModelInitialize(const std::string& model_name, const std::st
 
 bool LibAppBuilder::ModelInitialize(const std::string& model_name, const std::string& model_path,
                                     const std::string& backend_lib_path, const std::string& system_lib_path,
-                                    bool async) {
+                                    bool async, const std::string& input_data_type, const std::string& output_data_type) {
     std::vector<LoraAdapter> Adapters = std::vector<LoraAdapter>();
-    return ModelInitializeEx(model_name, "", model_path, backend_lib_path, system_lib_path, Adapters, async);   
+    return ModelInitializeEx(model_name, "", model_path, backend_lib_path, system_lib_path, Adapters, async, input_data_type, output_data_type);   
 }
 
 bool LibAppBuilder::ModelInitialize(const std::string& model_name, const std::string& model_path,
                                     const std::string& backend_lib_path, const std::string& system_lib_path,
                                     std::vector<LoraAdapter>& lora_adapters,
-                                    bool async) {
-    return ModelInitializeEx(model_name, "", model_path, backend_lib_path, system_lib_path, lora_adapters, async);
+                                    bool async, const std::string& input_data_type, const std::string& output_data_type) {
+    return ModelInitializeEx(model_name, "", model_path, backend_lib_path, system_lib_path, lora_adapters, async, input_data_type, output_data_type);
 }
 
 bool LibAppBuilder::ModelInference(std::string model_name, std::string proc_name, std::string share_memory_name,
