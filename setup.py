@@ -27,7 +27,7 @@ import zipfile
 from setuptools import Extension, setup, find_packages
 from setuptools.command.build_ext import build_ext
 
-VERSION = "2.38.0"
+VERSION = "2.42.0"
 CONFIG = "Release"  # Release, RelWithDebInfo
 package_name = "qai_appbuilder"
 
@@ -169,6 +169,9 @@ def build_cmake():
     if os.path.exists(LIB_PATH + "/QnnHtp.dll"):
         shutil.copy(LIB_PATH + "/QnnHtp.dll", qai_libs_path)
 
+    if os.path.exists(LIB_PATH + "/QnnCpu.dll"):
+        shutil.copy(LIB_PATH + "/QnnCpu.dll", qai_libs_path)
+
     if os.path.exists(LIB_PATH + "/QnnHtpNetRunExtensions.dll"):
         shutil.copy(LIB_PATH + "/QnnHtpNetRunExtensions.dll", qai_libs_path)
 
@@ -191,6 +194,9 @@ def build_cmake():
 
     if os.path.exists(LIB_PATH + "/libQnnHtp.so"):
         shutil.copy(LIB_PATH + "/libQnnHtp.so", qai_libs_path)
+
+    if os.path.exists(LIB_PATH + "/libQnnCpu.so"):
+        shutil.copy(LIB_PATH + "/libQnnCpu.so", qai_libs_path)
 
     if os.path.exists(LIB_PATH + "/libQnnHtpNetRunExtensions.so"):
         shutil.copy(LIB_PATH + "/libQnnHtpNetRunExtensions.so", qai_libs_path)
