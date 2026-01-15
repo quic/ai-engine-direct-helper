@@ -132,7 +132,7 @@ std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBin
     }
   }
 
-  if ((input_data_type == "float") || (output_data_type == "float")) // We need 'std::transform' only for ‘float’ mode. It need data conversation.
+  if ((input_data_type == "float") || (output_data_type == "float")) // We need 'std::transform' only for ï¿½floatï¿½ mode. It need data conversation.
       warmup_parallel_stl();
 
   sg_qnnInterface = qnnFunctionPointers.qnnInterface;
