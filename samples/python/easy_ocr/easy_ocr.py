@@ -280,7 +280,7 @@ def Demo_Local_detector_preprocess(img: np.ndarray):
         np.transpose(normalizeMeanVariance(n_img), (2, 0, 1))
         for n_img in img_resized_list
     ]
-    x = torch.from_numpy(np.array(x))
+    x = np.array(x)
 
     return x, (ratio_h, ratio_w)
 
@@ -624,7 +624,7 @@ class Local_EasyOCR_recognizer:
                 for i in range(image.shape[3], 999):
                     new_image = torch.cat((new_image, new_image[:, :, :, 0:1]), dim=3)
                 
-                preds = self.recognizer(new_image)
+                preds = self.recognizer(new_image.detach().cpu().numpy())
 
                 # preds is a list but we need [1, X, 97] for En
                 #                             [1, X, 6719] for Ch
