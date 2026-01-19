@@ -129,8 +129,8 @@ def Inference(input_image_path):
             interpolation=cv2.INTER_LINEAR,
         )
     ).float()
-
-    image = CHW_fp32_torch_crop_image.permute(2, 0, 1).view(1, 3, 128, 128)
+    
+    image = CHW_fp32_torch_crop_image.permute(2, 0, 1).view(1, 3, 128, 128).detach().cpu().numpy()
     
     # Burst the HTP.
     PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
@@ -142,18 +142,15 @@ def Inference(input_image_path):
     PerfProfile.RelPerfProfileGlobal()
 
     # postprocess the result
-    _output = torch.tensor(output)
-    # Parse results from network
-    alpha_id, alpha_exp, pitch, yaw, roll, tX, tY, f = (
-        _output[0, 0:219],
-        _output[0, 219:258],
-        _output[0, 258],
-        _output[0, 259],
-        _output[0, 260],
-        _output[0, 261],
-        _output[0, 262],
-        _output[0, 263],
-    )
+    _output = torch.from_numpy(output[0])  # shape (1, 265)
+    alpha_id  = _output[0, 0:219]
+    alpha_exp = _output[0, 219:258]
+    pitch     = _output[0, 258]
+    yaw       = _output[0, 259]
+    roll      = _output[0, 260]
+    tX        = _output[0, 261]
+    tY        = _output[0, 262]
+    f         = _output[0, 263]
 
     # De-normalized to original range from [-1, 1]
     alpha_id = alpha_id * 3

@@ -34,6 +34,10 @@
 #include "Utils/Utils.hpp"
 #endif
 
+#if !defined(__ANDROID__)
+  #include <execution>
+#endif
+
 using namespace qnn;
 using namespace qnn::log;
 using namespace qnn::tools;
@@ -63,7 +67,7 @@ std::string getFileNameFromPath(const std::string& path) {
     return path.substr(pos + 1);
 }
 
-
+#if !defined(__ANDROID__)
 void warmup_parallel_stl()
 {
     static std::once_flag once;
@@ -75,7 +79,7 @@ void warmup_parallel_stl()
     });
     QNN_WAR("warmup_parallel_stl");
 }
-
+#endif
 
 std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBinaryPath, std::string backEndPath, std::string systemLibraryPath,
                                                            bool loadFromCachedBinary, std::vector<LoraAdapter>& lora_adapters,
@@ -90,7 +94,7 @@ std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBin
     QNN_DEBUG("initQnnSampleApp saveBinaryName=%s\n", saveBinaryName.c_str());
   }
 
-  if (loadFromCachedBinary) {  // *.bin
+  if (loadFromCachedBinary) {  // *.bin and *.dlc
       cachedBinaryPath2 = cachedBinaryPath;
   }
   else {    // *.dll
@@ -132,13 +136,15 @@ std::unique_ptr<sample_app::QnnSampleApp> initQnnSampleApp(std::string cachedBin
     }
   }
 
+#if !defined(__ANDROID__)
   if ((input_data_type == "float") || (output_data_type == "float")) // We need 'std::transform' only for �float� mode. It need data conversation.
       warmup_parallel_stl();
+#endif
 
   sg_qnnInterface = qnnFunctionPointers.qnnInterface;
   std::unique_ptr<sample_app::QnnSampleApp> app(new sample_app::QnnSampleApp(qnnFunctionPointers, "null", opPackagePaths, sg_backendHandle, "null",
                                                                              debug, parsedOutputDataType, parsedInputDataType, sg_parsedProfilingLevel,
-                                                                             dumpOutputs, cachedBinaryPath2, saveBinaryName, lora_adapters, cachedBinaryPath));
+                                                                             dumpOutputs, cachedBinaryPath2, saveBinaryName, lora_adapters, cachedBinaryPath2));
     return app;
 }
 
@@ -459,7 +465,7 @@ bool ModelInitializeEx(const std::string& model_name, const std::string& proc_na
 bool ModelInferenceEx(std::string model_name, std::string proc_name, std::string share_memory_name,
                       std::vector<uint8_t*>& inputBuffers, std::vector<size_t>& inputSize,
                       std::vector<uint8_t*>& outputBuffers, std::vector<size_t>& outputSize,
-                      std::string& perfProfile, size_t graphIndex) {
+                      std::string& perfProfile, size_t graphIndex, size_t share_memory_size=0) {
     bool result = true;
 
     //QNN_INF("LibAppBuilder::ModelInference: %s \n", model_name.c_str());
@@ -481,7 +487,7 @@ bool ModelInferenceEx(std::string model_name, std::string proc_name, std::string
         result = false;
     }
 
-    if (result && sample_app::StatusCode::SUCCESS != app->executeGraphsBuffers(inputBuffers, outputBuffers, outputSize, perfProfile, graphIndex)) {
+    if (result && sample_app::StatusCode::SUCCESS != app->executeGraphsBuffers(inputBuffers, outputBuffers, outputSize, perfProfile, graphIndex, share_memory_size)) {
         app->reportError("Graph Execution failure");
         result = false;
     }
@@ -593,9 +599,9 @@ bool LibAppBuilder::ModelInference(std::string model_name, std::string proc_name
 
 bool LibAppBuilder::ModelInference(std::string model_name, std::vector<uint8_t*>& inputBuffers, 
                                    std::vector<uint8_t*>& outputBuffers, std::vector<size_t>& outputSize,
-                                   std::string& perfProfile, size_t graphIndex){
+                                   std::string& perfProfile, size_t graphIndex, size_t share_memory_size){
     std::vector<size_t> inputSize;
-    return ModelInferenceEx(model_name, "", "", inputBuffers, inputSize, outputBuffers, outputSize, perfProfile, graphIndex);
+    return ModelInferenceEx(model_name, "", "", inputBuffers, inputSize, outputBuffers, outputSize, perfProfile, graphIndex, share_memory_size);
 }
 
 bool LibAppBuilder::ModelApplyBinaryUpdate(const std::string model_name, std::vector<LoraAdapter>& lora_adapters) {
@@ -700,6 +706,41 @@ std::vector<std::string> LibAppBuilder::getOutputName(std::string model_name){
     m_outputName = app->getOutputName();
     sg_model_map.insert(std::make_pair(model_name, std::move(app)));
     return m_outputName;
+};
+//proc
+std::vector<std::vector<size_t>> LibAppBuilder::getOutputShapes(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo  = getModelInfo(model_name, proc_name,  "os");
+    return m_moduleInfo.outputShapes;
+};
+
+std::vector<std::vector<size_t>> LibAppBuilder::getInputShapes(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo = getModelInfo(model_name, proc_name,  "is");
+    return m_moduleInfo.inputShapes;
+};
+
+std::vector<std::string> LibAppBuilder::getInputDataType(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo  = getModelInfo(model_name, proc_name,  "id");
+    return m_moduleInfo.inputDataType;
+};
+
+std::vector<std::string> LibAppBuilder::getOutputDataType(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo  = getModelInfo(model_name, proc_name,  "od");
+    return m_moduleInfo.outputDataType;
+};
+
+std::string LibAppBuilder::getGraphName(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo  = getModelInfo(model_name, proc_name,  "gn");
+    return m_moduleInfo.graphName;
+};
+
+std::vector<std::string> LibAppBuilder::getInputName(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo  = getModelInfo(model_name, proc_name,  "in");
+    return m_moduleInfo.inputName;
+};
+
+std::vector<std::string> LibAppBuilder::getOutputName(std::string model_name, std::string proc_name){
+    ::ModelInfo_t m_moduleInfo  = getModelInfo(model_name, proc_name,  "on");
+    return m_moduleInfo.outputName;
 };
 
 ModelInfo_t LibAppBuilder::getModelInfo(std::string model_name, std::string proc_name, std::string input) {
