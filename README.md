@@ -47,6 +47,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [Genie API Service 配置与使用](https://www.aidevhome.com/?id=52) <br>
 [GenieChat：使用 Genie API Service 构建本地大语言模型驱动的安卓应用](https://www.aidevhome.com/?id=50) <br>
 [SuperResolutionApp：图片超分 Android 开发示例](https://www.aidevhome.com/?id=53) <br>
+[BGE-Base-Zh-V1.5 端侧使用教程](https://www.aidevhome.com/?id=54) <br>
 
 ## Advantage
 
