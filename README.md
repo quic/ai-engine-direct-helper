@@ -36,6 +36,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 ## Blog & Documentation
 [QAI AppBuilder Guide](docs/guide_en.md) [English](docs/guide_en.md) | [中文](docs/guide_zh.md) <br>
 [GenieAPIService (OpenAI Compatible API Service)](docs/genie_guide_en.md) [English](docs/genie_guide_en.md) | [中文](docs/genie_guide_zh.md) <br>
+[Qwen2.5-VL-3B On-Device Deployment](samples/genie/c%2B%2B/docs/Qwen2.5-VL-3B-Quickly-Start.md) [English](samples/genie/c%2B%2B/docs/Qwen2.5-VL-3B-Quickly-Start.md) | [中文](https://blog.csdn.net/csdnsqst0050/article/details/157474571) <br>
 [QAI AppBuilder: 让本地 AI 部署触手可及！](https://docs.qualcomm.com/bundle/publicresource/80-94755-1_REV_AA_QAI_AppBuilder_-_WoS.pdf) <br>
 [大语言模型系列(1): 3分钟上手，在骁龙AI PC上部署DeepSeek!](https://blog.csdn.net/csdnsqst0050/article/details/149425691) <br>
 [大语言模型系列(2): 本地 OpenAI 兼容 API 服务的配置与部署](https://blog.csdn.net/csdnsqst0050/article/details/150208814) <br>
