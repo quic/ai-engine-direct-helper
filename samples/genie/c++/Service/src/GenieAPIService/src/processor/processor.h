@@ -15,12 +15,9 @@ class ModelProcessor
 public:
     virtual ~ModelProcessor() = default;
 
-    std::string extractFinalAnswer(const std::string &output)
-    {};
-
     virtual void Clean() = 0;
 
-    virtual std::tuple<bool, std::string> preprocessStream(std::string &chunkText,
+    virtual std::tuple<bool, std::string> preprocessStream(std::string chunkText,
                                                            bool isToolResponse,
                                                            std::string &toolResponse) = 0;
 

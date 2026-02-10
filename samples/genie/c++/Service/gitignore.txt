@@ -1,0 +1,3 @@
+ai-engine-direct-helper/
+build/
+GenieService_v*

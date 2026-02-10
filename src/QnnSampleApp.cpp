@@ -34,6 +34,10 @@
 #include <windows.h>
 #endif
 
+//hst
+#include <unordered_map>
+#include <mutex>
+
 using namespace qnn;
 using namespace qnn::tools;
 using namespace qnn::tools::iotensor;
@@ -194,7 +198,8 @@ sample_app::QnnSampleApp::QnnSampleApp(QnnFunctionPointers qnnFunctionPointers,
                                        std::string cachedBinaryPath,
                                        std::string saveBinaryName, 
                                        const std::vector<LoraAdapter>& lora_adapters,
-									                     std::string dlcPath)
+									   std::string dlcPath,
+									   MultiCoreDeviceConfig_t multiCoreDeviceConfig)
     : m_qnnFunctionPointers(qnnFunctionPointers),
       m_outputPath(outputPath),
       m_saveBinaryName(saveBinaryName),
@@ -207,7 +212,8 @@ sample_app::QnnSampleApp::QnnSampleApp(QnnFunctionPointers qnnFunctionPointers,
       m_dumpOutputs(dumpOutputs),
       m_isBackendInitialized(false),
       m_isContextCreated(false),
-	    m_dlcPath(dlcPath)
+	  m_dlcPath(dlcPath),
+	  m_multiCoreDeviceConfig(multiCoreDeviceConfig)
 {
 
   split(m_inputListPaths, inputListPaths, ',');
@@ -464,7 +470,7 @@ sample_app::StatusCode sample_app::QnnSampleApp::composeGraphs() {
   auto returnStatus = StatusCode::SUCCESS;
   // If DLC path is provided, use DLC-based composition
   if (!m_dlcPath.empty()) {
-    printf("DLC path (%s) provided, using DLC-based graph composition\n", m_dlcPath.c_str());
+    QNN_INFO("DLC path (%s) provided, using DLC-based graph composition\n", m_dlcPath.c_str());
     returnStatus = composeGraphsFromDlc();
     return returnStatus;
   } else{
@@ -826,6 +832,15 @@ sample_app::StatusCode sample_app::QnnSampleApp::createFromBinary() {
     return StatusCode::FAILURE;
   }
 
+  // Ensure bufferSize matches the real file size seen by WinAPI (important for >4GB).
+  LARGE_INTEGER liSize{};
+  if (!GetFileSizeEx(hFile, &liSize) || liSize.QuadPart <= 0) {
+	printf("GetFileSizeEx failed. err: %s", strerror(errno));
+    CloseHandle(hFile);
+    return StatusCode::FAILURE;
+  }
+  bufferSize = static_cast<uint64_t>(liSize.QuadPart);
+
   // Ensure handles are closed on all paths.
   HANDLE hFileMap = NULL;
   uint8_t *buffer  = NULL;
@@ -844,7 +859,10 @@ sample_app::StatusCode sample_app::QnnSampleApp::createFromBinary() {
     }
   };
 
-  hFileMap = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, (DWORD)bufferSize, NULL);
+  // CreateFileMapping size is 64-bit via (dwMaximumSizeHigh, dwMaximumSizeLow).
+  DWORD sizeLow  = static_cast<DWORD>(bufferSize & 0xFFFFFFFFull);
+  DWORD sizeHigh = static_cast<DWORD>((bufferSize >> 32) & 0xFFFFFFFFull);
+  hFileMap = CreateFileMapping(hFile, NULL, PAGE_READONLY, sizeHigh, sizeLow, NULL);
 
   if (hFileMap == NULL) {
     printf("Failed to create file mapping of file %s. err: %s", m_cachedBinaryPath.c_str(), strerror(errno));
@@ -852,6 +870,7 @@ sample_app::StatusCode sample_app::QnnSampleApp::createFromBinary() {
     return StatusCode::FAILURE;
   }
 
+  // MapViewOfFile with dwNumberOfBytesToMap=0 maps the entire mapping object.
   buffer = (uint8_t *)MapViewOfFile(hFileMap, FILE_MAP_READ, 0, 0, 0);
 
   if (buffer == NULL) {
@@ -1160,20 +1179,216 @@ sample_app::StatusCode sample_app::QnnSampleApp::isFinalizeDeserializedGraphSupp
   return returnStatus;
 }
 
-sample_app::StatusCode sample_app::QnnSampleApp::createDevice() {
-  if (nullptr != m_qnnFunctionPointers.qnnInterface.deviceCreate) {
+sample_app::StatusCode sample_app::QnnSampleApp::getDevicePlatformInfo(
+    const QnnDevice_PlatformInfo_t*& platformInfoPtr) {
+  if (nullptr != m_qnnFunctionPointers.qnnInterface.deviceGetPlatformInfo) {
     auto qnnStatus =
-        m_qnnFunctionPointers.qnnInterface.deviceCreate(m_logHandle, nullptr, &m_deviceHandle);
-    if (QNN_SUCCESS != qnnStatus && QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE != qnnStatus) {
-      QNN_ERROR("Failed to create device");
-      return verifyFailReturnStatus(qnnStatus);
+        m_qnnFunctionPointers.qnnInterface.deviceGetPlatformInfo(m_logHandle, &platformInfoPtr);
+    if (QNN_SUCCESS != qnnStatus) {
+      QNN_ERROR("Failed to get device platform info");
+      return StatusCode::FAILURE;
     }
   }
   return StatusCode::SUCCESS;
 }
 
+sample_app::StatusCode sample_app::QnnSampleApp::setupDeviceConfig(
+    QnnDevice_Config_t* devConfigPtr, MultiCoreDeviceConfig_t* multicoreConfigPtr) {
+  const QnnDevice_PlatformInfo_t* devPlatformInfoPtr{nullptr};
+  // get Device Platform info
+  auto returnStatus = getDevicePlatformInfo(devPlatformInfoPtr);
+  if (StatusCode::SUCCESS == returnStatus) {
+    // get HW supported capabilites from Device Platform info
+    const uint32_t hwNumDevices                        = devPlatformInfoPtr->v1.numHwDevices;
+    QnnDevice_HardwareDeviceInfo_t* const hwDeviceInfo = devPlatformInfoPtr->v1.hwDevices;
+    const uint32_t socNumCores                         = hwDeviceInfo->v1.numCores;
+    QNN_INFO("sample_app::QnnSampleApp::setupDeviceConfig, hwNumDevices: %d, socNumCores: %d\n", hwNumDevices, socNumCores);
+  
+    if (multicoreConfigPtr->coreIdVec.size() == 0) {
+      // fill default coreIdVec with default [0]
+      multicoreConfigPtr->coreIdVec.push_back(0);
+    }
+    // get number of cores specified by the user from multicoreDeviceConfig:coreIds vector
+    const uint32_t devNumCores = multicoreConfigPtr->coreIdVec.size();
+    const uint32_t deviceID    = multicoreConfigPtr->deviceId;
+    QNN_INFO("setupDeviceConfig,deviceID=%d,deviceType=%d\n", deviceID, hwDeviceInfo->v1.deviceType);
+    // check user requested 'deviceID' & 'numCores' are within bounds
+    if ((hwNumDevices > deviceID) && (socNumCores >= devNumCores)) {
+      QNN_INFO("Init Device Config for deviceID: %d, numCores: %d", deviceID, devNumCores);
+      // populate custom:coreInfo for 'numCores'
+      auto custCoreInfo = std::unique_ptr<QnnDevice_CoreInfo_t[]>(new QnnDevice_CoreInfo_t[devNumCores]);
+      for (uint32_t j = 0; j < devNumCores; ++j) {
+        custCoreInfo[j]             = QNN_DEVICE_CORE_INFO_INIT;
+        custCoreInfo[j].v1.coreId   = multicoreConfigPtr->coreIdVec[j];
+        custCoreInfo[j].v1.coreType = multicoreConfigPtr->coreType;
+      }
+      // populate custom:HwDeviceInfo based on above CoreInfo for 'numCores'
+      QnnDevice_HardwareDeviceInfo_t custDeviceInfo = QNN_DEVICE_HARDWARE_DEVICE_INFO_INIT;
+      custDeviceInfo.v1.deviceId   = devPlatformInfoPtr->v1.hwDevices[deviceID].v1.deviceId;
+      custDeviceInfo.v1.deviceType = devPlatformInfoPtr->v1.hwDevices[deviceID].v1.deviceType;
+      custDeviceInfo.v1.numCores   = devNumCores;
+      custDeviceInfo.v1.cores      = (QnnDevice_CoreInfo_t*) custCoreInfo.get();
+      // populate custom:platformInfo based on above DeviceInfo for numHwDevices = 1
+      QnnDevice_PlatformInfo_t custPlatformInfo = QNN_DEVICE_PLATFORM_INFO_INIT;
+      custPlatformInfo.v1.numHwDevices          = 1;
+      custPlatformInfo.v1.hwDevices             = (QnnDevice_HardwareDeviceInfo_t*)&custDeviceInfo;
+
+      uint32_t totalPtmInfoSize = sizeof(QnnDevice_PlatformInfo_t);
+      // get custom:platform info size based on user requested 'numCores'
+      totalPtmInfoSize += sizeof(QnnDevice_HardwareDeviceInfo_t) +
+                          sizeof(QnnDevice_DeviceInfoExtension_t) +
+                          (devNumCores * sizeof(QnnDevice_CoreInfo_t));
+      // mem alloc for custom:platform info
+      QnnDevice_PlatformInfo_t* const custPlatformInfoPtr =
+          static_cast<QnnDevice_PlatformInfo_t*>(malloc(totalPtmInfoSize));
+      // init custom:platform info mem
+      if (custPlatformInfoPtr) {
+        // mem-copy 'platformInfo' to custom:platform info
+        std::memcpy(custPlatformInfoPtr, &custPlatformInfo, sizeof(QnnDevice_PlatformInfo_t));
+
+        // re-init custom:platform.hwDevices ptr as above memcpy will overwrite malloc'ed ptr
+        // address
+        custPlatformInfoPtr->v1.hwDevices =
+            (QnnDevice_HardwareDeviceInfo_t*)((uint8_t*)(custPlatformInfoPtr) +
+                                              sizeof(QnnDevice_PlatformInfo_t));
+        // mem-copy 'hwDeviceInfo' to custom:platform.hwDevices
+        std::memcpy(&(custPlatformInfoPtr->v1.hwDevices[0]),
+                    &(custPlatformInfo.v1.hwDevices[0]),
+                    sizeof(QnnDevice_HardwareDeviceInfo_t));
+
+        // re-init custom:platform.hwDevice.cores ptr as above memcpy will overwrite malloc'ed ptr
+        // address
+        custPlatformInfoPtr->v1.hwDevices[0].v1.cores =
+            (QnnDevice_CoreInfo_t*)((uint8_t*)(custPlatformInfoPtr) +
+                                    sizeof(QnnDevice_PlatformInfo_t) +
+                                    sizeof(QnnDevice_HardwareDeviceInfo_t) +
+                                    sizeof(QnnDevice_DeviceInfoExtension_t));
+        // mem-copy 'coreInfo' to custom:platform.hwDevice.cores
+        for (uint32_t j = 0; j < devNumCores; ++j) {
+          std::memcpy(&(custPlatformInfoPtr->v1.hwDevices[0].v1.cores[j]),
+                      &(custPlatformInfo.v1.hwDevices[0].v1.cores[j]),
+                      sizeof(QnnDevice_CoreInfo_t));
+        }
+      } else {
+        QNN_ERROR("Failed to allocate memory for device platform info placeholder");
+        return StatusCode::FAILURE;
+      }
+      // setup device Config base on above custom:platform info
+      devConfigPtr->option       = QNN_DEVICE_CONFIG_OPTION_PLATFORM_INFO;
+      devConfigPtr->hardwareInfo = const_cast<QnnDevice_PlatformInfo_t*>(custPlatformInfoPtr);
+      QNN_DEBUG("Setting Device Config Option for Platform Info complete!");
+    } else {
+      if (socNumCores >= devNumCores) {
+        QNN_ERROR(
+            "SOC numCores[%d] reported by platform is out of bounds to support User numCores[%d]",
+            socNumCores,
+            devNumCores);
+      }
+      if (hwNumDevices > deviceID) {
+        QNN_ERROR(
+            "SOC numHwDevices[%d] reported by platform is out of bounds to support User "
+            "deviceID[%d]",
+            hwNumDevices,
+            deviceID);
+      }
+    }
+  }
+  return returnStatus;
+}
+
+//hst
+static std::unordered_map<std::string, Qnn_DeviceHandle_t> devicesHandles;
+static std::unordered_map<std::string, uint32_t> devicesRefCounts;
+static std::mutex devicesHandlesMutex;
+
+static std::string makeDeviceKey(uint32_t deviceId, const std::vector<uint32_t>& coreIdVecIn) {
+  std::vector<uint32_t> cores = coreIdVecIn;
+  if (cores.empty()) { cores.push_back(0); } 
+  std::sort(cores.begin(), cores.end());
+  cores.erase(std::unique(cores.begin(), cores.end()), cores.end());
+  std::ostringstream oss;
+  oss << "d" << deviceId << "-c";
+  for (size_t i = 0; i < cores.size(); ++i) {
+    if (i) oss << ",";
+    oss << cores[i];
+  }
+  return oss.str();
+}
+
+sample_app::StatusCode sample_app::QnnSampleApp::createDevice() {
+  auto returnStatus = StatusCode::SUCCESS;
+  const uint32_t deviceId = m_multiCoreDeviceConfig.deviceId;
+  std::string devKey = makeDeviceKey(deviceId, m_multiCoreDeviceConfig.coreIdVec);
+  {
+    std::lock_guard<std::mutex> lk(devicesHandlesMutex);
+    auto it = devicesHandles.find(devKey);
+    if (it != devicesHandles.end() && it->second != nullptr) {
+      m_deviceHandle = it->second;
+      devicesRefCounts[devKey] += 1;
+      QNN_INFO("Reusing device handle for key=%s (refCount=%u)\n",
+               devKey.c_str(), devicesRefCounts[devKey]);
+      QNN_FUNCTION_EXIT_LOG;
+      return StatusCode::SUCCESS;
+    }
+  }
+
+  QnnDevice_Config_t devConfig = QNN_DEVICE_CONFIG_INIT;
+  returnStatus = setupDeviceConfig(&devConfig, &m_multiCoreDeviceConfig);
+  if (StatusCode::SUCCESS != returnStatus) {
+    return returnStatus;
+  }
+
+  const QnnDevice_Config_t* deviceConfigs[] = {&devConfig, nullptr};
+  if (nullptr != m_qnnFunctionPointers.qnnInterface.deviceCreate) {
+    auto qnnStatus = m_qnnFunctionPointers.qnnInterface.deviceCreate(
+        m_logHandle, deviceConfigs, &m_deviceHandle);
+    if (QNN_SUCCESS != qnnStatus && QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE != qnnStatus) {
+      QNN_ERROR("Failed to create device");
+      returnStatus = verifyFailReturnStatus(qnnStatus);
+    } else {
+
+      std::lock_guard<std::mutex> lk(devicesHandlesMutex);
+      devicesHandles[devKey] = m_deviceHandle;
+      devicesRefCounts[devKey] = 1;
+      QNN_INFO("Created new device handle and cached for key=%s\n", devKey.c_str());
+    }
+    if (devConfig.hardwareInfo) {
+      free(devConfig.hardwareInfo);
+    }
+  }
+  return returnStatus;
+
+}
+
 sample_app::StatusCode sample_app::QnnSampleApp::freeDevice() {
-  if (nullptr != m_qnnFunctionPointers.qnnInterface.deviceFree) {
+  QNN_INFO("sample_app::QnnSampleApp::freeDevice begin\n");
+  return StatusCode::SUCCESS;
+
+  const uint32_t deviceId = m_multiCoreDeviceConfig.deviceId;
+  std::string devKey = makeDeviceKey(deviceId, m_multiCoreDeviceConfig.coreIdVec);
+
+  bool needRealFree = true; 
+  std::lock_guard<std::mutex> lk(devicesHandlesMutex);
+  auto it = devicesHandles.find(devKey);
+  auto rc = devicesRefCounts.find(devKey);
+  if (it != devicesHandles.end() && rc != devicesRefCounts.end()
+      && it->second == m_deviceHandle && m_deviceHandle != nullptr) {
+    if (rc->second > 1) {
+      rc->second -= 1;
+      QNN_INFO("Decreased refCount for key=%s (refCount=%u)\n",
+                devKey.c_str(), rc->second);
+      needRealFree = false; 
+    } else {
+      rc->second = 0;
+      devicesHandles.erase(it);
+      devicesRefCounts.erase(rc);
+      QNN_INFO("RefCount reached zero for key=%s, will free device\n", devKey.c_str());
+      needRealFree = true;
+    }
+  }
+
+  if (needRealFree && nullptr != m_qnnFunctionPointers.qnnInterface.deviceFree) {
+    QNN_INFO("m_qnnFunctionPointers.qnnInterface.deviceFree begin\n");
     auto qnnStatus = m_qnnFunctionPointers.qnnInterface.deviceFree(m_deviceHandle);
     if (QNN_SUCCESS != qnnStatus && QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE != qnnStatus) {
       QNN_ERROR("Failed to free device");
@@ -1870,8 +2085,9 @@ sample_app::StatusCode sample_app::QnnSampleApp::initializePerformance() {
 
     QnnHtpDevice_Infrastructure_t* htpInfra = static_cast<QnnHtpDevice_Infrastructure_t*>(deviceInfra);
     m_perfInfra = htpInfra->perfInfra;
-    uint32_t deviceId = 0;
-    uint32_t coreId = 0;
+    uint32_t deviceId = m_multiCoreDeviceConfig.deviceId; //0;
+    uint32_t coreId = m_multiCoreDeviceConfig.coreIdVec.empty()? 0 : *std::min_element(m_multiCoreDeviceConfig.coreIdVec.begin(), m_multiCoreDeviceConfig.coreIdVec.end()); //0;
+    QNN_INFO("sample_app::QnnSampleApp::initializePerformance,deviceId=%u, coreId=%u\n",deviceId,coreId);
     if (QNN_SUCCESS != m_perfInfra.createPowerConfigId(deviceId, coreId, &m_powerConfigId)) {
         QNN_ERROR("Failure in createPowerConfigId()");
         return StatusCode::FAILURE;

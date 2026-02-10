@@ -7,21 +7,20 @@
 //==============================================================================
 
 #include "response_dispatcher.h"
-#include "prompt.h"
+#include "../chat_request_handler/model_input_builder.h"
 #include "response_tools.h"
 
 #include "log.h"
 #include "../processor/general.h"
 #include "../processor/harmony.h"
 
-
 ResponseDispatcher::ResponseDispatcher(IModelConfig &model_mgr,
-                                       ChatHistory &chatHistory)
-
-        : prompt_{new Prompt{chatHistory, model_mgr}},
-          model_config_(model_mgr),
-          chatHistory(chatHistory)
-{ ResetProcessor(); }
+                                       ChatHistory &chatHistory) :
+        chatHistory(chatHistory),
+        model_config_(model_mgr)
+{
+    ResetProcessor();
+}
 
 void ResponseDispatcher::ResetProcessor()
 {
@@ -31,17 +30,7 @@ void ResponseDispatcher::ResetProcessor()
         proc_ = nullptr;
     }
 
-    /* @formatter:off */
-    switch (model_config_.get_query_type().v_) {
-        case  QueryType::TextQuery:
-            input_parser_ = [this](json& data){return prompt_->BuildPrompt(data, this->is_tool_); };
-            break;
-        case  QueryType::TokenQuery:
-        case  QueryType::EmbeddingQuery:
-            input_parser_ = [this](json& data){return prompt_->ExtractPrompt(data); };
-    }
-
-    switch (model_config_.get_prompt_type().v_)
+    switch (int(model_config_.get_prompt_type()))
     {
         case PromptType::Harmony:
             proc_ = new HarmonyProcessor{};
@@ -49,60 +38,66 @@ void ResponseDispatcher::ResetProcessor()
         default:
             proc_ = new GeneralProcessor{};
     }
-    /* @formatter:on */
 
     chatHistory.Clear();
 }
 
-bool ResponseDispatcher::Prepare(json &data,
+void ResponseDispatcher::Prepare(ModelInput &model_input,
+                                 bool is_tool,
+                                 bool is_stream,
                                  const httplib::Request &req)
 {
-    this->req_ = &const_cast<Request &>(req);
-    this->model_input_content_ = input_parser_(data);
-    if (this->model_input_content_.empty())
-        return false;
-
+    this->req_ = &const_cast<httplib::Request &>(req);
+    this->model_input_ = model_input;
+    is_stream_ = is_stream;
+    is_tool_ = is_tool;
     proc_->Clean();
-    return true;
 }
 
-bool ResponseDispatcher::sendStreamResponse(size_t, DataSink &sink)
+bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::Response *res)
 {
+    auto handle = model_config_.get_genie_model_handle().lock();
+    std::string toolResponse; // Save tool call information
+    std::string finishReason = "stop";
+    response_buffer.clear();
+    bool isToolResponse = false;
+
+    auto genie_callback = [&](std::string &chunk)
+    {
+        My_Log{}.original(true) << chunk;
+        if (!isConnectionAlive())
+        {
+            handle->Stop();
+            return false;
+        }
+
+        auto result = preprocessStream(chunk, isToolResponse, toolResponse);
+        isToolResponse = std::get<0>(result);
+        std::string keepChunk = std::get<1>(result);
+
+        response_buffer += chunk;
+        // TODO: If tool call and not output all text, return.
+        if (is_tool_ && isToolResponse && !model_config_.getisOutputAllText())
+            return true;
+
+        if (is_stream_)
+            ResponseTools::post_stream_data(*sink, "data", ResponseTools::responseDataJson(chunk, "", true));
+        return true;
+    };
+
     try
     {
-        auto handle = model_config_.get_genie_model_handle().lock();
-        std::string toolResponse;   // Save tool call information
-        std::string finishReason = "stop";
-        response_buffer.clear();
-        bool isToolResponse = false;
-
-        auto genie_callback = [&](std::string &message)
-        {
-            My_Log{}.original(true) << message;
-            if (!isConnectionAlive())
-            {
-                handle->Stop();
-                return false;
-            }
-
-            std::string chunk = message;
-            auto result = preprocessStream(chunk, isToolResponse, toolResponse);
-            isToolResponse = std::get<0>(result);
-            std::string keepChunk = std::get<1>(result);
-
-            response_buffer += chunk;
-            // TODO: If tool call and not output all text, return.
-            if (is_tool_ && isToolResponse && !model_config_.getisOutputAllText())
-                return true;
-
-            ResponseTools::post_stream_data(sink, "data", ResponseTools::responseDataJson(chunk, "", true));
-            return true;
-        };
-
-        // Send empty data, compatible with SSE client.
-        ResponseTools::post_stream_data(sink, "data", ResponseTools::responseDataJson("", "", true));
         My_Log{} << "~~~~~~~~~~~~~~Query Context Start~~~~~~~~~~~~~~~~~~" << std::endl;
-        handle->Query(model_input_content_, genie_callback);
+        if (!handle->Query(model_input_, genie_callback))
+        {
+            constexpr char *err = R"({"error": "Model query unavailable"})";
+            if (is_stream_)
+                ResponseTools::post_stream_data(*sink, "data", err, true);
+            else
+                res->set_content(err, MIMETYPE_JSON);
+            My_Log{} << "~~~~~~~~~~~~~~~Query Context Failed~~~~~~~~~~~~~~~~~~~\n" << std::endl;
+            return false;
+        }
         My_Log{}.original(true) << "\n";
         My_Log{} << "~~~~~~~~~~~~~~~Query Context End~~~~~~~~~~~~~~~~~~~\n" << std::endl;
 
@@ -124,72 +119,43 @@ bool ResponseDispatcher::sendStreamResponse(size_t, DataSink &sink)
                 content += "\n\n";
             }
 
-            ResponseTools::post_stream_data(sink, "data",
-                                            ResponseTools::responseDataJson(content, "", true, toolResponse));
+            if (is_stream_)
+                ResponseTools::post_stream_data(*sink, "data",
+                                                ResponseTools::responseDataJson(content, "", true, toolResponse));
         }
 
         chatHistory.AddMessage("assistant", extractFinalAnswer(response_buffer));
+        PrintProfile();
 
         // Send end reason
-        ResponseTools::post_stream_data(sink, "data", ResponseTools::responseDataJson("", finishReason, true));
-        std::string done = "data: [DONE]\n\n";
-        sink.write(done.data(), done.size());
-        sink.done();
-        PrintProfile();
+        if (is_stream_)
+        {
+            ResponseTools::post_stream_data(*sink, "data", ResponseTools::responseDataJson("", finishReason, true));
+            ResponseTools::post_stream_data(*sink, "data", "[DONE]", true);
+        }
+        else
+        {
+            auto data = ResponseTools::responseDataJson(response_buffer, finishReason, false, toolResponse);
+            res->set_content(data, MIMETYPE_JSON);
+        }
+        return true;
     }
     catch (const std::exception &e)
     {
-        My_Log{My_Log::Level::kError} << "raise the exception while sending stream response: \n"
+        if (!is_stream_)
+            throw;
+        My_Log{My_Log::Level::kError} << "raise the exception while processing stream response: \n"
                                       << e.what() << "\n";
+        if (dynamic_cast<const ReportError *>(&e))
+        {
+            ResponseTools::post_stream_data(*sink, "data", e.what(), true);
+        }
+        else
+        {
+            ResponseTools::post_stream_data(*sink, "data", "raise the exception while processing stream response");
+        }
         return false;
     }
-    return true;
-}
-
-void ResponseDispatcher::sendNormalResponse(Response &res)
-{
-    auto handle = model_config_.get_genie_model_handle().lock();
-    std::string fullResponse;
-    auto genie_callback = [this, &fullResponse, &handle](const std::string &message)
-    {
-        My_Log{}.original(true) << message;
-        if (!isConnectionAlive())
-        {
-            handle->Stop();
-            return false;
-        }
-        fullResponse += message;
-        return true;
-    };
-
-    My_Log{} << "---------------Query Context Start---------------------------" << std::endl;
-    handle->Query(model_input_content_, genie_callback);
-    My_Log{}.original(true) << "\n";
-    My_Log{} << "---------------Query Context End---------------" << std::endl;
-
-    std::string finishReason = "stop";
-    std::string ToolsResponse;
-//    bool isToolResponse = str_contains(fullRespose, ResponseTools::FN_NAME);
-    if (str_contains(fullResponse, ResponseTools::FN_NAME))
-    {
-        finishReason = "tool_calls";
-        ToolsResponse = fullResponse;
-
-        if (!model_config_.getisOutputAllText())
-        {
-            fullResponse = ResponseTools::remove_tool_call_content(fullResponse);
-        }
-        if (!fullResponse.empty())
-        {
-            fullResponse += "\n\n";
-        }
-    }
-
-    chatHistory.AddMessage("assistant", extractFinalAnswer(fullResponse));
-    auto data = ResponseTools::responseDataJson(fullResponse, finishReason, false, ToolsResponse);
-    fullResponse = ResponseTools::json_to_str(data);
-    res.set_content(fullResponse, MIMETYPE_JSON);
-    PrintProfile();
 }
 
 bool ResponseDispatcher::isConnectionAlive() const
@@ -228,7 +194,7 @@ void ResponseDispatcher::PrintProfile()
 
         My_Log{} << "Num Prompt Tokens: "
                  << json_str.at("num_prompt_tokens")
-                 << ", Text Length: " << model_input_content_.size()
+                 << ", Text Length: " << model_input_.text_.size()
                  << std::endl;
 
         My_Log{} << "Prompt Processing Rate: "
@@ -250,7 +216,7 @@ void ResponseDispatcher::PrintProfile()
     }
     catch (std::exception &e)
     {
-        My_Log{My_Log::Level::kError} << e.what() << std::endl;
+        My_Log{My_Log::Level::kError} << "printf profile failed:" << e.what() << std::endl;
     }
 
     done:
@@ -264,11 +230,4 @@ ResponseDispatcher::~ResponseDispatcher()
         delete proc_;
         proc_ = nullptr;
     }
-
-    if (prompt_)
-    {
-        delete prompt_;
-        prompt_ = nullptr;
-    }
 }
-
