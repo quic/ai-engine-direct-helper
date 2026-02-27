@@ -27,11 +27,11 @@ public:
     ModelInput &Build(json &data, bool &is_tool)
     {
         Reset();
-        for (const auto &e: data["messages"])
+        for (auto &e: data["messages"])
         {
             if (e["role"] == "user")
             {
-                const json &user_content = e["content"];
+                const json user_content = e["content"];
                 if (user_content.is_string())
                 {
                     model_input_.text_ = user_content;
@@ -167,8 +167,8 @@ private:
     {
         is_tool = false;
         // parse data
-        const json &msg = data["messages"];
-        const json &tools = data["tools"];
+        json &msg = data["messages"];
+        json &tools = data["tools"];
         std::string userToolsPrompt; // Tool description sent by client
         std::string systemDefaultPrompt = "You are a helpful assistant.";
         std::string startDefaultPrompt;
@@ -185,7 +185,7 @@ private:
             // My_Log{} << "Tools model, clear chat history." << msg << std::endl;
 
             size_t toolsLength = 0;
-            for (const auto &element: tools)
+            for (auto &element: tools)
             {
                 std::string userToolPrompt = json_to_str(element);
                 size_t tool_length = handle->TokenLength(userToolPrompt);
@@ -207,7 +207,7 @@ private:
         // Extract the content sent by the client, including the user's question, system prompts, and tool invocation results.
         userContent = model_input_.text_;
         chat_history_.AddMessage("user", userContent);
-        for (const auto &element: msg)
+        for (auto &element: msg)
         {
             // TODO: Handle history message.
             auto role = get_json_value(element, "role", BLANK_STRING);
@@ -216,7 +216,7 @@ private:
                 const json &system_content = element["content"];
                 if (system_content.is_array())
                 {
-                    for (const auto &sys_element: system_content)
+                    for (auto &sys_element: system_content)
                     {
                         if (strcmp(sys_element["type"].get_ref<const std::string &>().c_str(), "text") == 0)
                         {
@@ -266,7 +266,7 @@ private:
         return modelInputContent;
     }
 
-    std::string trim_empty_lines(const std::string &input)
+    static std::string trim_empty_lines(const std::string &input)
     {
         std::string s = input;
         s = std::regex_replace(s, std::regex(R"(^(\s*\n)+)"), "");
