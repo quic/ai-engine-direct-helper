@@ -98,6 +98,7 @@ def config_model_id(soc_id, model_name):
             "wideresnet50": "mng9z8deq",
             "xlsr": "mnw6ldg3m",
             "yolov8_det": "mqpoll00m",
+            "yolo26n_det": "mn4y4w80n",
         }
     }
  
