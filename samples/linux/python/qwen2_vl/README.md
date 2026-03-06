@@ -12,7 +12,7 @@ Qwen2-VL Demo is a VLM (Vision Language Model) demonstration program implemented
 	 - Or download a pre-quantized QNN-format model (recommond):
 	```bash
 	 wget https://www.aidevhome.com/data/adh2/models/suggested/qwen2.5vl3b-8750-2.42.zip
-	 
+
 	 unzip qwen2.5vl3b-8750-2.42.zip
 	```
 2. Set up environment variables
@@ -38,11 +38,3 @@ Qwen2-VL Demo is a VLM (Vision Language Model) demonstration program implemented
 
    **Parameters:**
    - `<model_path>`: Path to the directory containing the converted QNN model files from Step 1.
-
-### Troubleshooting
-
-- **Library not found errors:** Ensure `LD_LIBRARY_PATH` and `ADSP_LIBRARY_PATH` are correctly set to your QNN SDK directories.
-- **Model loading issues:** Verify that the model path contains all required QNN model files (`.bin`, `.so`, etc.).
-- **Camera/Video issues:** Check device permissions and ensure the camera is not being used by another application.
-
-
