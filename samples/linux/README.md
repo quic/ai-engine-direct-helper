@@ -41,7 +41,7 @@ On the **IQ9075** and **QCS6490** device side, configure the following environme
 
 **Common variables for both platforms:**
 ```bash
-export QNN_SDK_ROOT=<path_to_v2.39.0.250926>
+export QNN_SDK_ROOT=<path_to_v2.40.0.251030>
 export LD_LIBRARY_PATH=$QNN_SDK_ROOT/lib/aarch64-oe-linux-gcc11.2:$LD_LIBRARY_PATH
 ```
 
@@ -107,6 +107,7 @@ python -m pip install dist/qai_appbuilder-*.whl
 Navigate to the samples directory:
 
 ```bash
+export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libtbb.so.12
 cd samples/linux/python
 ```
 
@@ -185,6 +186,30 @@ outputSize.clear();
 
 libAppBuilder.ModelDestroy(model_name);
 ```
+
+
+### Vision Language Model Examples
+
+QAI AppBuilder provides examples for building Vision Language Model applications that combine image and video understanding with natural language processing.
+
+
+#### Running VLM Examples
+
+Navigate to the samples directory and run the desired VLM example:
+
+```bash
+cd samples/linux/python/qwen2_vl
+python demo_app.py
+
+```
+
+VLM examples typically support:
+- Image/Video/Web Camera input processing and preprocessing
+- Multimodal inference combining vision and language
+- Natural language output generation
+- Model Qwen2-VL-2B-Instruct
+
+For detailed model-specific documentation, refer to   [Qwen2-VL Demo (Linux Python)](./python/qwen2_vl/README.md)
 
 
 ## Advanced Application Examples
