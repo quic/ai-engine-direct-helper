@@ -120,8 +120,8 @@ We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experienc
 ### 4. ONNX2BIN
 [ONNX2BIN](./tools/convert/onnx2bin/) is a guide to help you convert the ONNX model format into the BIN format optimized for a specific platform.
 
-### 5. ONNXRT2QNNRT
-[ONNXRT2QNNRT](./tools/onnxrt2qnnrt/) is a wrapper to run onnx inference code with qnn model, which will switch to qnn runtime automatically.
+### 5. ONNXWRAPPER
+[ONNXWRAPPER](./tools/onnxwrapper/) is a wrapper to run onnx inference code with qnn model, which will switch to qnn runtime automatically.
 
 ## Models
 ### Model Hub
