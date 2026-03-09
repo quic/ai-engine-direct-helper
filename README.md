@@ -41,6 +41,8 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [大语言模型系列(1): 3分钟上手，在骁龙AI PC上部署DeepSeek!](https://blog.csdn.net/csdnsqst0050/article/details/149425691) <br>
 [大语言模型系列(2): 本地 OpenAI 兼容 API 服务的配置与部署](https://blog.csdn.net/csdnsqst0050/article/details/150208814) <br>
 [大语言模型系列(3): Qwen2.5-VL-3B 多模态模型端侧部署](https://blog.csdn.net/csdnsqst0050/article/details/157474571) <br>
+[大语言模型系列(4): BGE-Base-Zh-V1.5 端侧使用教程](https://blog.csdn.net/csdnsqst0050/article/details/157651536) <br>
+[大语言模型系列(5): Qwen3-Reranker-0.6B 使用指南](https://blog.csdn.net/csdnsqst0050/article/details/158846858) <br>
 [高通平台大语言模型精选](https://www.aidevhome.com/?id=51) <br>
 [QAI AppBuilder on Linux (QCS6490)](https://docs.radxa.com/en/dragon/q6a/app-dev/npu-dev/qai-appbuilder) <br>
 [Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
@@ -48,7 +50,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [Genie API Service 配置与使用](https://www.aidevhome.com/?id=52) <br>
 [GenieChat：使用 Genie API Service 构建本地大语言模型驱动的安卓应用](https://www.aidevhome.com/?id=50) <br>
 [SuperResolutionApp：图片超分 Android 开发示例](https://www.aidevhome.com/?id=53) <br>
-[BGE-Base-Zh-V1.5 端侧使用教程](https://www.aidevhome.com/?id=54) <br>
+
 
 ## Advantage
 
