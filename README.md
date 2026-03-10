@@ -125,6 +125,9 @@ We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experienc
 ### 5. ONNXWRAPPER
 [ONNXWRAPPER](./tools/onnxwrapper/) is a wrapper to run onnx inference code with qnn model, which will switch to qnn runtime automatically.
 
+### 6. SKILLS
+[SKILLS](./tools/skills/) include 3 skills, they are [genie_api_service](./tools/skills/knowledge-skills/genie_api_service) which is used for GenieAPIService technical documentation retrieval, [qai_app_builder](./tools/skills/knowledge-skills/qai_app_builder) which is used for QAI AppBuilder technical documentation retrieval, and [qai-runner-skill](./tools/skills/qai-runner-skill) which is used for QAIRT model conversion & inference on Qualcomm devices.
+
 ## Models
 ### Model Hub
 [AI Hub](https://aihub.qualcomm.com/compute/models) <br>
