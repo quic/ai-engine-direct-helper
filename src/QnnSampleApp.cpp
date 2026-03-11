@@ -1120,7 +1120,7 @@ sample_app::StatusCode sample_app::QnnSampleApp::extractProfilingEvent(
   QnnProfile_EventData_t eventData;
   if (QNN_PROFILE_NO_ERROR !=
       m_qnnFunctionPointers.qnnInterface.profileGetEventData(profileEventId, &eventData)) {
-    QNN_ERROR("Failure in profile get event type.");
+    QNN_WARN("Failure in profile get event type.");
     return StatusCode::FAILURE;
   }
   QNN_INFO("Printing Event Info - Event Type: [%d], Event Value: [%" PRIu64
@@ -1130,6 +1130,26 @@ sample_app::StatusCode sample_app::QnnSampleApp::extractProfilingEvent(
             eventData.identifier,
             eventData.unit);
   return StatusCode::SUCCESS;
+}
+
+uint64_t sample_app::QnnSampleApp::getProfilingEvent(uint32_t eventType) {
+  QnnProfile_EventData_t eventData;
+  const QnnProfile_EventId_t* profileEvents{nullptr};
+  uint32_t numEvents{0};
+  if (QNN_PROFILE_NO_ERROR != m_qnnFunctionPointers.qnnInterface.profileGetEvents(
+                                  m_profileBackendHandle, &profileEvents, &numEvents)) {
+    QNN_ERROR("Failure in profile get events.");
+    return 0;
+  }
+  for (size_t event = 0; event < numEvents; event++) {
+    if (QNN_PROFILE_NO_ERROR ==
+      m_qnnFunctionPointers.qnnInterface.profileGetEventData(*(profileEvents + event), &eventData)) {
+      if (eventData.type == eventType) {
+        return eventData.value;
+      }
+    }
+  }
+  return 0;
 }
 
 sample_app::StatusCode sample_app::QnnSampleApp::verifyFailReturnStatus(Qnn_ErrorHandle_t errCode) {
@@ -1317,6 +1337,20 @@ static std::string makeDeviceKey(uint32_t deviceId, const std::vector<uint32_t>&
 
 sample_app::StatusCode sample_app::QnnSampleApp::createDevice() {
   auto returnStatus = StatusCode::SUCCESS;
+//add begin, no need to call setupDeviceConfig and getDevicePlatformInfo for cpu 
+  if (true == m_runInCpu){
+    if (nullptr != m_qnnFunctionPointers.qnnInterface.deviceCreate && nullptr == m_deviceHandle) {
+        auto qnnStatus =
+          m_qnnFunctionPointers.qnnInterface.deviceCreate(m_logHandle, nullptr, &m_deviceHandle);
+      if (QNN_SUCCESS != qnnStatus && QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE != qnnStatus) {
+        QNN_ERROR("Failed to create device");
+        return verifyFailReturnStatus(qnnStatus);
+      }
+	  }
+	  return returnStatus;
+  }
+//add end 20260309
+
   const uint32_t deviceId = m_multiCoreDeviceConfig.deviceId;
   std::string devKey = makeDeviceKey(deviceId, m_multiCoreDeviceConfig.coreIdVec);
   {
