@@ -4,7 +4,7 @@
 
 This guide demonstrates how to develop AI applications on Qualcomm Dragonwing™ **IQ9075** and **QCS6490** platforms using QAI AppBuilder. QAI AppBuilder provides both Python and C++ interfaces, allowing you to build AI applications with just a few lines of code.
 
-The documentation targets an Ubuntu 24.04 runtime environment. If your Qualcomm Dragonwing™ development board is running on Qualcomm LE（Linux Embedded）, please refer to this document [QAI AppBuilder for Qualcomm Linux Embedded](/README_LE.md) to set up the environment.
+The documentation targets an Ubuntu 24.04 runtime environment. If your Qualcomm Dragonwing™ development board is running on Qualcomm LE（Linux Embedded）, please refer to this document [QAI AppBuilder for Qualcomm Linux Embedded](./README_LE.md) to set up the environment.
 
 ## Quick Start
 
