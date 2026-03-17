@@ -32,18 +32,18 @@ cd ai-engine-direct-helper
 
 ### Download QNN code 
 
-Download the Qualcomm® AI Runtime (QAIRT) SDK on device, which includes the required QNN runtime libraries, from the following link: [QAIRT v2.43.1.260218](https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.43.1.260218/v2.43.1.260218.zip)
+Download the Qualcomm® AI Runtime (QAIRT) SDK on device, which includes the required QNN runtime libraries, from the following link: [QAIRT v2.43.1.260218](https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.40.0.251030/v2.43.1.260218.zip)
 ```bash
 # Download QAIRT SDK package
 # Here use QNN2.43 as reference
 cd $your_work_dir
-wget https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.43.1.260218/v2.43.1.260218.zip
+wget https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.40.0.251030/v2.40.0.251030.zip
 
 # Extract the runtime libraries
-unzip v2.43.1.260218.zip
+unzip v2.40.0.251030.zip
 
 # Verify extraction
-ls v2.43.1.260218/
+ls v2.40.0.251030/
 ```
 
 ### Start docker
@@ -101,7 +101,7 @@ cd $your_work_dir
 source ./qai_venv/bin/activate
 
 # Set env
-export QNN_SDK_ROOT=$your_work_dir/qairt/2.43.1.260218
+export QNN_SDK_ROOT=$your_work_dir/qairt/2.40.0.251030
 export QAI_TOOLCHAINS=aarch64-oe-linux-gcc11.2
 export QAI_HEXAGONARCH=73
 

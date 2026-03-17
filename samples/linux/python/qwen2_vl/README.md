@@ -2,7 +2,7 @@
 
 Qwen2-VL Demo is a VLM (Vision Language Model) demonstration program implemented using the QAI Appbuilder Python interface. It supports understanding images, videos, and camera feeds. Currently, the supported VLM model is Qwen2-VL.
 
-<img src="./vlm_demo.png" alt="VLM Demo Screen"  >
+<img src="./vlm_demo.png" alt="VLM Demo Screen" >
 
 ### How to run
 
