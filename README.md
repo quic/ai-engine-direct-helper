@@ -110,22 +110,20 @@ We have many [Python](samples/python/README.md) and [C++](samples/c++/) samples 
 *We suggest that you try to run these sample code before you actually start writing your own code.*<br>
 
 ## Tools
-###  1. LangFlow Package
-We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework. You can get more information [here](tools/langflow/).
 
-### 2. QAI AppBuilder Launcher
+### 1. QAI AppBuilder Launcher
 We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities of QAI AppBuilder within an hour.
 
-### 3. DLC2BIN
+### 2. DLC2BIN
 [DLC2BIN](./tools/convert/dlc2bin/) is a guide to help you convert the general DLC model format into the BIN format optimized for a specific platform.
 
-### 4. ONNX2BIN
+### 3. ONNX2BIN
 [ONNX2BIN](./tools/convert/onnx2bin/) is a guide to help you convert the ONNX model format into the BIN format optimized for a specific platform.
 
-### 5. ONNXWRAPPER
+### 4. ONNXWRAPPER
 [ONNXWRAPPER](./tools/onnxwrapper/) is a wrapper to run onnx inference code with qnn model, which will switch to qnn runtime automatically.
 
-### 6. SKILLS
+### 5. SKILLS
 [SKILLS](./tools/skills/) include 3 skills, they are [genie_api_service](./tools/skills/knowledge-skills/genie_api_service) which is used for GenieAPIService technical documentation retrieval, [qai_app_builder](./tools/skills/knowledge-skills/qai_app_builder) which is used for QAI AppBuilder technical documentation retrieval, and [qai-runner-skill](./tools/skills/qai-runner-skill) which is used for QAIRT model conversion & inference on Qualcomm devices.
 
 ## Models
