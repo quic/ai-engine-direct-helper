@@ -43,6 +43,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [大语言模型系列(3): Qwen2.5-VL-3B 多模态模型端侧部署](https://blog.csdn.net/csdnsqst0050/article/details/157474571) <br>
 [大语言模型系列(4): BGE-Base-Zh-V1.5 端侧使用教程](https://blog.csdn.net/csdnsqst0050/article/details/157651536) <br>
 [大语言模型系列(5): Qwen3-Reranker-0.6B 使用指南](https://blog.csdn.net/csdnsqst0050/article/details/158846858) <br>
+[大语言模型系列(6): Qwen3-embedding-0.6B 使用指南](https://blog.csdn.net/csdnsqst0050/article/details/159389533) <br>
 [高通平台大语言模型精选](https://www.aidevhome.com/?id=51) <br>
 [QAI AppBuilder on Linux (QCS6490)](https://docs.radxa.com/en/dragon/q6a/app-dev/npu-dev/qai-appbuilder) <br>
 [Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
