@@ -43,6 +43,7 @@ We provide a wealth of samples to help you quickly explore the features of QAI A
 [大语言模型系列(3): Qwen2.5-VL-3B 多模态模型端侧部署](https://blog.csdn.net/csdnsqst0050/article/details/157474571) <br>
 [大语言模型系列(4): BGE-Base-Zh-V1.5 端侧使用教程](https://blog.csdn.net/csdnsqst0050/article/details/157651536) <br>
 [大语言模型系列(5): Qwen3-Reranker-0.6B 使用指南](https://blog.csdn.net/csdnsqst0050/article/details/158846858) <br>
+[大语言模型系列(6): Qwen3-embedding-0.6B 使用指南](https://blog.csdn.net/csdnsqst0050/article/details/159389533) <br>
 [高通平台大语言模型精选](https://www.aidevhome.com/?id=51) <br>
 [QAI AppBuilder on Linux (QCS6490)](https://docs.radxa.com/en/dragon/q6a/app-dev/npu-dev/qai-appbuilder) <br>
 [Qwen2 7B SSD 使用教程](https://www.aidevhome.com/?id=29) <br>
@@ -110,22 +111,20 @@ We have many [Python](samples/python/README.md) and [C++](samples/c++/) samples 
 *We suggest that you try to run these sample code before you actually start writing your own code.*<br>
 
 ## Tools
-###  1. LangFlow Package
-We have [LangFlow Package](tools/langflow/) for running QNN model in 3rd party [LangFlow](https://github.com/langflow-ai/langflow) framework. You can get more information [here](tools/langflow/).
 
-### 2. QAI AppBuilder Launcher
+### 1. QAI AppBuilder Launcher
 We provide [QAI AppBuilder Launcher](tools/launcher/), enabling you to experience the core functionalities of QAI AppBuilder within an hour.
 
-### 3. DLC2BIN
+### 2. DLC2BIN
 [DLC2BIN](./tools/convert/dlc2bin/) is a guide to help you convert the general DLC model format into the BIN format optimized for a specific platform.
 
-### 4. ONNX2BIN
+### 3. ONNX2BIN
 [ONNX2BIN](./tools/convert/onnx2bin/) is a guide to help you convert the ONNX model format into the BIN format optimized for a specific platform.
 
-### 5. ONNXWRAPPER
+### 4. ONNXWRAPPER
 [ONNXWRAPPER](./tools/onnxwrapper/) is a wrapper to run onnx inference code with qnn model, which will switch to qnn runtime automatically.
 
-### 6. SKILLS
+### 5. SKILLS
 [SKILLS](./tools/skills/) include 3 skills, they are [genie_api_service](./tools/skills/knowledge-skills/genie_api_service) which is used for GenieAPIService technical documentation retrieval, [qai_app_builder](./tools/skills/knowledge-skills/qai_app_builder) which is used for QAI AppBuilder technical documentation retrieval, and [qai-runner-skill](./tools/skills/qai-runner-skill) which is used for QAIRT model conversion & inference on Qualcomm devices.
 
 ## Models
