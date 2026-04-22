@@ -152,7 +152,8 @@ There're two ways to use QAI AppBuilder:
 Download prebuild binary package *QAI_AppBuilder-win_arm64-{Qualcomm® AI Runtime SDK version}-Release.zip* to get these files: https://github.com/quic/ai-engine-direct-helper/releases
 
 ### 2. Using the QAI AppBuilder Python binding extension to develop Python based AI application.
-Download Python extension *qai_appbuilder-{version}-cp312-cp312-win_amd64.whl* and install it with the command below:
+Install by run 'pip install qai-appbuilder' directly,
+or download Python extension *qai_appbuilder-{version}-cp312-cp312-win_amd64.whl* and install it with the command below:
 https://github.com/quic/ai-engine-direct-helper/releases
 
 ```
