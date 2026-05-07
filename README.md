@@ -27,7 +27,7 @@ Note: Contributions are welcome. Please ensure thorough testing before deploying
 
 ## QAI AppBuilder
 The Quick AI Application Builder (this repository) is also referred to as "QAI AppBuilder" in the source code and documentation.<br>
-QAI AppBuilder is an extension of the Qualcomm® AI Runtime SDK, which is used to simplify the deployment of QNN models. Some libraries from the Qualcomm® AI Runtime SDK are required to use QAI AppBuilder.<br>
+QAI AppBuilder is an extension of the Qualcomm® AI Runtime SDK, which is used to simplify the deployment of QNN models. Some libraries from the [Qualcomm® AI Runtime SDK](https://softwarecenter.qualcomm.com/#/catalog/item/Qualcomm_AI_Runtime_SDK) are required to use QAI AppBuilder.<br>
 QAI AppBuilder is designed to help developers easily use the Qualcomm® AI Runtime SDK to execute models on Windows on Snapdragon (WoS) and Linux platforms. It encapsulates the model execution APIs into a set of simplified interfaces for loading models onto the NPU/HTP and performing inference. It substantially lowers the complexity of model deployment for developers.
 
 ## QAI AppBuilder Launcher
@@ -108,7 +108,7 @@ We have also implemented the client sample code of Genie API Service through bot
 2. [C++ based service](samples/genie/c++/README.md): Guide to run OpenAI compatible API services developed with C++.<br>
 
 ## Samples
-We have many [Python](samples/python/README.md) and [C++](samples/c++/) samples which can be run directly. The models used in these samples are from [AI-Hub](https://aihub.qualcomm.com/compute/models).<br>
+We have many [Python](samples/python/README.md), [Python_Linux](samples/linux/README.md) and [C++](samples/c++/) samples which can be run directly. The models used in these samples are from [AI-Hub](https://aihub.qualcomm.com/compute/models).<br>
 *We suggest that you try to run these sample code before you actually start writing your own code.*<br>
 
 ## Tools
@@ -166,7 +166,7 @@ Refere to [User Guide](docs/user_guide.md) on how to use QAI AppBuilder to progr
 Refer to [tutorial.ipynb](docs/tutorial.ipynb) to setup and run a cv model step by step.
 
 ## Build
-You can use the pre-compiled version directly and download the version you need from [Release](https://github.com/quic/ai-engine-direct-helper/releases). But if you really want to compile it yourself, you can refer to the [BUILD.md](BUILD.md).
+You can use the pre-compiled version directly and download the version you need from [Release](https://github.com/quic/ai-engine-direct-helper/releases). And if you want other qai-appbuilder whl file, please to compile it by yourself refer to this doc [BUILD.md](BUILD.md).
 
 ## License
 QAI AppBuilder is licensed under the BSD 3-clause "New" or "Revised" License. Check out the [LICENSE](LICENSE) for more details.
