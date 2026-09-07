@@ -249,34 +249,45 @@ def _copy_and_verify_htp_runtime_files(
     dst_path = Path(dst_dir)
     dst_path.mkdir(parents=True, exist_ok=True)
 
-    # Select HTP runtime files based on version. The host backend DLL(s)
-    # (QnnHtp.dll / *Stub.dll) come from ``host_arch_dir`` so they match the
-    # generator's architecture; the hexagon ``.cat`` / ``.so`` skel files are
-    # device-side (Hexagon) and arch-neutral w.r.t. the host generator.
-    if htp_version == "v81":
-        htp_files = [
-            (f"lib/{host_arch_dir}/QnnHtp.dll", True),
-            (f"lib/{host_arch_dir}/QnnHtpV81Stub.dll", True),
-            ("lib/hexagon-v81/unsigned/libqnnhtpv81.cat", True),
-            ("lib/hexagon-v81/unsigned/libQnnHtpV81Skel.so", True),
-        ]
-        print(f"[INFO] Using HTP runtime: {htp_version}")
-    else:
-        htp_files = [
-            (f"lib/{host_arch_dir}/QnnHtp.dll", True),
-            ("lib/hexagon-v73/unsigned/libqnnhtpv73.cat", True),
-            ("lib/hexagon-v73/unsigned/libQnnHtpV73Skel.so", True),
-        ]
-        print(f"[INFO] Using HTP runtime: v73")
+    # Normalize and validate HTP version (supports v68, v69, v73, v75, v81, etc.)
+    ver = htp_version.lower()
+    if not re.fullmatch(r"v\d+", ver):
+        print(f"[ERROR] Invalid HTP version: {htp_version!r}; expected 'v' followed by digits.")
+        sys.exit(2)
+    version_number = ver[1:]
+
+    # Build HTP runtime file list dynamically from the version string.
+    # The host backend DLL(s) (QnnHtp.dll / *Stub.dll) come from
+    # ``host_arch_dir`` so they match the generator's architecture;
+    # the hexagon ``.cat`` / ``.so`` skel files are device-side (Hexagon)
+    # and arch-neutral w.r.t. the host generator.
+    # .cat is optional — IoT platforms (QCS8300, QCS9075, etc.) do not
+    # ship .cat signatures; their CDSP runs in non-secure mode.
+    # Stub DLL is only needed in the base list for v81+.
+    # v73 .dll->bin flow does NOT use Stub (generator loads QnnHtp.dll directly).
+    # v73 DLC flow adds Stub via the is_dlc extend below.
+    use_stub_in_base = int(version_number) == 81
+
+    htp_files = [
+        (f"lib/{host_arch_dir}/QnnHtp.dll", True),
+    ]
+    if use_stub_in_base:
+        htp_files.append(
+            (f"lib/{host_arch_dir}/QnnHtpV{version_number}Stub.dll", True),
+        )
+    htp_files.extend([
+        (f"lib/hexagon-{ver}/unsigned/libqnnhtp{ver}.cat", False),      # optional
+        (f"lib/hexagon-{ver}/unsigned/libQnnHtpV{version_number}Skel.so", True),
+    ])
+    print(f"[INFO] Using HTP runtime: {ver}")
 
     # DLC->bin flow needs extra DLLs (the .dll->bin flow does not). Without
     # QnnHtpV{ver}Stub.dll / QnnHtpPrepare.dll the generator fails with
     # "Wrong number of Parameters 5" / "PrepareLibLoader Failed".
     if is_dlc:
-        stub = "QnnHtpV81Stub.dll" if htp_version == "v81" else "QnnHtpV73Stub.dll"
         htp_files.extend([
             (f"lib/{host_arch_dir}/QnnModelDlc.dll", True),
-            (f"lib/{host_arch_dir}/{stub}", True),
+            (f"lib/{host_arch_dir}/QnnHtpV{version_number}Stub.dll", True),
             (f"lib/{host_arch_dir}/QnnHtpPrepare.dll", True),
             (f"lib/{host_arch_dir}/QnnHtpNetRunExtensions.dll", True),
         ])
@@ -374,13 +385,16 @@ def _copy_hexagon_runtime_linux(
     dst_path = Path(dst_dir)
     dst_path.mkdir(parents=True, exist_ok=True)
     version_number = normalized_version[1:]
+    # (relative_path, required) — .cat is optional because IoT platforms
+    # (QCS8300, QCS9075, etc.) do not ship .cat signatures; their CDSP
+    # runs in non-secure mode and the generator does not need them.
     hexagon_files = [
-        f"lib/hexagon-{normalized_version}/unsigned/libqnnhtp{normalized_version}.cat",
-        f"lib/hexagon-{normalized_version}/unsigned/libQnnHtpV{version_number}Skel.so",
+        (f"lib/hexagon-{normalized_version}/unsigned/libqnnhtp{normalized_version}.cat", False),
+        (f"lib/hexagon-{normalized_version}/unsigned/libQnnHtpV{version_number}Skel.so", True),
     ]
 
     print(f"[INFO] Preflight: copying hexagon {normalized_version} runtime files to CWD: {dst_dir}")
-    for rel in hexagon_files:
+    for rel, required in hexagon_files:
         src = sdk_path / Path(rel)
         dst = dst_path / src.name
 
@@ -394,18 +408,24 @@ def _copy_hexagon_runtime_linux(
             print(f"[INFO]   stale, refreshing: {src.name}")
 
         if not src.exists():
-            print(f"[ERROR]   source not found: {src}")
+            if required:
+                print(f"[ERROR]   source not found: {src}")
+            else:
+                print(f"[WARN]    source not found (optional): {src}")
             continue
 
         try:
             shutil.copy2(src, dst)
             print(f"[INFO]   copied: {src.name}")
         except OSError as exc:
-            print(f"[ERROR]   copy failed: {src.name} -- {exc}")
+            if required:
+                print(f"[ERROR]   copy failed: {src.name} -- {exc}")
+            else:
+                print(f"[WARN]    copy failed (optional): {src.name} -- {exc}")
 
     still_missing = [
-        Path(rel).name for rel in hexagon_files
-        if not (dst_path / Path(rel).name).exists()
+        Path(rel).name for rel, required in hexagon_files
+        if required and not (dst_path / Path(rel).name).exists()
     ]
     if still_missing:
         available_versions = sorted(

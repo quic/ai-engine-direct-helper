@@ -287,16 +287,63 @@ def _check_calib_list_format(calib_list: str) -> None:
         print("       plain list of file paths.")
 
 
+def _detect_htp_version(sdk_root: str, host_arch: str) -> str | None:
+    """Auto-detect HTP version via qnn-platform-validator (Linux only).
+
+    Calls ``qnn-platform-validator --backend dsp --coreVersion`` which queries
+    the DSP hardware directly and returns e.g. ``Hexagon Architecture V75``.
+    This is authoritative — no SoC-name mapping needed, works for any SoC
+    the SDK supports.
+
+    Returns ``"v75"`` etc. on success, or ``None`` if detection fails
+    (caller should fall back to the CLI default).
+    """
+    import re as _re
+
+    # Linux only — Windows keeps the existing default="v73" behaviour.
+    if sys.platform == "win32":
+        return None
+
+    validator = Path(sdk_root) / "bin" / host_arch / "qnn-platform-validator"
+    if not validator.exists():
+        return None
+
+    try:
+        r = subprocess.run(
+            [str(validator), "--backend", "dsp", "--coreVersion"],
+            capture_output=True, text=True, timeout=30,
+        )
+        # Merge stdout+stderr; the tool writes info to both.
+        output = (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    # Parse: "Core Version of the backend DSP: Hexagon Architecture V75"
+    m = _re.search(r"Hexagon Architecture V(\d+)", output)
+    if not m:
+        return None
+
+    detected = f"v{m.group(1)}"
+
+    # Sanity-check: does the SDK actually ship this version?
+    if (Path(sdk_root) / "lib" / f"hexagon-{detected}").is_dir():
+        return detected
+
+    return None
+
+
 def _htp_version_to_target_soc_model(htp_version: str) -> str:
-    """Map --htp_version {v73,v81} to qairt-converter/quantizer --target_soc_model.
+    """Map --htp_version to qairt-converter/quantizer --target_soc_model.
 
     Values follow the QAIRT 2.48 identifier convention:
       * v73 (HTP v73) -> SC8380XP -- X Elite
-      * v81 (HTP v81) -> SM8750    -- X2 Elite / Snapdragon 8 Elite
+      * v75 (HTP v75) -> QCS8300  -- Monaco Monza (IoT)
+      * v81 (HTP v81) -> SM8750   -- X2 Elite / Snapdragon 8 Elite
     Returns "" if the mapping is unknown (caller should skip --target_soc_model).
     """
     return {
         "v73": "SC8380XP",
+        "v75": "",   # IoT SoC — soc_model identifier uncertain; skip SoC-specific optimisation
         "v81": "SM8750",
     }.get(htp_version.lower(), "")
 
@@ -611,8 +658,12 @@ def _build_argparser() -> argparse.ArgumentParser:
                    help='Input dimensions, e.g. "input 1,3,512,512".')
     p.add_argument("--config", default="",
                    help="Path to HTP backend_extensions.json (optional).")
-    p.add_argument("--htp_version", default="v73", choices=["v73", "v81"],
-                   help="HTP version for context binary (default: v73).")
+    p.add_argument("--htp_version", default=None, choices=["v73", "v75", "v79", "v81"],
+                   help="HTP version for context binary. "
+                        "Linux: auto-detected via qnn-platform-validator if omitted. "
+                        "Windows: defaults to v73. "
+                        "Consumer: v73 (X Elite), v81 (X2 Elite). "
+                        "IoT: v75 (QCS8300/QCS9075), v79.")
     p.add_argument("--skip_contextbin", action="store_true",
                    help="Skip context binary generation (produce DLC only).")
     p.add_argument("--no_simplification", action="store_true",
@@ -739,6 +790,20 @@ def main():
     if not has_local_htp(host_os):
         print(f"[INFO] {host_os}: context binary will use CPU backend "
               "(no local Hexagon HTP); deploy .dlc/.bin to an ARM64 device for real NPU inference.")
+
+    # ------------------------------------------------------------------
+    # 2b. Auto-detect HTP version (Linux only, via qnn-platform-validator)
+    # ------------------------------------------------------------------
+    if args.htp_version is None:
+        detected = _detect_htp_version(sdk, host_arch)
+        if detected:
+            args.htp_version = detected
+            print(f"[INFO] HTP version  = {detected}  (auto-detected via qnn-platform-validator)")
+        else:
+            args.htp_version = "v73"
+            print(f"[INFO] HTP version  = v73  (auto-detection unavailable, using default)")
+    else:
+        print(f"[INFO] HTP version  = {args.htp_version}  (user-specified)")
 
     # ------------------------------------------------------------------
     # 3. Validate inputs
