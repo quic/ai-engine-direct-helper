@@ -658,12 +658,13 @@ def _build_argparser() -> argparse.ArgumentParser:
                    help='Input dimensions, e.g. "input 1,3,512,512".')
     p.add_argument("--config", default="",
                    help="Path to HTP backend_extensions.json (optional).")
-    p.add_argument("--htp_version", default=None, choices=["v73", "v75", "v79", "v81"],
+    p.add_argument("--htp_version", default=None,
+                   choices=["v66", "v68", "v69", "v73", "v75", "v79", "v81"],
                    help="HTP version for context binary. "
                         "Linux: auto-detected via qnn-platform-validator if omitted. "
                         "Windows: defaults to v73. "
                         "Consumer: v73 (X Elite), v81 (X2 Elite). "
-                        "IoT: v75 (QCS8300/QCS9075), v79.")
+                        "IoT: v66/v68/v69 (QCS6490 etc.), v75 (QCS8300/QCS9075), v79.")
     p.add_argument("--skip_contextbin", action="store_true",
                    help="Skip context binary generation (produce DLC only).")
     p.add_argument("--no_simplification", action="store_true",

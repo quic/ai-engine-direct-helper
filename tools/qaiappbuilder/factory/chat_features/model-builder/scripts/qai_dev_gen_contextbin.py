@@ -1153,7 +1153,10 @@ Examples:
                         help="Auto-generate backend_extensions.json and htp_backend_config_v73.json (WoS ARM64 only)")
     parser.add_argument("--profiling", action="store_true", help="Enable HTP optrace profiling")
     parser.add_argument("--htp_version", default="v73",
-                        help="HTP version (Linux: any SDK hexagon-vNN; Windows: v73 or v81; default: v73)")
+                        choices=["v66", "v68", "v69", "v73", "v75", "v79", "v81"],
+                        help="HTP version (default: v73). "
+                             "IoT: v66/v68/v69 (QCS6490 etc.), v75 (QCS8300/QCS9075), v79. "
+                             "Consumer: v73 (X Elite), v81 (X2 Elite).")
 
     args = parser.parse_args()
 

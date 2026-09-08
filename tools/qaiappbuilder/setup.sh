@@ -114,7 +114,81 @@ if [[ "$OS_TYPE" == "linux" && "$ARCH" == "aarch64" ]]; then
     sudo apt update
     sudo apt install -y cmake build-essential"
   fi
-  info "  cmake and C++ compiler found"
+  # onnxsim's pybind11 extension (onnxsim_cpp2py_export) compiles against
+  # Python.h, which ships in python3.12-dev (not python3.12 / python3.12-venv).
+  # Without it the build fails deep inside the CMake build with:
+  #   fatal error: Python.h: No such file or directory
+  # Detect the header directly (more reliable than checking dpkg, since the
+  # header path depends on the actual Python 3.12 install providing it).
+  _PY312_INCLUDE_DIR=$("$PYTHON" -c "import sysconfig; print(sysconfig.get_path('include'))" 2>/dev/null || true)
+  if [[ -z "$_PY312_INCLUDE_DIR" || ! -f "$_PY312_INCLUDE_DIR/Python.h" ]]; then
+    error "python3.12-dev (providing Python.h) is required on Linux aarch64 to build
+  onnxsim==0.4.36's pybind11 extension for Python 3.12.
+  Install with:
+    sudo apt update
+    sudo apt install -y python3.12-dev
+  Then re-run setup.sh."
+  fi
+  info "  cmake, C++ compiler, and Python.h ($_PY312_INCLUDE_DIR) found"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 04c — qcom-fastrpc1 package & libcdsprpc.so symlink (Linux aarch64)
+# ---------------------------------------------------------------------------
+# HTP/NPU inference requires libcdsprpc.so (unversioned) to be resolvable
+# via dlopen() by the QNN HTP backend (libQnnHtp.so). The qcom-fastrpc1
+# Debian package (v1.0.15+repack2 and earlier) ships only the versioned
+# file (e.g. libcdsprpc.so.1 -> libcdsprpc.so.1.0.0) and does NOT create
+# the unversioned symlink that dlopen("libcdsprpc.so") needs. This is a
+# known OS-packaging defect — unrelated to the QAIRT SDK version or the
+# QAI AppBuilder code — affecting every QCS8300 (and similar Qualcomm IoT)
+# board that uses this package. Detect + auto-install + auto-fix here so
+# every new board hits this exactly once, during setup.
+if [[ "$OS_TYPE" == "linux" && "$ARCH" == "aarch64" ]]; then
+  info "Step 04c: checking qcom-fastrpc1 package & libcdsprpc.so symlink..."
+
+  if dpkg -s qcom-fastrpc1 &>/dev/null; then
+    info "  qcom-fastrpc1 already installed ($(dpkg -s qcom-fastrpc1 | grep -m1 '^Version:' | awk '{print $2}'))"
+  else
+    error "qcom-fastrpc1 is not installed. This package provides libcdsprpc.so,
+  which is required for HTP/NPU inference (dlopen'd by libQnnHtp.so). Without
+  it, HTP inference and context-binary generation will fail with:
+    [ERROR] Failed in loading stub: libcdsprpc.so: cannot open shared object file
+  Install it manually, then re-run setup.sh:
+    sudo apt update && sudo apt install -y qcom-fastrpc1"
+  fi
+
+  # Known defect: the package ships libcdsprpc.so.<N> but not the
+  # unversioned libcdsprpc.so symlink. Detect + fix.
+  _FASTRPC_LIBDIR="/usr/lib/aarch64-linux-gnu"
+  _CDSPRPC_UNVERSIONED="$_FASTRPC_LIBDIR/libcdsprpc.so"
+  if [[ -e "$_CDSPRPC_UNVERSIONED" ]]; then
+    info "  libcdsprpc.so symlink already present: $_CDSPRPC_UNVERSIONED"
+  else
+    # Find the highest versioned libcdsprpc.so.N (e.g. libcdsprpc.so.1)
+    _CDSPRPC_VERSIONED=$(find "$_FASTRPC_LIBDIR" -maxdepth 1 -name 'libcdsprpc.so.*' 2>/dev/null \
+      | grep -E 'libcdsprpc\.so\.[0-9]+$' | sort -V | tail -1)
+    if [[ -z "$_CDSPRPC_VERSIONED" ]]; then
+      error "libcdsprpc.so is missing and no versioned libcdsprpc.so.<N> was
+  found under $_FASTRPC_LIBDIR after installing qcom-fastrpc1.
+  HTP/NPU inference will fail with:
+    [ERROR] Failed in loading stub: libcdsprpc.so: cannot open shared object file
+  Verify the package installed correctly: dpkg -L qcom-fastrpc1 | grep cdsprpc"
+    fi
+    warn "libcdsprpc.so unversioned symlink missing (known qcom-fastrpc1
+  packaging defect) — creating: $_CDSPRPC_UNVERSIONED -> $_CDSPRPC_VERSIONED"
+    if ! command -v sudo &>/dev/null; then
+      error "'sudo' unavailable to create the required symlink. Run manually:
+    sudo ln -s $_CDSPRPC_VERSIONED $_CDSPRPC_UNVERSIONED"
+    fi
+    if ! sudo ln -s "$_CDSPRPC_VERSIONED" "$_CDSPRPC_UNVERSIONED"; then
+      error "Failed to create symlink. Create manually with:
+    sudo ln -s $_CDSPRPC_VERSIONED $_CDSPRPC_UNVERSIONED"
+    fi
+    info "  created symlink: $_CDSPRPC_UNVERSIONED -> $_CDSPRPC_VERSIONED"
+  fi
+else
+  info "Step 04c: skipped (libcdsprpc.so check is Linux/aarch64-only)"
 fi
 
 

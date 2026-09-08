@@ -30,6 +30,7 @@
   - [Try These](#try-these)
 - [🚀 Installation](#-installation)
 - [▶️ Quick Start](#-quick-start)
+- [☁️ Connect Cloud AI Models](#-connect-cloud-ai-models)
 - [📁 Project Structure](#-project-structure)
 - [⚙️ Configuration](#-configuration)
 - [⚡ Skill System](#-skill-system)
@@ -350,7 +351,9 @@ Copy any of these into the chat box to see the tools in action:
 
 ## 🚀 Installation
 
-> **Platform:** Windows on Snapdragon (ARM64). `Setup.bat` automatically downloads `uv`, Python 3.13 ARM64, PortableGit, and Node.js into `%LOCALAPPDATA%\QAIModelBuilder\` — **no administrator rights and no manual Python install required**.
+> **Platform:** Windows on Snapdragon (ARM64) — `Setup.bat` automatically downloads `uv`, Python 3.13 ARM64, PortableGit, and Node.js into `%LOCALAPPDATA%\QAIModelBuilder\` — **no administrator rights and no manual Python install required**; on Linux, `setup.sh` detects and installs what's needed.
+
+### Windows
 
 For source development, run `Setup.bat` → `Build.bat` → `Start.bat`.
 
@@ -360,25 +363,59 @@ To create the external `qaiappbuilder.zip`, run `Build.bat --install` to refresh
 
 > There is also an **optional, developer-only desktop shell** (Tauri 2.x, `Setup.bat --desktop` → `Build.bat --desktop`) — a runnable skeleton for Windows ARM64/x64. It is not a supported end-user distribution path yet.
 
+### Linux (Ubuntu aarch64)
+
+```bash
+bash setup.sh
+bash start.sh
+```
+
+`setup.sh` is **idempotent** (safe to re-run; it only fills in what's missing).
+
+`start.sh` starts the server.
+
+
 ### Launcher scripts (repo root)
 
-| Script | Purpose |
-|--------|---------|
-| `Setup.bat` | **The single install entry point.** Downloads `uv`, installs Python 3.13, creates the venv at `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313` (or `.venv_x64_313` with `--arch x64`), installs runtime deps (`uv pip install -e .`), initializes the `data/` directory (via `python -m scripts.init.install`), and installs PortableGit / Node+pnpm / QAIRT SDK / VS 2022 / TTS data / WebView2. Flags: `--arch arm64|x64`, `--no-builder` (skip conversion toolchain), `--dev`, `--desktop`, `--no-pause`. |
-| `Start.bat` | Starts the server (supervised). The port is **not hard-coded** — the supervisor probes a fallback list and writes the real URL to `data/runtime/server.endpoint.json`, then opens your browser. `Start.bat --reload` enables hot-reload. |
-| `Build.bat` | Builds the Vue 3 SPA into `frontend/dist/` (pnpm). `--full` (typecheck+lint+test), `--install`, `--clean`, `--desktop` (Tauri bundle). |
-| `Console.bat` | Opens an interactive shell with the host-arch venv activated (ARM64 or x64 per `data/config/host_arch`). |
-| `Uninstall.bat` | Uninstaller — rolls back what `Setup.bat` installed outside the project dir; **does not delete `data/`**. |
+| Windows | Linux | Purpose |
+|---------|-------|---------|
+| `Setup.bat` | `setup.sh` | **The single install entry point.** Windows: downloads `uv`, installs Python 3.13 (ARM64 by default; `--arch x64` installs the x64 build), creates the venv at `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313` (or `.venv_x64_313`), installs runtime deps, initializes `data/`, and installs PortableGit / Node+pnpm / QAIRT SDK / VS 2022 / TTS data / WebView2 (flags: `--arch arm64|x64`, `--no-builder`, `--dev`, `--desktop`, `--no-pause`). Linux: reuses the system Python 3.12 / Node.js / pnpm, creates `envs/venv`, installs the QAIRT SDK and dependencies, initializes `data/` (only flag: `--no-frontend`). |
+| `Start.bat` | `start.sh` | Starts the server (supervised). The port is **not hard-coded** — the supervisor probes a fallback list and writes the real URL to `data/runtime/server.endpoint.json`. Windows opens the browser automatically and supports `--reload` hot-reload; on Linux use `--port N` to override the port, `Ctrl+C` to stop. |
+| `Build.bat` | *(no standalone script — see manual command above)* | Builds the Vue 3 SPA into `frontend/dist/` (pnpm). Windows supports `--full` (typecheck+lint+test), `--install`, `--clean`, `--desktop`; on Linux the frontend build is already embedded in `setup.sh` — to rebuild manually run `pnpm -C frontend build`. |
+| `Console.bat` | *(no standalone script — use `source envs/venv/bin/activate`)* | Opens an interactive shell with the host-arch venv activated. |
+| `Uninstall.bat` | *(no standalone script — remove `envs/` manually)* | Uninstaller — rolls back what `Setup.bat` installed outside the project dir; **does not delete `data/`**. |
 
-> The legacy `Install.bat` / `Launch.bat` flow has been removed — installation is `Setup.bat`, startup is `Start.bat`.
 
 ---
 
 ## ▶️ Quick Start
 
-After installation, double-click **`Start.bat`** (or launch the desktop app). The server binds the backend port defined in `factory/config/ports.json` (the single source of truth for all ports; falls back to other candidates from that file if the port is occupied) and opens your browser automatically. The actual URL is written to `data/runtime/server.endpoint.json`.
+After installation, double-click **`Start.bat`** (or launch the desktop app; on Linux run `bash start.sh`). The server binds the backend port defined in `factory/config/ports.json` (the single source of truth for all ports; falls back to other candidates from that file if the port is occupied) and opens your browser automatically. The actual URL is written to `data/runtime/server.endpoint.json`.
 
-> Changed the **backend**? Just restart `Start.bat` (Python is interpreted — no build step). Changed the **frontend**? Run `Build.bat`, then `Start.bat`.
+> Changed the **backend**? Just restart `Start.bat` / `bash start.sh` (Python is interpreted — no build step). Changed the **frontend**? On Windows run `Build.bat`, then `Start.bat`; on Linux re-run `bash setup.sh`, then `bash start.sh`.
+
+---
+
+## ☁️ Connect Cloud AI Models
+
+### About Route1
+
+**Route1** is the built-in default cloud provider — no need to apply for your own API key, works out of the box, and is a convenient way to quickly try out the system's features. **Route1 allocates a fixed token quota per Qualcomm account**: once the quota is exhausted, this provider becomes unavailable, and you can switch to a third-party cloud model you configure yourself (see the setup steps below). For long-term or heavy usage, we recommend connecting your own cloud model provider.
+
+> **QAI AppBuilder can connect to any OpenAI-compatible third-party cloud AI model** (e.g. OpenAI, Azure OpenAI, DeepSeek, Qwen, Kimi, etc.), for use in model conversion and to power the [LLM Multi-Model Agent Pipeline](#llm-multi-model-agent-pipeline) that autonomously orchestrates your local App Builder Packs.
+
+### Setup Steps
+
+1. **Open Settings** — click **Settings** in the left-hand sidebar menu.
+2. **Go to the Cloud Models tab** — click **Cloud Models** at the top of the Settings page.
+3. **Add a model** — click **Add Model** and fill in the popup form:
+   - **Base URL**: the OpenAI-compatible API endpoint provided by the third-party service
+   - **API Key**: your key (stored encrypted via the OS keyring once saved — never written in plaintext)
+   - **Model Name**: the model identifier provided by the service (e.g. `gpt-4o`, `deepseek-chat`, `qwen-plus`, etc.)
+4. **Save** — the change takes effect immediately, no restart required. The newly added cloud model appears in the model selector in the chat UI.
+
+> You can repeat these steps to add multiple third-party cloud model providers and switch between them freely in the chat UI. If your network requires a proxy to reach the cloud API, configure an outbound proxy under **Settings → App Config** (network section) — see [Network Proxy](#network-proxy).
+
 
 ---
 
@@ -498,7 +535,7 @@ Describe how the AI should use this skill...
 
 ## 💻 Requirements
 
-| Item | Requirement |
+| Item | Requirement (Windows) |
 |------|-------------|
 | **OS** | Windows 11 (ARM64) recommended; Windows 10/11 (x64) for cloud-only use |
 | **CPU** (NPU inference) | Qualcomm Snapdragon X Elite or X Plus (Windows on ARM) |
@@ -509,7 +546,17 @@ Describe how the AI should use this skill...
 | **QAIRT SDK** | 2.45+ for the Model Builder skill (installed by `Setup.bat`) |
 | **Visual Studio** | 2022 Community C++ ARM64 build tools for Model Builder (installed by `Setup.bat`) |
 
-> **Runtime dependencies** are declared solely in `pyproject.toml` (`[project].dependencies`) — `requirements.txt` no longer exists.
+### Linux (Ubuntu, x86_64 & aarch64)
+
+| Item | Requirement |
+|------|-------------|
+| **OS** | Ubuntu 22.04 / 24.04 (x86_64 or aarch64, e.g. QCS8300 and other Snapdragon IoT boards) |
+| **CPU** (HTP/NPU inference) | Qualcomm HTP on aarch64, requires the `qcom-fastrpc1` package for `libcdsprpc.so` (`setup.sh` detects this and prints install guidance; if already installed but missing the unversioned symlink, `setup.sh` creates it automatically) |
+| **Python** | System must have 3.12 pre-installed (`sudo apt install python3.12 python3.12-venv`); aarch64 additionally needs `python3.12-dev` (for compiling onnxsim) |
+| **Node.js / pnpm** | Node.js ≥ 22, pnpm ≥ 9 (needed to build the frontend; skip with `--no-frontend`) |
+| **Build tools** (aarch64 only) | `cmake` + `build-essential` (C++ compiler), for building onnxsim==0.4.36 from source (no aarch64 pre-built wheel exists for this version) |
+| **QAIRT SDK** | Automatically downloaded and installed by `setup.sh` to `~/qairt/<version>` (or `$QAIRT_SDK_ROOT`) |
+
 
 ### Key Python Dependencies
 

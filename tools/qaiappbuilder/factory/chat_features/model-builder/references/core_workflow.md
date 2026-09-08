@@ -62,18 +62,33 @@ Replace unsupported ops (Einsum/GridSample/ScatterND/Mod/Floor…) with QNN-comp
 
 **HTP version** (`--htp_version`):
 
-| User says | flag | Notes |
-|-----------|------|-------|
-| "v73" / default | `v73` | X Elite 8380 |
-| "v81" | `v81` | X2 Elite 8480 |
+**⚠️ Do NOT manually pass `--htp_version`** — `run_pipeline.py` auto-detects via `qnn-platform-validator` on Linux. Only specify manually when auto-detection fails AND you have identified the target SoC.
 
-> **Detect HTP** (when unspecified) — registry query (NOT `Get-WmiObject`/`Get-PnpDeviceProperty` — hang):
+Full SoC → HTP mapping (source: QAIRT `docs/QNN/general/overview.html`):
+
+| SoC | HTP | Notes |
+|-----|-----|-------|
+| QCM6490 / SC7280X / SC8280X / SM8350 / SM7325 | **v68** | IoT / older mobile |
+| SM8450 / SM8475 / SM7450 | **v69** | Mobile |
+| SC8380XP (X Elite) / SM8550 (SD 8 Gen 2) | **v73** | Consumer PC / mobile |
+| SM8650 (SD 8 Gen 3) | **v75** | Mobile |
+| SM8750 (SD 8 Elite) | **v79** | Mobile |
+| SC8480XP (X2 Elite) / SM8850 (SD 8 Elite Gen 5) | **v81** | Consumer PC / mobile |
+
+> **Auto-detection (Linux):** `run_pipeline.py` calls `qnn-platform-validator --backend dsp --coreVersion`, parses `Hexagon Architecture V(\d+)`. Falls back to v73 if detection fails (e.g. missing `libcdsprpc.so`).
+>
+> **Manual detection (Linux, when auto-detect fails):**
+> ```bash
+> cat /sys/devices/soc0/machine    # e.g. "QCS6490" → v68 per table above
+> ```
+>
+> **Manual detection (Windows):** registry query (NOT `Get-WmiObject`/`Get-PnpDeviceProperty` — hang):
 > ```powershell
 > Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services" |
 >   Where-Object { $_.PSChildName -like "qcadsp*" } |
 >   Get-ItemProperty | Select-Object PSChildName, ImagePath
 > ```
-> INF filename: `8380`→`v73`; `8480`→`v81`. Table → `references/win_qairt_setup.md § Platform SoC Identification`. Default `v73`.
+> INF filename: `8380`→`v73`; `8480`→`v81`.
 
 ```bat
 REM FP16, HTP v73, DLC (default)
