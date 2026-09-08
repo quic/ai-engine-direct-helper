@@ -28,6 +28,7 @@
   - [试试这些](#试试这些)
 - [🚀 安装](#-安装)
 - [▶️ 快速启动](#-快速启动)
+- [☁️ 接入云端 AI 模型](#-接入云端-ai-模型)
 - [📁 项目结构](#-项目结构)
 - [⚙️ 配置说明](#-配置说明)
 - [⚡ Skill 系统](#-skill-系统)
@@ -345,7 +346,9 @@ AI 会自动完成源模型下载、ONNX 导出、多精度转换、推理执行
 
 ## 🚀 安装
 
-> **平台：** Windows on Snapdragon（ARM64）。`Setup.bat` 自动把 `uv`、Python 3.13 ARM64、PortableGit、Node.js 下载到 `%LOCALAPPDATA%\QAIModelBuilder\` —— **无需管理员权限，无需手动安装 Python**。
+> **平台：** Windows on Snapdragon（ARM64）下 `Setup.bat` 自动把 `uv`、Python 3.13 ARM64、PortableGit、Node.js 下载到 `%LOCALAPPDATA%\QAIModelBuilder\` —— **无需管理员权限，无需手动安装 Python**；Linux 下由 `setup.sh` 检测并安装。
+
+### Windows
 
 源码开发时，依次运行 `Setup.bat` → `Build.bat` → `Start.bat`。
 
@@ -355,25 +358,60 @@ AI 会自动完成源模型下载、ONNX 导出、多精度转换、推理执行
 
 > 另有一个**可选、仅供开发者**的桌面壳（Tauri 2.x，`Setup.bat --desktop` → `Build.bat --desktop`）——面向 Windows ARM64/x64 的可跑骨架；目前不是面向最终用户的分发路径。
 
+### Linux（Ubuntu aarch64）
+
+```bash
+bash setup.sh
+bash start.sh
+```
+
+`setup.sh` 是**幂等**脚本（可重复运行，只补全缺失项）。
+
+`start.sh` 启动服务。
+
+
 ### 启动器脚本（仓库根）
 
-| 脚本 | 作用 |
-|------|------|
-| `Setup.bat` | **唯一安装入口。** 下载 `uv`、安装 Python 3.13（默认 ARM64；`--arch x64` 可装 x64 版）、在 `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`（或 `.venv_x64_313`）建 venv、安装运行时依赖（`uv pip install -e .`）、初始化 `data/` 目录（经 `python -m scripts.init.install`），并安装 PortableGit / Node+pnpm / QAIRT SDK / VS 2022 / TTS 数据 / WebView2。可选参数：`--arch arm64|x64`、`--no-builder`（跳过转换工具链）、`--dev`、`--desktop`、`--no-pause`。 |
-| `Start.bat` | 启动服务（受监管）。端口**不硬编码**——监管器探测回退列表，把真实 URL 写入 `data/runtime/server.endpoint.json` 并自动开浏览器。`Start.bat --reload` 启用热重载。 |
-| `Build.bat` | 把 Vue 3 SPA 构建到 `frontend/dist/`（pnpm）。`--full`（typecheck+lint+test）、`--install`、`--clean`、`--desktop`（Tauri 打包）。 |
-| `Console.bat` | 打开已激活宿主架构 venv 的交互式 shell（按 `data/config/host_arch` 选择 ARM64 或 x64）。 |
-| `Uninstall.bat` | 卸载器——回滚 `Setup.bat` 装在项目目录外的内容；**不删除 `data/`**。 |
+| Windows | Linux  | 作用 |
+|------|------|------|
+| `Setup.bat` | `setup.sh` | **唯一安装入口。** Windows：下载 `uv`、安装 Python 3.13（默认 ARM64；`--arch x64` 可装 x64 版）、在 `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`（或 `.venv_x64_313`）建 venv、安装运行时依赖、初始化 `data/`，并安装 PortableGit / Node+pnpm / QAIRT SDK / VS 2022 / TTS 数据 / WebView2；可选参数 `--arch arm64|x64`、`--no-builder`、`--dev`、`--desktop`、`--no-pause`。Linux：复用系统 Python 3.12 / Node.js / pnpm，建 `envs/venv`，安装 QAIRT SDK 与依赖，初始化 `data/`；可选参数仅 `--no-frontend`。 |
+| `Start.bat` | `start.sh` | 启动服务（受监管）。端口**不硬编码**——探测回退列表，把真实 URL 写入 `data/runtime/server.endpoint.json`。Windows 自动开浏览器并支持 `--reload` 热重载；Linux 下用 `--port N` 覆盖端口，`Ctrl+C` 停止。 |
+| `Build.bat` | *(无独立脚本，见上方手动命令)* | 把 Vue 3 SPA 构建到 `frontend/dist/`（pnpm）。Windows 支持 `--full`（typecheck+lint+test）、`--install`、`--clean`、`--desktop`；Linux 下前端构建已内嵌在 `setup.sh` 中，单独重新构建需手动跑 `pnpm -C frontend build`。 |
+| `Console.bat` | *(无独立脚本，用 `source envs/venv/bin/activate`)* | 打开已激活宿主架构 venv 的交互式 shell。 |
+| `Uninstall.bat` | *(无独立脚本，手动删除 `envs/`)* | 卸载器——回滚 `Setup.bat` 装在项目目录外的内容；**不删除 `data/`**。 |
 
-> 旧的 `Install.bat` / `Launch.bat` 流程已移除——安装用 `Setup.bat`，启动用 `Start.bat`。
 
 ---
 
 ## ▶️ 快速启动
 
-安装完成后，双击 **`Start.bat`**（或启动桌面 App）。服务会绑定 `factory/config/ports.json` 中定义的后端端口（所有端口的单一真源；被占用时从该文件回退到其它候选端口）并自动打开浏览器。真实 URL 写入 `data/runtime/server.endpoint.json`。
+安装完成后，双击 **`Start.bat`**（或启动桌面 App；Linux 下运行 `bash start.sh`）。服务会绑定 `factory/config/ports.json` 中定义的后端端口（所有端口的单一真源；被占用时从该文件回退到其它候选端口）并自动打开浏览器。真实 URL 写入 `data/runtime/server.endpoint.json`。
 
-> 改了**后端**？重启 `Start.bat` 即可（Python 解释执行，无构建步骤）。改了**前端**？先跑 `Build.bat`，再 `Start.bat`。
+> 改了**后端**？重启 `Start.bat` / `bash start.sh` 即可（Python 解释执行，无构建步骤）。改了**前端**？Windows 先跑 `Build.bat` 再 `Start.bat`；Linux 重新执行 `bash setup.sh` 后 `bash start.sh`。
+
+---
+
+## ☁️ 接入云端 AI 模型
+
+### 关于 Route1
+
+**Route1** 是当前内置的默认云端 provider，无需自行申请 API Key、开箱即用，方便快速体验本系统的功能。**Route1 为每个Qualcomm账号分配了固定额度的 token 用量**：额度用尽后该 provider 将不可用，可切换到你自己配置的第三方云端模型（见下文接入步骤）。如需长期 / 大量使用，建议接入自有的云端模型 provider。
+
+
+> **QAI AppBuilder 可以接入任意 OpenAI 兼容的第三方云端 AI 模型**（如 OpenAI、Azure OpenAI、DeepSeek、通义千问、Kimi 等），用于模型转换、驱动 [LLM 多模型 Agent Pipeline](#llm-多模型-agent-pipeline) 自主编排本地 App Builder Pack。
+
+### 接入步骤
+
+1. **打开设置** —— 点击左侧菜单中的 **设置**。
+2. **进入云端模型标签** —— 在设置页顶部标签中点击 **云端模型**。
+3. **添加模型** —— 点击 **添加模型**，在弹出的表单中填写：
+   - **Base URL**：第三方服务商提供的 OpenAI 兼容 API 地址
+   - **API Key**：你的密钥（保存后经 OS keyring 加密存储，不明文落盘）
+   - **模型名称**：服务商提供的模型标识（如 `gpt-4o`、`deepseek-chat`、`qwen-plus` 等）
+4. **保存** —— 点击保存后立即生效，无需重启服务。新添加的云端模型会出现在聊天界面的模型选择器中。
+
+> 可重复上述步骤添加多个第三方云端模型 provider，按需在聊天界面自由切换。若你的网络环境需要经代理访问云端 API，请在 **设置 → App Config**（网络部分）配置出站代理，见 [网络代理](#网络代理)。
+
 
 ---
 
@@ -493,7 +531,7 @@ use_for: 适用场景描述
 
 ## 💻 系统要求
 
-| 项目 | 要求 |
+| 项目 | 要求（Windows） |
 |------|------|
 | **操作系统** | 推荐 Windows 11（ARM64）；仅云端模型可用 Windows 10/11（x64） |
 | **处理器**（NPU 推理） | Qualcomm Snapdragon X Elite 或 X Plus（Windows on ARM） |
@@ -504,7 +542,17 @@ use_for: 适用场景描述
 | **QAIRT SDK** | Model Builder 技能需 2.45+（由 `Setup.bat` 安装） |
 | **Visual Studio** | Model Builder 需 2022 Community C++ ARM64 构建工具（由 `Setup.bat` 安装） |
 
-> **运行时依赖** 仅声明于 `pyproject.toml`（`[project].dependencies`）——`requirements.txt` 已不存在。
+### Linux（Ubuntu，x86_64 & aarch64）
+
+| 项目 | 要求 |
+|------|------|
+| **操作系统** | Ubuntu 22.04 / 24.04（x86_64 或 aarch64，如 QCS8300 等骁龙 IoT 板卡） |
+| **处理器**（HTP/NPU 推理） | aarch64 上的 Qualcomm HTP，需 `qcom-fastrpc1` 包提供 `libcdsprpc.so`（`setup.sh` 会检测并给出安装指引；若已安装但缺 unversioned symlink，`setup.sh` 会自动创建） |
+| **Python** | 系统需预先安装 3.12（`sudo apt install python3.12 python3.12-venv`）；aarch64 额外需 `python3.12-dev`（编译 onnxsim 用） |
+| **Node.js / pnpm** | Node.js ≥ 22、pnpm ≥ 9（构建前端所需；`--no-frontend` 可跳过） |
+| **编译工具**（仅 aarch64） | `cmake` + `build-essential`（C++ 编译器），用于源码编译 onnxsim==0.4.36（该版本无 aarch64 预编译 wheel） |
+| **QAIRT SDK** | 由 `setup.sh` 自动下载安装到 `~/qairt/<version>`（或 `$QAIRT_SDK_ROOT`） |
+
 
 ### 主要 Python 依赖
 
