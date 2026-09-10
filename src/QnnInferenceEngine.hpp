@@ -27,10 +27,13 @@
 #include <unistd.h>  // issue#97: pid_t for fork-safety guard
 #endif
 
-bool disableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra);
-bool enableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra);
-bool boostPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, std::string perfProfile);
-bool resetPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra);
+bool disableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds);
+bool enableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds);
+bool boostPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, std::string perfProfile,
+                       const std::vector<uint32_t>& contextIds);
+bool resetPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds);
+uint32_t getPowerConfigId();
+std::vector<uint32_t> getAllPowerConfigIds();
 
 namespace qnn {
 namespace tools {
@@ -250,8 +253,8 @@ class QnnInferenceEngine {
   bool m_useMmap;
   ProfilingOption m_profilingOption;
 
-  // zw.
   uint32_t m_powerConfigId = 1;
+  std::vector<uint32_t> m_powerConfigIds;
   bool m_isPerformanceInitialized{false};
   QnnHtpDevice_PerfInfrastructure_t m_perfInfra = {nullptr};
   bool m_runInCpu = true;
