@@ -91,6 +91,14 @@ Setup.bat
 Start.bat
 ```
 
+On Linux (Ubuntu aarch64/x86_64), unzip/clone the project instead and run the equivalent shell
+scripts from a terminal:
+
+```bash
+bash setup.sh
+bash start.sh
+```
+
 Your browser opens the QAI AppBuilder WebUI — start chatting to build an app, convert a model,
 or run one straight from AI Hub.
 
@@ -104,8 +112,26 @@ Clone the repo, then run `Setup.bat` → `Build.bat` → `Start.bat` to launch f
 > |----------|-------------|
 > | [README](tools/qaiappbuilder/README.md) \| [中文](tools/qaiappbuilder/README.zh-CN.md) | Full project overview — architecture, features, configuration, skill system, FAQ |
 > | [Quick Start](tools/qaiappbuilder/QUICK-START.md) \| [中文](tools/qaiappbuilder/QUICK-START.zh-CN.md) | 1-page cheat-sheet — dev mode / desktop app (Tauri) / release build, and which `.bat` to run when |
+## ☁️ Connect Cloud AI Models
 
----
+### About Route1
+
+**Route1** is the built-in default cloud provider — no need to apply for your own API key, works out of the box, and is a convenient way to quickly try out the system's features. **Route1 allocates a fixed token quota per Qualcomm account**: once the quota is exhausted, this provider becomes unavailable, and you can switch to a third-party cloud model you configure yourself (see the setup steps below). For long-term or heavy usage, we recommend connecting your own cloud model provider.
+
+> **QAI AppBuilder can connect to any OpenAI-compatible third-party cloud AI model** (e.g. OpenAI, Azure OpenAI, DeepSeek, Qwen, Kimi, etc.), for use in model conversion and to power the [LLM Multi-Model Agent Pipeline](#llm-multi-model-agent-pipeline) that autonomously orchestrates your local App Builder Packs.
+
+### Setup Steps
+
+1. **Open Settings** — click **Settings** in the left-hand sidebar menu.
+2. **Go to the Cloud Models tab** — click **Cloud Models** at the top of the Settings page.
+3. **Add a model** — click **Add Model** and fill in the popup form:
+   - **Base URL**: the OpenAI-compatible API endpoint provided by the third-party service
+   - **API Key**: your key (stored encrypted via the OS keyring once saved — never written in plaintext)
+   - **Model Name**: the model identifier provided by the service (e.g. `gpt-4o`, `deepseek-chat`, `qwen-plus`, etc.)
+4. **Save** — the change takes effect immediately, no restart required. The newly added cloud model appears in the model selector in the chat UI.
+
+> You can repeat these steps to add multiple third-party cloud model providers and switch between them freely in the chat UI. If your network requires a proxy to reach the cloud API, configure an outbound proxy under **Settings → App Config** (network section) — see [Network Proxy](#network-proxy).
+
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/qualcomm/qai-appbuilder/main/docs/images/qai_appbuilder_agent.svg" alt="QAI AppBuilder Agent Capabilities" width="1330" height="488">
