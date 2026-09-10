@@ -54,130 +54,144 @@ uint32_t getPowerConfigId() {
   return 1;
 }
 
-bool disableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra) {
-  QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
-  memset(&powerConfig, 0, sizeof(powerConfig));
-  powerConfig.option                     = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-  powerConfig.dcvsV3Config.dcvsEnable    = 0;  // FALSE
-  powerConfig.dcvsV3Config.setDcvsEnable = 1;
-  powerConfig.dcvsV3Config.powerMode     = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_ADJUST_UP_DOWN;
-  powerConfig.dcvsV3Config.contextId     = getPowerConfigId();
-
-  const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs[] = {&powerConfig, NULL};
-
-  if (QNN_SUCCESS != perfInfra.setPowerConfig(getPowerConfigId(), powerConfigs)) {
-    QNN_ERROR("Failure in setPowerConfig() from disableDcvs");
-    return false;
-  }
-  return true;
+std::vector<uint32_t> getAllPowerConfigIds() {
+  return {sg_powerConfigIds.begin(), sg_powerConfigIds.end()};
 }
 
-bool enableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra) {
-  QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
-  memset(&powerConfig, 0, sizeof(powerConfig));
-  powerConfig.option                     = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-  powerConfig.dcvsV3Config.dcvsEnable    = 1;
-  powerConfig.dcvsV3Config.setDcvsEnable = 1;
-  powerConfig.dcvsV3Config.powerMode     = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_ADJUST_UP_DOWN;
-  powerConfig.dcvsV3Config.contextId     = getPowerConfigId();
 
-  const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs[] = {&powerConfig, NULL};
-
-  if (QNN_SUCCESS != perfInfra.setPowerConfig(getPowerConfigId(), powerConfigs)) {
-    QNN_ERROR("Failure in setPowerConfig() from disableDcvs");
-    return false;
-  }
-  return true;
-}
-
-bool boostPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, std::string perfProfile) {
-    // Initialize the power config and select the voltage corner values for the performance setting.
+bool disableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds) {
+  bool ok = true;
+  for (uint32_t cid : contextIds) {
     QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
     memset(&powerConfig, 0, sizeof(powerConfig));
+    powerConfig.option                     = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+    powerConfig.dcvsV3Config.dcvsEnable    = 0;  // FALSE
+    powerConfig.dcvsV3Config.setDcvsEnable = 1;
+    powerConfig.dcvsV3Config.powerMode     = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_ADJUST_UP_DOWN;
+    powerConfig.dcvsV3Config.contextId     = cid;
 
+    const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs[] = {&powerConfig, NULL};
+    if (QNN_SUCCESS != perfInfra.setPowerConfig(cid, powerConfigs)) {
+      QNN_ERROR("Failure in setPowerConfig() from disableDcvs, contextId=%u", cid);
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+bool enableDcvs(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds) {
+  bool ok = true;
+  for (uint32_t cid : contextIds) {
+    QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
+    memset(&powerConfig, 0, sizeof(powerConfig));
+    powerConfig.option                     = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+    powerConfig.dcvsV3Config.dcvsEnable    = 1;
+    powerConfig.dcvsV3Config.setDcvsEnable = 1;
+    powerConfig.dcvsV3Config.powerMode     = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_ADJUST_UP_DOWN;
+    powerConfig.dcvsV3Config.contextId     = cid;
+
+    const QnnHtpPerfInfrastructure_PowerConfig_t *powerConfigs[] = {&powerConfig, NULL};
+    if (QNN_SUCCESS != perfInfra.setPowerConfig(cid, powerConfigs)) {
+      QNN_ERROR("Failure in setPowerConfig() from enableDcvs, contextId=%u", cid);
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+bool boostPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, std::string perfProfile,
+                       const std::vector<uint32_t>& contextIds) {
     QNN_INF("PERF::boostPerformance");
 
-    powerConfig.option                     = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-    powerConfig.dcvsV3Config.dcvsEnable    = 0;
-    powerConfig.dcvsV3Config.setDcvsEnable = 1;
-    powerConfig.dcvsV3Config.contextId     = getPowerConfigId();
-  
-    // refer QnnHtpPerfInfrastructure.h
-    powerConfig.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
-    powerConfig.dcvsV3Config.setSleepLatency = 1;
-    powerConfig.dcvsV3Config.setBusParams    = 1;
-    powerConfig.dcvsV3Config.setCoreParams   = 1;
-    powerConfig.dcvsV3Config.sleepDisable    = 0;
-    powerConfig.dcvsV3Config.setSleepDisable = 0;
+    for (uint32_t cid : contextIds) {
+      // Initialize the power config and select the voltage corner values for the performance setting.
+      QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
+      memset(&powerConfig, 0, sizeof(powerConfig));
 
-    if (perfProfile == "burst") {
-        QNN_DEBUG("boostPerformance::perfProfile=burst");
-        powerConfig.dcvsV3Config.sleepLatency            = sg_lowerLatency; // set dsp sleep latency ranges 10-65535 micro sec, refer hexagon sdk;
-        powerConfig.dcvsV3Config.busVoltageCornerMin     = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        powerConfig.dcvsV3Config.busVoltageCornerTarget  = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        powerConfig.dcvsV3Config.busVoltageCornerMax     = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        powerConfig.dcvsV3Config.coreVoltageCornerMin    = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        powerConfig.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-        powerConfig.dcvsV3Config.coreVoltageCornerMax    = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
-    }
-    else if(perfProfile == "high_performance") {
-        QNN_DEBUG("boostPerformance::perfProfile=high_performance");
-        powerConfig.dcvsV3Config.sleepLatency            = sg_lowLatency;
-        powerConfig.dcvsV3Config.busVoltageCornerMin     = DCVS_VOLTAGE_VCORNER_TURBO;
-        powerConfig.dcvsV3Config.busVoltageCornerTarget  = DCVS_VOLTAGE_VCORNER_TURBO;
-        powerConfig.dcvsV3Config.busVoltageCornerMax     = DCVS_VOLTAGE_VCORNER_TURBO;
-        powerConfig.dcvsV3Config.coreVoltageCornerMin    = DCVS_VOLTAGE_VCORNER_TURBO;
-        powerConfig.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_TURBO;
-        powerConfig.dcvsV3Config.coreVoltageCornerMax    = DCVS_VOLTAGE_VCORNER_TURBO;
-    }
-    else {
-        QNN_ERROR("Invalid performance profile %s to set power configs", perfProfile.c_str());
-        return false;
-    }
-    
-    // Set power config with different performance parameters
-    const QnnHtpPerfInfrastructure_PowerConfig_t* powerConfigs[] = { &powerConfig, NULL };
-    if (QNN_SUCCESS != perfInfra.setPowerConfig(getPowerConfigId(), powerConfigs)) {
-        QNN_ERROR("Failure in setPowerConfig() from boostPerformance");
-        return false;
+      powerConfig.option                     = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+      powerConfig.dcvsV3Config.dcvsEnable    = 0;
+      powerConfig.dcvsV3Config.setDcvsEnable = 1;
+      powerConfig.dcvsV3Config.contextId     = cid;
+
+      // refer QnnHtpPerfInfrastructure.h
+      powerConfig.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+      powerConfig.dcvsV3Config.setSleepLatency = 1;
+      powerConfig.dcvsV3Config.setBusParams    = 1;
+      powerConfig.dcvsV3Config.setCoreParams   = 1;
+      powerConfig.dcvsV3Config.sleepDisable    = 0;
+      powerConfig.dcvsV3Config.setSleepDisable = 0;
+
+      if (perfProfile == "burst") {
+          QNN_DEBUG("boostPerformance::perfProfile=burst, contextId=%u", cid);
+          powerConfig.dcvsV3Config.sleepLatency            = sg_lowerLatency; // set dsp sleep latency ranges 10-65535 micro sec, refer hexagon sdk;
+          powerConfig.dcvsV3Config.busVoltageCornerMin     = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+          powerConfig.dcvsV3Config.busVoltageCornerTarget  = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+          powerConfig.dcvsV3Config.busVoltageCornerMax     = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+          powerConfig.dcvsV3Config.coreVoltageCornerMin    = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+          powerConfig.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+          powerConfig.dcvsV3Config.coreVoltageCornerMax    = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+      }
+      else if(perfProfile == "high_performance") {
+          QNN_DEBUG("boostPerformance::perfProfile=high_performance, contextId=%u", cid);
+          powerConfig.dcvsV3Config.sleepLatency            = sg_lowLatency;
+          powerConfig.dcvsV3Config.busVoltageCornerMin     = DCVS_VOLTAGE_VCORNER_TURBO;
+          powerConfig.dcvsV3Config.busVoltageCornerTarget  = DCVS_VOLTAGE_VCORNER_TURBO;
+          powerConfig.dcvsV3Config.busVoltageCornerMax     = DCVS_VOLTAGE_VCORNER_TURBO;
+          powerConfig.dcvsV3Config.coreVoltageCornerMin    = DCVS_VOLTAGE_VCORNER_TURBO;
+          powerConfig.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_TURBO;
+          powerConfig.dcvsV3Config.coreVoltageCornerMax    = DCVS_VOLTAGE_VCORNER_TURBO;
+      }
+      else {
+          QNN_ERROR("Invalid performance profile %s to set power configs", perfProfile.c_str());
+          return false;
+      }
+
+      // Set power config with different performance parameters
+      const QnnHtpPerfInfrastructure_PowerConfig_t* powerConfigs[] = { &powerConfig, NULL };
+      if (QNN_SUCCESS != perfInfra.setPowerConfig(cid, powerConfigs)) {
+          QNN_ERROR("Failure in setPowerConfig() from boostPerformance, contextId=%u", cid);
+          return false;
+      }
     }
 
-    return disableDcvs(perfInfra);
+    return disableDcvs(perfInfra, contextIds);
 }
 
-bool resetPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra) {
-    // Initialize the power config and select the voltage corner values for the performance setting.
-    QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
-    memset(&powerConfig, 0, sizeof(powerConfig));
-
+bool resetPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds) {
     QNN_INF("PERF::resetPerformance");
 
-    powerConfig.option                       = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
-    powerConfig.dcvsV3Config.dcvsEnable      = 1;
-    powerConfig.dcvsV3Config.setDcvsEnable   = 1;
-    powerConfig.dcvsV3Config.contextId       = getPowerConfigId();
-    powerConfig.dcvsV3Config.sleepLatency    = sg_highLatency;
-    powerConfig.dcvsV3Config.setSleepLatency = 1;
-    powerConfig.dcvsV3Config.sleepDisable    = 0;
-    powerConfig.dcvsV3Config.setSleepDisable = 0;
-    powerConfig.dcvsV3Config.powerMode       = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_POWER_SAVER_MODE;
-    powerConfig.dcvsV3Config.busVoltageCornerMin     = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.busVoltageCornerTarget  = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.busVoltageCornerMax     = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.setBusParams            = 1;
-    powerConfig.dcvsV3Config.coreVoltageCornerMin    = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.coreVoltageCornerMax    = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
-    powerConfig.dcvsV3Config.setCoreParams           = 1;
+    for (uint32_t cid : contextIds) {
+      // Initialize the power config and select the voltage corner values for the performance setting.
+      QnnHtpPerfInfrastructure_PowerConfig_t powerConfig;
+      memset(&powerConfig, 0, sizeof(powerConfig));
 
-    // Set power config with different performance parameters
-    const QnnHtpPerfInfrastructure_PowerConfig_t* powerConfigs[] = { &powerConfig, NULL };
-    if (QNN_SUCCESS != perfInfra.setPowerConfig(getPowerConfigId(), powerConfigs)) {
-        QNN_ERROR("Failure in setPowerConfig() from resetPerformance");
-        return false;
+      powerConfig.option                       = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+      powerConfig.dcvsV3Config.dcvsEnable      = 1;
+      powerConfig.dcvsV3Config.setDcvsEnable   = 1;
+      powerConfig.dcvsV3Config.contextId       = cid;
+      powerConfig.dcvsV3Config.sleepLatency    = sg_highLatency;
+      powerConfig.dcvsV3Config.setSleepLatency = 1;
+      powerConfig.dcvsV3Config.sleepDisable    = 0;
+      powerConfig.dcvsV3Config.setSleepDisable = 0;
+      powerConfig.dcvsV3Config.powerMode       = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_POWER_SAVER_MODE;
+      powerConfig.dcvsV3Config.busVoltageCornerMin     = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
+      powerConfig.dcvsV3Config.busVoltageCornerTarget  = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
+      powerConfig.dcvsV3Config.busVoltageCornerMax     = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
+      powerConfig.dcvsV3Config.setBusParams            = 1;
+      powerConfig.dcvsV3Config.coreVoltageCornerMin    = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
+      powerConfig.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
+      powerConfig.dcvsV3Config.coreVoltageCornerMax    = DCVS_VOLTAGE_VCORNER_MIN_VOLTAGE_CORNER;
+      powerConfig.dcvsV3Config.setCoreParams           = 1;
+
+      // Set power config with different performance parameters
+      const QnnHtpPerfInfrastructure_PowerConfig_t* powerConfigs[] = { &powerConfig, NULL };
+      if (QNN_SUCCESS != perfInfra.setPowerConfig(cid, powerConfigs)) {
+          QNN_ERROR("Failure in setPowerConfig() from resetPerformance, contextId=%u", cid);
+          return false;
+      }
     }
 
-    return enableDcvs(perfInfra);
+    return enableDcvs(perfInfra, contextIds);
 }
 
 
@@ -2147,7 +2161,7 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::executeGraphsBuffers(std::vecto
           QNN_DEBUG("Successfully populated input tensors for graphIdx: %d", graphIdx);
           Qnn_ErrorHandle_t executeStatus = QNN_GRAPH_NO_ERROR;
 
-          if (!m_isGpu && false == m_runInCpu && "default" != perfProfile && false == boostPerformance(m_perfInfra, perfProfile)) {
+          if (!m_isGpu && false == m_runInCpu && "default" != perfProfile && false == boostPerformance(m_perfInfra, perfProfile, m_powerConfigIds)) {
             QNN_ERROR("Performance boost failure");
           }
 
@@ -2160,7 +2174,7 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::executeGraphsBuffers(std::vecto
                                                               m_profileBackendHandle,
                                                               nullptr);
 
-          if (!m_isGpu && false == m_runInCpu && "default" != perfProfile && false == resetPerformance(m_perfInfra)) {
+          if (!m_isGpu && false == m_runInCpu && "default" != perfProfile && false == resetPerformance(m_perfInfra, m_powerConfigIds)) {
             QNN_ERROR("Performance reset failure");
           }
 
@@ -2384,17 +2398,24 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::initializePerformance() {
     QnnHtpDevice_Infrastructure_t* htpInfra = static_cast<QnnHtpDevice_Infrastructure_t*>(deviceInfra);
     m_perfInfra = htpInfra->perfInfra;
     uint32_t deviceId = m_multiCoreDeviceConfig.deviceId;
-    uint32_t coreId = m_multiCoreDeviceConfig.coreIdVec.empty()
-                          ? 0
-                          : *std::min_element(m_multiCoreDeviceConfig.coreIdVec.begin(),
-                                              m_multiCoreDeviceConfig.coreIdVec.end());
-    QNN_INFO("qnn_app::QnnInferenceEngine::initializePerformance,deviceId=%u, coreId=%u\n", deviceId, coreId);
-    if (QNN_SUCCESS != m_perfInfra.createPowerConfigId(deviceId, coreId, &m_powerConfigId)) {
-        QNN_ERROR("Failure in createPowerConfigId()");
-        return StatusCode::FAILURE;
+
+    std::vector<uint32_t> coreIds = m_multiCoreDeviceConfig.coreIdVec;
+    if (coreIds.empty()) coreIds.push_back(0);
+
+    m_powerConfigIds.clear();
+    m_powerConfigIds.reserve(coreIds.size());
+    for (uint32_t coreId : coreIds) {
+        uint32_t cfgId = 0;
+        QNN_INFO("qnn_app::QnnInferenceEngine::initializePerformance,deviceId=%u, coreId=%u\n", deviceId, coreId);
+        if (QNN_SUCCESS != m_perfInfra.createPowerConfigId(deviceId, coreId, &cfgId)) {
+            QNN_ERROR("Failure in createPowerConfigId() for coreId=%u", coreId);
+            return StatusCode::FAILURE;
+        }
+        m_powerConfigIds.push_back(cfgId);
+        sg_powerConfigIds.insert(cfgId);
     }
+    m_powerConfigId = m_powerConfigIds.front();
     m_isPerformanceInitialized = true;
-    sg_powerConfigIds.insert(m_powerConfigId);
     return StatusCode::SUCCESS;
 }
 
@@ -2402,14 +2423,18 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::destroyPerformance() {
     if (!m_isPerformanceInitialized)
         return StatusCode::SUCCESS;
 
-    const auto status = m_perfInfra.destroyPowerConfigId(m_powerConfigId);
-    // Treat the opaque id as consumed regardless of backend status; retrying
-    // an indeterminate native handle risks double release.
-    m_isPerformanceInitialized = false;
-    sg_powerConfigIds.erase(m_powerConfigId);
-    if (QNN_SUCCESS != status) {
-        QNN_ERROR("Failure in destroyPowerConfigId()");
-        return StatusCode::FAILURE;
+    StatusCode result = StatusCode::SUCCESS;
+    for (uint32_t cfgId : m_powerConfigIds) {
+        const auto status = m_perfInfra.destroyPowerConfigId(cfgId);
+        // Treat the opaque id as consumed regardless of backend status; retrying
+        // an indeterminate native handle risks double release.
+        sg_powerConfigIds.erase(cfgId);
+        if (QNN_SUCCESS != status) {
+            QNN_ERROR("Failure in destroyPowerConfigId() for contextId=%u", cfgId);
+            result = StatusCode::FAILURE;
+        }
     }
-    return StatusCode::SUCCESS;
+    m_powerConfigIds.clear();
+    m_isPerformanceInitialized = false;
+    return result;
 }

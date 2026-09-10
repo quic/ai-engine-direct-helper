@@ -478,7 +478,7 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
     QNN_INF("PERF::SetPerfProfileGlobal");
     sg_perf_global = true;
 
-    return boostPerformance(perfInfra, perf_profile);
+    return boostPerformance(perfInfra, perf_profile, getAllPowerConfigIds());
 }
 
 bool RelPerfProfileGlobal() {
@@ -516,7 +516,7 @@ bool RelPerfProfileGlobal() {
     QnnHtpDevice_PerfInfrastructure_t perfInfra = gs_htpInfra->perfInfra;
     QNN_INF("PERF::RelPerfProfileGlobal");
 
-    return resetPerformance(perfInfra);
+    return resetPerformance(perfInfra, getAllPowerConfigIds());
 }
 
 void QNN_ERR(const char* fmt, ...) {
