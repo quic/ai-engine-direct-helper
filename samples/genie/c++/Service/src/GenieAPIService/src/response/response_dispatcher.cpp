@@ -882,6 +882,8 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
         {
             finalize_tool_call_layer3(connection_broken ? " (connection_broken)" : "");
         }
+        last_finish_reason_ = finishReason;
+        last_tool_response_ = isToolResponse ? toolResponse : std::string();
 
         // Layer -1 hold-back 释放：若生成过程中曾因为"</think> 之后的可见文本以 '{' 或
         // 代码围栏开头"而暂缓发送（见 genie_callback 内的 hold-back 逻辑），且最终判定

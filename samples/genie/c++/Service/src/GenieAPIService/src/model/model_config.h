@@ -255,6 +255,7 @@ struct ToolCallRepairConfig {
         bool enabled = true;
         int repeat_threshold = 2;
         int ttl_seconds = 300;
+        int consecutive_failure_threshold = 3;
     } redundant_call_guard;
 };
 
@@ -470,6 +471,11 @@ struct SystemPromptsConfig {
     std::string few_shot_no_skill_title_template    = "**Example {idx} - List Skills (answer from catalog)**\n";
     std::string few_shot_no_skill_user_input        = "What skills do you have? / 有哪些skills?";
     std::string few_shot_no_skill_response          = "I have the following skills: [list from catalog above]. No tool call needed.";
+};
+
+struct RequestTraceConfig {
+    bool enabled = false;
+    std::string path = "tmp/request_trace.jsonl";
 };
 
 struct PromptOptimizationConfig {
@@ -702,7 +708,7 @@ struct PromptOptimizationConfig {
     // 长文本摘要化主配置
     struct LongTextSummarizationConfig {
         bool enabled = false;           // 总开关（默认关闭，需在 prompt_engineering.json 中显式开启）
-        double trigger_ratio = 0.5;     // 触发阈值：content token 数 > context_size * trigger_ratio 时触发摘要
+        double trigger_ratio = 0.9;
         double chunk_ratio = 0.45;      // 分块大小：chunk_token_limit = context_size * chunk_ratio
         bool summarize_user_messages = true;    // 是否对最后一条 user 文本消息执行摘要
         bool summarize_tool_responses = true;   // 是否对末尾连续 tool 消息链执行摘要
@@ -914,6 +920,11 @@ public:
         return prompt_optimization_config_;
     }
 
+    const RequestTraceConfig& GetRequestTraceConfig() const
+    {
+        return request_trace_config_;
+    }
+
     const PromptSectionsConfig& GetPromptSectionsConfig() const
     {
         return prompt_optimization_config_.prompt_sections;
@@ -982,6 +993,8 @@ public:
     
     // Prompt 优化配置
     PromptOptimizationConfig prompt_optimization_config_;
+
+    RequestTraceConfig request_trace_config_;
 
     // 运行时 Skill 映射（每次请求从客户端 <available_skills> XML 动态解析写入）
     // 供 ResponseDispatcher::AutoCorrectSkillCall() 读取，以纠正模型错误的 SKILL 直接调用

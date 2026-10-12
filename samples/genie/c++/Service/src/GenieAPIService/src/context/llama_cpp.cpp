@@ -25,8 +25,12 @@
 #include <cctype>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <vector>
 
 namespace fs = std::filesystem;
+
+static std::atomic<bool> g_llama_prefix_cache_enabled{true};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 返回自 epoch 以来的毫秒数（用于 prefill/生成速率等性能日志的时间戳计算）
@@ -318,16 +322,11 @@ public:
 
         llama_context *ctx = llama_init->context();
         llama_memory_t mem = llama_get_memory(ctx);
-        llama_memory_clear(mem, false);
-
-        // Fix: 投机解码场景下 draft context 的 KV cache 此前从未在这里被清空，跨请求残留
-        // 上一次请求末尾的位置（如 X=85），与本次全新请求从 0 开始的 token 位置冲突，触发
-        // "inconsistent sequence positions"/llama_decode(ctx_dft) failed rc=-1（M-RoPE 要求
-        // X <= Y）。target/draft 两个 context 必须在每次 Query 开头同步重置。
-        if (is_speculative_ && params_.speculative.draft.ctx_dft)
-        {
-            llama_memory_clear(llama_get_memory(params_.speculative.draft.ctx_dft), false);
-        }
+        llama_context *ctx_dft = (is_speculative_ && params_.speculative.draft.ctx_dft)
+                ? params_.speculative.draft.ctx_dft : nullptr;
+        const bool prefix_cache_on = g_llama_prefix_cache_enabled.load() && !is_aux_inference;
+        const bool had_prefix_cache = prefix_cache_valid_;
+        prefix_cache_valid_ = false;
 
         // 重置性能计数器，确保每次 Query 的统计数据是独立的
         llama_perf_context_reset(ctx);
@@ -408,6 +407,35 @@ public:
                 : (int) embd_inp.size();
         bool switch_to_speculative = false;
         bool eog_hit = false;
+
+        int n_reuse = 0;
+        if (prefix_cache_on && had_prefix_cache && effective_prompt_len > 1)
+        {
+            n_reuse = MatchPrefixCache(ctx, ctx_dft, effective_prompt_len - 1);
+        }
+        if (n_reuse == 0)
+        {
+            llama_memory_clear(mem, false);
+            if (ctx_dft)
+            {
+                llama_memory_clear(llama_get_memory(ctx_dft), false);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < n_reuse; ++i)
+            {
+                common_sampler_accept(smpl, embd_inp[i], false);
+            }
+            n_past = n_reuse;
+            n_consumed = n_reuse;
+        }
+        int ckpt_target = FindCheckpointPos(effective_prompt_len, n_reuse);
+        My_Log{} << "[LLAMACpp] " << query_type
+                 << " Prefix cache: enabled=" << prefix_cache_on
+                 << " | reused_tokens=" << n_reuse
+                 << " | checkpoint_at=" << ckpt_target
+                 << " | prompt_tokens=" << embd_inp.size() << "\n";
 
         bool think_in_progress = false;
         int think_token_start = -1;
@@ -510,6 +538,8 @@ public:
                     llama_memory_seq_rm(mem, 0, n_keep, n_keep + n_discard);
                     llama_memory_seq_add(mem, 0, n_keep + n_discard, n_past, -n_discard);
                     n_past -= n_discard;
+                    ckpt_target = -1;
+                    prefix_cache_valid_ = false;
                     My_Log{My_Log::Level::kWarning}
                         << "[LLAMACpp] " << query_type
                         << " Context overflow: discarded " << n_discard << " tokens, n_past=" << n_past << "\n";
@@ -524,6 +554,7 @@ public:
                 if (llama_decode(ctx, llama_batch_get_one(embd.data(), (int) embd.size())))
                 {
                     My_Log{My_Log::Level::kError} << "[LLAMACpp] " << query_type << " llama_decode FAILED\n";
+                    prefix_cache_valid_ = false;
                     return false;
                 }
 
@@ -540,6 +571,11 @@ public:
 
                 n_past += (int) embd.size();
                 total_decode_batches++;
+
+                if (prefix_cache_on && !prefill_done && ckpt_target > 0 && n_past == ckpt_target)
+                {
+                    SavePrefixCheckpoint(ctx, ctx_dft, ckpt_target);
+                }
 
                 if (!prefill_done)
                 {
@@ -625,7 +661,7 @@ public:
                     embd.push_back(embd_inp[n_consumed]);
                     common_sampler_accept(smpl, embd_inp[n_consumed], false);
                     ++n_consumed;
-                    if ((int) embd.size() == params_.n_batch)
+                    if ((int) embd.size() == params_.n_batch || n_consumed == ckpt_target)
                     {
                         break;
                     }
@@ -799,6 +835,7 @@ public:
 
             if (decode_failed)
             {
+                prefix_cache_valid_ = false;
                 std::lock_guard<std::mutex> lk(m);
                 done = true;
                 cv.notify_one();
@@ -864,6 +901,50 @@ public:
             // 打印完整生成文本（辅助推理结果）
             My_Log{} << "[LLAMACpp] " << query_type
                      << " Full generated text: \"" << generated_text_buf << "\"\n";
+        }
+
+        if (is_aux_inference)
+        {
+            aux_ms_accum_ += total_ms;
+            ++aux_calls_accum_;
+        }
+        else
+        {
+            int64_t t_query_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                t_query_start.time_since_epoch()).count();
+            int64_t ttft_ms = (t_gen_start_ms > 0) ? (t_gen_start_ms - t_query_start_ms) : -1;
+            int64_t prefill_ms = (prefill_done && t_prefill_end_ms > t_prefill_start_ms) ?
+                (t_prefill_end_ms - t_prefill_start_ms) : 0;
+            double prefill_tok_s = (prefill_ms > 0 && total_prefill_tokens > 0) ?
+                (total_prefill_tokens * 1000.0 / prefill_ms) : 0.0;
+
+            json metrics = json::object();
+            metrics["prompt_tokens"] = (int) embd_inp.size();
+            metrics["gen_tokens"] = n_generated;
+            metrics["prefix_reused_tokens"] = n_reuse;
+            metrics["aux_ms"] = aux_ms_accum_;
+            metrics["aux_calls"] = aux_calls_accum_;
+            aux_ms_accum_ = 0;
+            aux_calls_accum_ = 0;
+            metrics["ttft_ms"] = ttft_ms;
+            metrics["prefill_ms"] = prefill_ms;
+            metrics["prefill_tok_s"] = prefill_tok_s;
+            metrics["decode_ms"] = gen_elapsed_ms;
+            metrics["decode_tok_s"] = gen_rate;
+            if (spec_)
+            {
+                metrics["draft_proposed"] = n_draft_proposed_total;
+                metrics["draft_accepted"] = n_draft_accepted_total;
+                metrics["draft_acceptance_rate"] = (n_draft_proposed_total > 0) ?
+                    ((double) n_draft_accepted_total / (double) n_draft_proposed_total) : 0.0;
+            }
+            else
+            {
+                metrics["draft_proposed"] = nullptr;
+                metrics["draft_accepted"] = nullptr;
+                metrics["draft_acceptance_rate"] = nullptr;
+            }
+            last_trace_metrics_ = metrics;
         }
 
         std::lock_guard<std::mutex> lk(m);
@@ -947,6 +1028,142 @@ public:
     // Fix: 是否因输出 token 限制而停止生成
     bool stopped_by_output_limit_ = false;
 
+    json last_trace_metrics_ = nullptr;
+    int64_t aux_ms_accum_ = 0;
+    int64_t aux_calls_accum_ = 0;
+
+    bool prefix_cache_valid_ = false;
+    std::vector<llama_token> prefix_cache_tokens_;
+    std::vector<uint8_t> prefix_ckpt_tgt_;
+    std::vector<uint8_t> prefix_ckpt_dft_;
+    std::vector<uint8_t> prefix_ckpt_spec_;
+
+    json GetLastQueryTraceMetrics() const
+    {
+        return last_trace_metrics_;
+    }
+
+    static bool NeedsPartialState(llama_context *c)
+    {
+        const llama_model *mdl = llama_get_model(c);
+        return llama_model_is_recurrent(mdl) || llama_model_is_hybrid(mdl) || llama_model_n_swa(mdl) > 0;
+    }
+
+    static bool SaveSeqState(llama_context *c, std::vector<uint8_t> &buf)
+    {
+        const size_t n = llama_state_seq_get_size_ext(c, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        if (n == 0)
+        {
+            return false;
+        }
+        buf.resize(n);
+        return llama_state_seq_get_data_ext(c, buf.data(), buf.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) > 0;
+    }
+
+    static bool RestoreSeqState(llama_context *c, const std::vector<uint8_t> &buf)
+    {
+        return !buf.empty() &&
+               llama_state_seq_set_data_ext(c, buf.data(), buf.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) > 0;
+    }
+
+    int FindCheckpointPos(int effective_prompt_len, int n_reuse) const
+    {
+        const llama_token bos = llama_vocab_bos(vocab);
+        llama_token msg_start = LLAMA_TOKEN_NULL;
+        for (int i = 0; i < effective_prompt_len; ++i)
+        {
+            if (embd_inp[i] != bos && llama_vocab_is_control(vocab, embd_inp[i]))
+            {
+                msg_start = embd_inp[i];
+                break;
+            }
+        }
+        int pos = effective_prompt_len;
+        if (msg_start != LLAMA_TOKEN_NULL)
+        {
+            int found = 0;
+            for (int i = effective_prompt_len - 1; i > n_reuse; --i)
+            {
+                if (embd_inp[i] == msg_start)
+                {
+                    ++found;
+                    if (found == 2)
+                    {
+                        pos = i;
+                        break;
+                    }
+                }
+            }
+        }
+        return pos > n_reuse ? pos : -1;
+    }
+
+    void SavePrefixCheckpoint(llama_context *c, llama_context *c_dft, int pos)
+    {
+        bool ok = !NeedsPartialState(c) || SaveSeqState(c, prefix_ckpt_tgt_);
+        if (ok && c_dft)
+        {
+            ok = !NeedsPartialState(c_dft) || SaveSeqState(c_dft, prefix_ckpt_dft_);
+        }
+        if (!ok)
+        {
+            My_Log{My_Log::Level::kWarning} << "[LLAMACpp] Prefix checkpoint save failed at pos=" << pos << "\n";
+            return;
+        }
+        prefix_ckpt_spec_.clear();
+        if (spec_ && !common_speculative_get_state(spec_.get(), 0, prefix_ckpt_spec_))
+        {
+            prefix_ckpt_spec_.clear();
+        }
+        prefix_cache_tokens_.assign(embd_inp.begin(), embd_inp.begin() + pos);
+        prefix_cache_valid_ = true;
+    }
+
+    int MatchPrefixCache(llama_context *c, llama_context *c_dft, int limit)
+    {
+        const bool partial_tgt = NeedsPartialState(c);
+        const bool partial_dft = c_dft && NeedsPartialState(c_dft);
+        const int n_cached = (int) prefix_cache_tokens_.size();
+        int n = 0;
+        if (partial_tgt || partial_dft)
+        {
+            if (n_cached > 0 && n_cached <= limit &&
+                std::equal(prefix_cache_tokens_.begin(), prefix_cache_tokens_.end(), embd_inp.begin()))
+            {
+                n = n_cached;
+            }
+        }
+        else
+        {
+            const int n_cmp = std::min(n_cached, limit);
+            while (n < n_cmp && prefix_cache_tokens_[n] == embd_inp[n])
+            {
+                ++n;
+            }
+        }
+        if (n == 0)
+        {
+            return 0;
+        }
+        bool ok = !partial_tgt || RestoreSeqState(c, prefix_ckpt_tgt_);
+        ok = ok && llama_memory_seq_rm(llama_get_memory(c), 0, n, -1);
+        if (ok && c_dft)
+        {
+            ok = !partial_dft || RestoreSeqState(c_dft, prefix_ckpt_dft_);
+            ok = ok && llama_memory_seq_rm(llama_get_memory(c_dft), 0, n, -1);
+        }
+        if (!ok)
+        {
+            My_Log{My_Log::Level::kWarning} << "[LLAMACpp] Prefix cache restore failed, full prefill\n";
+            return 0;
+        }
+        if (spec_ && !prefix_ckpt_spec_.empty())
+        {
+            common_speculative_set_state(spec_.get(), 0, prefix_ckpt_spec_);
+        }
+        return n;
+    }
+
 private:
     // 把 ggml/llama 内部日志按 ggml_log_level 映射到项目统一日志体系（My_Log::Level）转发，
     // 遵循项目默认日志级别（kWarning）过滤，不再使用裸时间戳 fprintf 直接写 stderr。
@@ -995,6 +1212,8 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // --spec-draft-n-max/--spec-draft-p-min 这 4 个投机专用 flag 不在 LLAMA_EXAMPLE_COMPLETION 白名单
     // 内，必须在 parse 成功后用 C++ 代码直接赋值（见下方）。完整契约见同名文档 llama_cpp.md。
     llama_speculative::DraftModelConfig draft_config;
+    int configured_n_batch = 0;
+    int configured_n_ubatch = 0;
     try
     {
         const std::string &config_path = model_config_.i_model_config_.get_config_path();
@@ -1004,6 +1223,18 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             json model_json;
             config_stream >> model_json;
             draft_config = llama_speculative::DraftModelConfig::ParseFrom(model_json);
+            if (model_json.is_object() && model_json.contains("llama") && model_json["llama"].is_object())
+            {
+                const json &llama_block = model_json["llama"];
+                if (llama_block.contains("n_batch") && llama_block["n_batch"].is_number_integer())
+                {
+                    configured_n_batch = llama_block["n_batch"].get<int>();
+                }
+                if (llama_block.contains("n_ubatch") && llama_block["n_ubatch"].is_number_integer())
+                {
+                    configured_n_ubatch = llama_block["n_ubatch"].get<int>();
+                }
+            }
         }
     }
     catch (...)
@@ -1105,6 +1336,34 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             arg_strings.insert(arg_strings.end(), {"-ngld", "99"});
         }
     }
+
+    constexpr int kDefaultBatch = 2048;
+    constexpr int kDefaultUbatch = 512;
+    int n_batch = configured_n_batch > 0 ? configured_n_batch : kDefaultBatch;
+    int n_ubatch = configured_n_ubatch > 0 ? configured_n_ubatch : kDefaultUbatch;
+    if (configured_n_batch < 0 || configured_n_ubatch < 0)
+    {
+        My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] llama.n_batch=" << configured_n_batch
+                                      << " / llama.n_ubatch=" << configured_n_ubatch
+                                      << " must be positive; negative values replaced by defaults "
+                                      << kDefaultBatch << " / " << kDefaultUbatch << "." << std::endl;
+    }
+    if (n_batch > n_ctx)
+    {
+        My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] n_batch=" << n_batch << " exceeds n_ctx=" << n_ctx
+                                      << "; clamping n_batch to n_ctx." << std::endl;
+        n_batch = n_ctx;
+    }
+    if (n_ubatch > n_batch)
+    {
+        My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] n_ubatch=" << n_ubatch << " exceeds n_batch=" << n_batch
+                                      << "; clamping n_ubatch to n_batch." << std::endl;
+        n_ubatch = n_batch;
+    }
+    arg_strings.insert(arg_strings.end(), {"-b", std::to_string(n_batch), "-ub", std::to_string(n_ubatch)});
+    My_Log{My_Log::Level::kInfo} << "[LLAMACppBuilder] n_batch=" << n_batch << ", n_ubatch=" << n_ubatch
+                                  << (configured_n_batch > 0 || configured_n_ubatch > 0 ? " (from config llama block)" : " (defaults)")
+                                  << std::endl;
     if (device == "cpu")
     {
         // CPU 路径：保持 mmap/repack/no-host 的 llama.cpp 官方默认值（已实测验证比强制关闭更快）。
@@ -1119,7 +1378,6 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             "--no-mmap",
             "--no-repack",
             "--no-host",
-            "-ub", "1024",
         });
     }
     // 投机解码分支（非 CPU）不显式传 -ngl：llama-completion.exe 实测确认，一旦显式给出 -ngl（含
@@ -1261,6 +1519,11 @@ bool LLAMACppBuilder::Query(const ModelInput &model_input, const Callback& callb
         query_type_label = "DESENSITIZE";
         is_aux_inference = true;
     }
+    else if (prompt.find("You are a compression assistant") != std::string::npos)
+    {
+        query_type_label = "SUMMARIZATION";
+        is_aux_inference = true;
+    }
     // 使用 ModelInput 中由 ModelInputBuilder 预先检测并设置的 agent_type_ 字段
     else if (model_input.agent_type_ == "main")
     {
@@ -1298,6 +1561,21 @@ LLAMACppBuilder::~LLAMACppBuilder()
 {
     delete impl_;
     impl_ = nullptr;
+}
+
+void LLAMACppBuilder::SetPrefixCacheEnabled(bool enabled)
+{
+    g_llama_prefix_cache_enabled.store(enabled);
+}
+
+bool LLAMACppBuilder::UsesCrossRequestPrefixCache() const
+{
+    return g_llama_prefix_cache_enabled.load();
+}
+
+json LLAMACppBuilder::GetLastQueryTraceMetrics() const
+{
+    return impl_ ? impl_->GetLastQueryTraceMetrics() : json(nullptr);
 }
 
 bool LLAMACppBuilder::Stop()

@@ -160,6 +160,8 @@ private:
     // ========== 辅助方法：计算 token 数量 ==========
     size_t CountTokens(const std::string& text);
 
+    bool PrefixCacheActive();
+
     // ========== 辅助函数：批量删除旧消息直到满足预算（Phase 1 专用）==========
     void DropOldMessagesBatch(
         nlohmann::ordered_json& filtered_msg,

@@ -23,6 +23,7 @@
 #include "tool_call_circuit_breaker_store.h"
 #include "tool_call_repetition_store.h"
 #include <chrono>
+#include <unordered_set>
 
 
 using json = nlohmann::ordered_json;
@@ -165,8 +166,13 @@ public:
         // 在 prompt 构建前，对超长 user 消息和末尾 tool 消息链执行 Map-Reduce 摘要，
         // 以减少本地输入溢出概率。摘要失败时静默降级，保留原文继续走现有流程。
         {
-            const auto& sum_cfg = po_cfg.long_text_summarization;
+            auto sum_cfg = po_cfg.long_text_summarization;
+            if (context_ && context_->UsesCrossRequestPrefixCache())
+            {
+                sum_cfg.summarize_tool_responses = false;
+            }
             if (sum_cfg.enabled
+                    && (sum_cfg.summarize_user_messages || sum_cfg.summarize_tool_responses)
                     && data.contains("messages")
                     && data["messages"].is_array())
             {
@@ -364,7 +370,6 @@ private:
             } else {
                 systemDefaultPrompt = optimizer_.OptimizeSystemPrompt(systemDefaultPrompt, request_data_);
             }
-            systemDefaultPrompt += BuildTaskMemoSection();
 
             auto stats = optimizer_.GetLastStats();
             My_Log{My_Log::Level::kInfo} << "[Optimization] System prompt savings: " << stats.savings_percent << "%" << std::endl;
@@ -485,6 +490,13 @@ private:
             chat_history_.AddMessage(opt_msg.role, opt_msg.content);
         }
 
+        if (!chat_history_.IsEmpty()) {
+            std::string memo_section = BuildTaskMemoSection();
+            if (!memo_section.empty()) {
+                chat_history_.PrependToLastMessage(memo_section);
+            }
+        }
+
         return optimized;
     }
 
@@ -588,7 +600,9 @@ private:
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
         {
             const auto &shell_hint_cfg = instance_config_->i_model_config_.GetWindowsShellHintConfig();
-            if (shell_hint_cfg.enabled && tools.is_array())
+            if (shell_hint_cfg.enabled && tools.is_array()
+                && model_input_.system_.find("## Host Environment") == std::string::npos
+                && systemDefaultPrompt.find("## Host Environment") == std::string::npos)
             {
                 bool has_shell_tool = false;
                 for (const auto &tool : tools)
@@ -684,6 +698,8 @@ private:
                 last_ledger_.memo_confidence = optimized.memo_confidence;
                 last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
                 last_ledger_.memo_pages_total = optimized.memo_pages_total;
+                last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
+                last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
             }
 
             std::ostringstream log_stream;
@@ -837,7 +853,6 @@ private:
                     developer_msg += optimizer_.ConvertToolsToOptimizedTypeScript(tools, request_data_);
                     developer_msg += "\n} // namespace functions";
                 }
-                developer_msg += BuildTaskMemoSection();
                 developer_msg += "<|end|>";
             }
         } else {
@@ -858,7 +873,6 @@ private:
                     tools,
                     request_data_
                 );
-                developer_msg += BuildTaskMemoSection();
                 developer_msg += "<|end|>";
             }
         }
@@ -929,6 +943,21 @@ private:
                 }
             } else {
                 chat_history_.AddMessage(opt_msg.role, opt_msg.content);
+            }
+        }
+
+        if (!chat_history_.IsEmpty() && !optimized.messages.empty()) {
+            std::string memo_section = BuildTaskMemoSection();
+            if (!memo_section.empty()) {
+                chat_history_.PrependToLastMessage(memo_section);
+                std::string &last_content = optimized.messages.back().content;
+                const std::string message_tag = "<|message|>";
+                size_t tag_pos = last_content.find(message_tag);
+                if (tag_pos != std::string::npos) {
+                    last_content.insert(tag_pos + message_tag.size(), memo_section);
+                } else {
+                    last_content = memo_section + last_content;
+                }
             }
         }
 
@@ -1660,6 +1689,8 @@ private:
             last_ledger_.memo_confidence = optimized.memo_confidence;
             last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
             last_ledger_.memo_pages_total = optimized.memo_pages_total;
+            last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
+            last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
         }
 
         return result;
@@ -1700,19 +1731,73 @@ private:
         return "\n\n## Task Memo\n" + TaskMemoBuilder::RenderRedundantToolCallNote(count);
     }
 
+    std::string BuildConsecutiveToolFailureNote() const
+    {
+        if (!request_data_.is_object() || !request_data_.contains("messages") || !request_data_["messages"].is_array())
+            return "";
+        const auto &cfg = instance_config_->i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
+        if (!cfg.enabled || cfg.consecutive_failure_threshold <= 0)
+            return "";
+        static const char* kFailureSignals[] = {
+            "Error:", "ERROR:", "Exception:", "Traceback (most recent call last)",
+            "No such file or directory", "Permission denied",
+            "command not found", "is not recognized as", "Failed to", "failed to", "Failed:",
+        };
+        const auto& messages = request_data_["messages"];
+        int streak = 0;
+        std::string tool_name;
+        for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+            const json& msg = *it;
+            if (!msg.is_object())
+                break;
+            std::string role = msg.value("role", "");
+            if (role == "assistant")
+                continue;
+            if (role != "tool")
+                break;
+            std::string content = get_json_value<std::string>(msg, "content", "");
+            bool bad = content.find_first_not_of(" \t\r\n") == std::string::npos;
+            if (!bad) {
+                for (const char* sig : kFailureSignals) {
+                    if (content.find(sig) != std::string::npos) { bad = true; break; }
+                }
+            }
+            if (!bad)
+                break;
+            ++streak;
+            if (tool_name.empty())
+                tool_name = msg.value("name", "");
+        }
+        if (streak < cfg.consecutive_failure_threshold)
+            return "";
+        std::ostringstream oss;
+        oss << "Note: the last " << streak << " tool result(s)"
+            << (tool_name.empty() ? "" : (" (e.g. `" + tool_name + "`)"))
+            << " came back empty or failed. Stop retrying the same approach with minor variations; "
+               "use a different tool or a path/fact you already confirmed, or report the blocker instead.\n";
+        return "\n\n## Task Memo\n" + oss.str();
+    }
+
     std::string BuildTaskMemoSection() const
     {
         if (!request_data_.is_object() || !request_data_.contains("messages") || !request_data_["messages"].is_array()) {
             return "";
         }
+        std::string consecutive_failure_note = BuildConsecutiveToolFailureNote();
+
         auto memo_entry = task_memo_builder_.Lookup(request_data_["messages"]);
         if (!memo_entry) {
-            return BuildStandaloneRedundantToolCallNote();
+            std::string standalone = BuildStandaloneRedundantToolCallNote();
+            return !standalone.empty() ? standalone + consecutive_failure_note
+                                        : (consecutive_failure_note.empty() ? "" : consecutive_failure_note);
         }
 
         std::string rendered = TaskMemoBuilder::Render(*memo_entry);
-        if (rendered.empty())
-            return BuildStandaloneRedundantToolCallNote();
+        if (rendered.empty()) {
+            std::string standalone = BuildStandaloneRedundantToolCallNote();
+            return !standalone.empty() ? standalone + consecutive_failure_note
+                                        : (consecutive_failure_note.empty() ? "" : consecutive_failure_note);
+        }
 
         const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
         double ratio = po_cfg.task_memo.token_budget_ratio;
@@ -1725,7 +1810,7 @@ private:
                 rendered = TaskMemoBuilder::Render(*memo_entry, budget_bytes);
             }
         }
-        return "\n\n" + rendered;
+        return "\n\n" + rendered + consecutive_failure_note;
     }
 
     // ========== 辅助函数：调用 FitMessagesToContext 并统一处理错误和日志 ==========
@@ -1755,7 +1840,56 @@ private:
         My_Log{My_Log::Level::kInfo} << "[" << log_prefix << "] Success - Messages: "
                                       << optimized.messages.size()
                                       << ", Tokens: " << optimized.total_tokens << std::endl;
+        AnnotateRepeatedReads(optimized, messages);
         return optimized;
+    }
+
+    // 通用"重复读取"提示：只对幸存在当前上下文窗口内（未被驱逐）的 read 类工具结果生效——
+    // 已被驱逐的那次读取由 TaskMemoBuilder 的 read_files 索引承接，不在这里重复提示，
+    // 两者判定依据天然互斥（这里只看 FitMessagesToContext 之后仍存活的消息）。
+    //
+    // 重复判定必须基于本次请求的完整原始消息列表（驱逐之前），不能基于幸存消息重新计算：
+    // 否则当某个 path 的"第一次读取"消息在后续某轮被驱逐、而它的重复读取消息幸存下来时，
+    // 该幸存消息会从"已标注"变为"未标注"（反之亦然），导致同一条消息在前缀复用区的文本
+    // 跨轮不一致，使前缀命中率归零。做法：先在完整原始列表上一次性判定每条 tool 消息是否
+    // 为重复，再用双指针按内容匹配回幸存列表，只对"本来就是重复"的幸存消息追加提示。
+    void AnnotateRepeatedReads(OptimizedMessages& optimized, const std::vector<GenieChatMessage>& full_messages) const
+    {
+        std::unordered_set<std::string> seen_paths;
+        std::unordered_set<const GenieChatMessage*> duplicate_messages;
+        std::string last_assistant_content;
+        for (const auto& m : full_messages) {
+            if (m.role == "assistant") {
+                last_assistant_content = m.content;
+            } else if (m.role == "tool") {
+                std::string path = TaskMemoBuilder::ExtractReadToolPath(last_assistant_content);
+                if (path.empty())
+                    continue;
+                if (seen_paths.count(path)) {
+                    duplicate_messages.insert(&m);
+                } else {
+                    seen_paths.insert(path);
+                }
+            }
+        }
+
+        size_t full_idx = 0;
+        for (auto& m : optimized.messages) {
+            if (m.role != "tool")
+                continue;
+            while (full_idx < full_messages.size() &&
+                   !(full_messages[full_idx].role == m.role && full_messages[full_idx].content == m.content)) {
+                ++full_idx;
+            }
+            if (full_idx >= full_messages.size())
+                break;
+            if (duplicate_messages.count(&full_messages[full_idx])) {
+                m.content += "\n\n[Note: this file was already read at an earlier turn and its "
+                             "result is still present earlier in this context; re-reading it was "
+                             "not necessary unless the file may have changed since then.]";
+            }
+            ++full_idx;
+        }
     }
 
     // ========== 辅助方法：计算并打印 FitMessagesToContext 统计信息 ==========

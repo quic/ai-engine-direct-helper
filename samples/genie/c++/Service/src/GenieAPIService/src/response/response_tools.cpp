@@ -523,13 +523,25 @@ static std::string repairJsonOutsideStrings(const std::string &input)
         return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
     };
 
+    auto lastSignificant = [&result]() -> char {
+        for (size_t k = result.size(); k > 0; --k)
+        {
+            char ch = result[k - 1];
+            if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') return ch;
+        }
+        return '\0';
+    };
+
     size_t i = 0;
     while (i < input.size())
     {
-        if (input[i] == '"')
+        bool missingOpenQuote = input[i] == '\\' && i + 1 < input.size() && input[i + 1] == '"'
+                                && (lastSignificant() == ':' || lastSignificant() == '[' || lastSignificant() == ',');
+        if (input[i] == '"' || missingOpenQuote)
         {
             // ── 进入 JSON 字符串：原样复制直到遇到未转义的闭合引号 ──
-            result += input[i++];
+            if (missingOpenQuote) result += '"';
+            else result += input[i++];
             while (i < input.size())
             {
                 if (input[i] == '\\' && i + 1 < input.size())
@@ -1561,7 +1573,9 @@ bool ResponseTools::TryLayer1Recovery(const std::string &malformedText, json &ou
                 {
                     json partial = json::object();
                     partial["name"] = salvaged_tool;
-                    partial["arguments"] = json::object();
+                    partial["arguments"] = json{{"_parse_error",
+                        "arguments were not valid JSON; re-emit the call with every string value quoted and "
+                        "\\\" \\\\ newlines escaped inside strings"}};
                     *out_partial_recovery = partial;
                 }
             }

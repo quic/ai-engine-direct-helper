@@ -495,6 +495,12 @@
                     "include": true
                 },
                 {
+                    "_comment": "## Host Environment：QAIModelBuilder 本地路由在带 exec/background_process 工具时注入的宿主事实（OS、Python 解释器路径、应用根目录、exec 的 shell 选择规则）。",
+                    "title_contains": "Host Environment",
+                    "heading_level": 2,
+                    "include": true
+                },
+                {
                     "_comment": "## Tooling：工具可用性列表（read/write/edit/exec/browser/subagents）",
                     "title_contains": "Tooling",
                     "heading_level": 2,

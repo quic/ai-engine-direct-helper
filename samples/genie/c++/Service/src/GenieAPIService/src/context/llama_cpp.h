@@ -33,6 +33,12 @@ public:
     // Fix: 报告是否因输出 token 限制而停止生成
     bool was_stopped_by_output_limit() const override { return stopped_by_output_limit_; }
 
+    json GetLastQueryTraceMetrics() const override;
+
+    static void SetPrefixCacheEnabled(bool enabled);
+
+    bool UsesCrossRequestPrefixCache() const override;
+
 private:
     class Impl;
 

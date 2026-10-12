@@ -17,10 +17,415 @@
 #include <algorithm>
 #include <regex>
 #include <unordered_set>
+#include <mutex>
+#include <functional>
 
 using json = nlohmann::ordered_json;
 
 namespace {
+
+constexpr float kEvictionLowWaterRatio = 0.65f;
+constexpr float kEvictionHighWaterRatio = 0.95f;
+constexpr size_t kMaxEvictionStates = 64;
+constexpr float kToolEntryCapRatio = 0.3f;
+constexpr float kToolEntryHeadShare = 0.6f;
+const char kToolEntryOmitted[] = "\n[... output truncated ...]\n";
+
+size_t Utf8Floor(const std::string& s, size_t pos)
+{
+    if (pos >= s.size()) return s.size();
+    while (pos > 0 && (static_cast<unsigned char>(s[pos]) & 0xC0) == 0x80) --pos;
+    return pos;
+}
+
+std::string CapToolResultHeadTail(const std::string& content, size_t content_tokens, size_t cap_tokens)
+{
+    if (cap_tokens == 0 || content_tokens <= cap_tokens || content.empty()) return content;
+    const double keep_ratio = 0.95 * static_cast<double>(cap_tokens) / static_cast<double>(content_tokens);
+    const size_t keep_bytes = static_cast<size_t>(static_cast<double>(content.size()) * keep_ratio);
+    const size_t head_target = static_cast<size_t>(static_cast<double>(keep_bytes) * kToolEntryHeadShare);
+    const size_t tail_target = keep_bytes - head_target;
+    size_t head_end = Utf8Floor(content, head_target);
+    const size_t head_nl = content.rfind('\n', head_end);
+    if (head_nl != std::string::npos && head_nl > head_end / 2) head_end = head_nl;
+    size_t tail_begin = Utf8Floor(content, content.size() - tail_target);
+    const size_t tail_nl = content.find('\n', tail_begin);
+    if (tail_nl != std::string::npos && tail_nl + 1 < content.size() &&
+        tail_nl - tail_begin < tail_target / 2) tail_begin = tail_nl + 1;
+    if (tail_begin <= head_end) return content;
+    return content.substr(0, head_end) + kToolEntryOmitted + content.substr(tail_begin);
+}
+
+constexpr size_t kMinSurvivorFloor = 4;
+constexpr size_t kSurvivorCondenseMinShare = 48;
+const char kRawIdxKey[] = "__genie_raw_idx";
+
+struct EvictionState {
+    const void* model = nullptr;
+    size_t raw_size = 0;
+    size_t boundary = 0;
+    size_t prefix_hash = 0;
+    std::vector<size_t> dropped;
+};
+
+std::mutex g_eviction_mutex;
+std::unordered_map<std::string, EvictionState> g_eviction_states;
+
+size_t HashRawPrefix(const json& raw, size_t len)
+{
+    size_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < len && i < raw.size(); ++i) {
+        h ^= std::hash<std::string>()(raw[i].dump()) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    }
+    return h;
+}
+
+bool LookupEvictionState(const std::string& key, const void* model, const json& raw,
+                         EvictionState& out, std::string& invalid_reason)
+{
+    std::lock_guard<std::mutex> lk(g_eviction_mutex);
+    auto it = g_eviction_states.find(key);
+    if (it == g_eviction_states.end()) {
+        invalid_reason = "first_eviction";
+        return false;
+    }
+    const EvictionState& st = it->second;
+    if (st.model != model) {
+        invalid_reason = "model_switch";
+    } else if (raw.size() < st.raw_size || st.boundary > raw.size()) {
+        invalid_reason = "message_shrink";
+    } else if (HashRawPrefix(raw, st.boundary) != st.prefix_hash) {
+        invalid_reason = "fingerprint_change";
+    } else {
+        out = st;
+        return true;
+    }
+    g_eviction_states.erase(it);
+    return false;
+}
+
+void StoreEvictionState(const std::string& key, EvictionState st)
+{
+    std::lock_guard<std::mutex> lk(g_eviction_mutex);
+    if (st.dropped.empty()) {
+        g_eviction_states.erase(key);
+        return;
+    }
+    if (g_eviction_states.size() >= kMaxEvictionStates) g_eviction_states.clear();
+    g_eviction_states[key] = std::move(st);
+}
+
+void StripRawIdx(json& messages)
+{
+    for (auto& m : messages) {
+        if (m.is_object()) m.erase(kRawIdxKey);
+    }
+}
+
+constexpr size_t kRepeatStubMaxStreak = 2;
+constexpr double kRepeatDigestCtxRatio = 0.02;
+constexpr double kRepeatDigestCharsPerToken = 4.0;
+constexpr size_t kRepeatDigestMinShare = 10;
+constexpr size_t kRepeatDigestLineShare = 8;
+constexpr size_t kRepeatDigestHeadLines = 6;
+constexpr size_t kRepeatDigestTailLines = 3;
+const char kRepeatStubPrefix[] = "[Repeated call: this ";
+const char kRepeatStubMid[] =
+    " call has the same arguments and exactly the same result as an earlier call in this conversation, "
+    "so the full content is not repeated here. Digest of that earlier result:\n";
+const char kRepeatStubSuffix[] =
+    "\nIf the full content is needed, repeat the same call; the full result is returned after two "
+    "consecutive repeated calls.]";
+
+struct RepeatDigestBudget {
+    size_t max_chars = 0;
+    size_t min_chars = 0;
+    size_t line_chars = 0;
+};
+
+RepeatDigestBudget MakeRepeatDigestBudget(size_t context_size)
+{
+    RepeatDigestBudget b;
+    b.max_chars = static_cast<size_t>(static_cast<double>(context_size) * kRepeatDigestCtxRatio * kRepeatDigestCharsPerToken);
+    b.min_chars = b.max_chars / kRepeatDigestMinShare;
+    b.line_chars = std::max<size_t>(1, b.max_chars / kRepeatDigestLineShare);
+    return b;
+}
+
+std::string BuildRepeatDigest(const std::string& content, const RepeatDigestBudget& budget)
+{
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start <= content.size()) {
+        size_t nl = content.find('\n', start);
+        if (nl == std::string::npos) nl = content.size();
+        std::string line = content.substr(start, nl - start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+        if (!line.empty()) lines.push_back(std::move(line));
+        start = nl + 1;
+    }
+    std::vector<bool> pick(lines.size(), false);
+    for (size_t i = 0; i < lines.size() && i < kRepeatDigestHeadLines; ++i) pick[i] = true;
+    for (size_t i = lines.size() > kRepeatDigestTailLines ? lines.size() - kRepeatDigestTailLines : 0; i < lines.size(); ++i)
+        pick[i] = true;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const size_t p = lines[i].find_first_not_of(" \t");
+        if (p != std::string::npos && lines[i][p] == '#') pick[i] = true;
+    }
+    std::string out;
+    bool gap = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (!pick[i]) { gap = true; continue; }
+        std::string line = lines[i];
+        if (line.size() > budget.line_chars) line = line.substr(0, Utf8Floor(line, budget.line_chars)) + "...";
+        std::string piece = (gap && !out.empty() ? std::string("...\n") : std::string()) + line + "\n";
+        if (out.size() + piece.size() > budget.max_chars) break;
+        out += piece;
+        gap = false;
+    }
+    if (!out.empty() && out.back() == '\n') out.pop_back();
+    return out;
+}
+
+struct RepeatDecision {
+    size_t content_hash = 0;
+    bool stub = false;
+};
+
+struct RepeatState {
+    const void* model = nullptr;
+    std::unordered_map<size_t, RepeatDecision> decisions;
+};
+
+std::mutex g_repeat_mutex;
+std::unordered_map<std::string, RepeatState> g_repeat_states;
+
+std::string CanonicalToolCallKey(const json& tool_call)
+{
+    if (!tool_call.is_object() || !tool_call.contains("function") || !tool_call["function"].is_object())
+        return "";
+    const json& fn = tool_call["function"];
+    const std::string name = fn.value("name", std::string());
+    if (name.empty()) return "";
+    std::string args;
+    if (fn.contains("arguments")) {
+        nlohmann::json parsed;
+        if (fn["arguments"].is_string()) {
+            const std::string raw = fn["arguments"].get<std::string>();
+            parsed = nlohmann::json::parse(raw, nullptr, false);
+            if (parsed.is_discarded()) return name + "\x01" + raw;
+        } else {
+            parsed = nlohmann::json(fn["arguments"]);
+        }
+        if (parsed.is_object()) {
+            nlohmann::json norm = nlohmann::json::object();
+            for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+                if (it.value().is_null()) continue;
+                const bool path_like = it.value().is_string() && [&]() {
+                    const std::string& s = it.value().get_ref<const std::string&>();
+                    return !s.empty() && s.find_first_of(" \t\r\n") == std::string::npos &&
+                           s.find_first_of("/\\") != std::string::npos;
+                }();
+                if (path_like) {
+                    std::string p = it.value().get<std::string>();
+                    std::replace(p.begin(), p.end(), '/', '\\');
+                    norm[it.key()] = p;
+                } else {
+                    norm[it.key()] = it.value();
+                }
+            }
+            parsed = std::move(norm);
+        }
+        args = parsed.dump();
+    }
+    return name + "\x01" + args;
+}
+
+void ApplyRepeatResultStubs(json& msg, const std::string& key, const void* model, size_t context_size)
+{
+    if (key.empty() || !msg.is_array()) return;
+    const RepeatDigestBudget digest_budget = MakeRepeatDigestBudget(context_size);
+    std::lock_guard<std::mutex> lk(g_repeat_mutex);
+    RepeatState& st = g_repeat_states[key];
+    if (st.model != model) {
+        st = RepeatState{};
+        st.model = model;
+    }
+    for (const auto& kv : st.decisions) {
+        if (kv.first >= msg.size()) { st.decisions.clear(); break; }
+    }
+
+    std::unordered_map<std::string, std::string> call_keys;
+    std::unordered_map<std::string, std::string> call_names;
+    std::string last_call_key;
+    std::string last_call_name;
+    struct KeyHistory { size_t full_idx = SIZE_MAX; size_t full_hash = 0; size_t streak = 0; };
+    std::unordered_map<std::string, KeyHistory> history;
+
+    for (size_t i = 0; i < msg.size(); ++i) {
+        json& m = msg[i];
+        if (!m.is_object()) continue;
+        const std::string role = m.value("role", std::string());
+        if (role == "assistant") {
+            last_call_key.clear();
+            last_call_name.clear();
+            if (m.contains("tool_calls") && m["tool_calls"].is_array()) {
+                for (const auto& tc : m["tool_calls"]) {
+                    const std::string ck = CanonicalToolCallKey(tc);
+                    if (ck.empty()) continue;
+                    const std::string nm = tc["function"].value("name", std::string());
+                    if (tc.contains("id") && tc["id"].is_string()) {
+                        call_keys[tc["id"].get<std::string>()] = ck;
+                        call_names[tc["id"].get<std::string>()] = nm;
+                    }
+                    if (last_call_key.empty()) { last_call_key = ck; last_call_name = nm; }
+                }
+            }
+            continue;
+        }
+        if (role != "tool" || !m.contains("content") || !m["content"].is_string()) continue;
+
+        std::string ck = last_call_key;
+        std::string nm = last_call_name;
+        if (m.contains("tool_call_id") && m["tool_call_id"].is_string()) {
+            auto it = call_keys.find(m["tool_call_id"].get<std::string>());
+            if (it != call_keys.end()) { ck = it->second; nm = call_names[it->first]; }
+        }
+        if (ck.empty()) continue;
+
+        const std::string content = m["content"].get<std::string>();
+        const size_t h = std::hash<std::string>()(content);
+        KeyHistory& kh = history[ck];
+
+        auto dit = st.decisions.find(i);
+        if (dit != st.decisions.end() && dit->second.content_hash != h) {
+            st.decisions.clear();
+            dit = st.decisions.end();
+        }
+        std::string stub_text;
+        if (kh.full_idx != SIZE_MAX && kh.full_hash == h) {
+            const std::string digest = BuildRepeatDigest(content, digest_budget);
+            if (!digest.empty() && digest.size() >= digest_budget.min_chars)
+                stub_text = std::string(kRepeatStubPrefix) + nm + kRepeatStubMid + digest + kRepeatStubSuffix;
+        }
+        bool stub;
+        if (dit != st.decisions.end()) {
+            stub = dit->second.stub && !stub_text.empty();
+        } else {
+            stub = !stub_text.empty() && kh.streak < kRepeatStubMaxStreak &&
+                   !TaskMemoBuilder::LooksLikeToolFailure(content) &&
+                   stub_text.size() * 2 <= content.size();
+            st.decisions[i] = RepeatDecision{h, stub};
+        }
+        if (stub) {
+            m["content"] = stub_text;
+            ++kh.streak;
+        } else {
+            kh.full_idx = i;
+            kh.full_hash = h;
+            kh.streak = 0;
+        }
+    }
+    if (g_repeat_states.size() > kMaxEvictionStates) {
+        RepeatState keep = std::move(st);
+        g_repeat_states.clear();
+        g_repeat_states[key] = std::move(keep);
+    }
+}
+
+constexpr size_t kGrowthWindow = 4;
+constexpr float kGrowthReserveRounds = 2.0f;
+constexpr float kEvictionLowWaterFloorRatio = 0.5f;
+
+struct GrowthState {
+    const void* model = nullptr;
+    size_t raw_size = 0;
+    size_t last_tokens = 0;
+    std::vector<size_t> growth;
+};
+
+std::mutex g_growth_mutex;
+std::unordered_map<std::string, GrowthState> g_growth_states;
+
+size_t ObserveRecentGrowth(const std::string& key, const void* model, size_t raw_size, size_t tokens)
+{
+    std::lock_guard<std::mutex> lk(g_growth_mutex);
+    auto it = g_growth_states.find(key);
+    if (it == g_growth_states.end()) return 0;
+    GrowthState& st = it->second;
+    if (st.model != model || raw_size < st.raw_size) {
+        g_growth_states.erase(it);
+        return 0;
+    }
+    std::vector<size_t> window = st.growth;
+    if (raw_size > st.raw_size && tokens > st.last_tokens) window.push_back(tokens - st.last_tokens);
+    if (window.size() > kGrowthWindow) window.erase(window.begin(), window.end() - kGrowthWindow);
+    size_t mx = 0;
+    for (size_t g : window) mx = std::max(mx, g);
+    return mx;
+}
+
+void StoreRoundTokens(const std::string& key, const void* model, size_t raw_size,
+                      size_t tokens_before_evict, size_t final_tokens)
+{
+    std::lock_guard<std::mutex> lk(g_growth_mutex);
+    auto it = g_growth_states.find(key);
+    if (it != g_growth_states.end() && (it->second.model != model || raw_size < it->second.raw_size)) {
+        g_growth_states.erase(it);
+        it = g_growth_states.end();
+    }
+    if (it == g_growth_states.end()) {
+        if (g_growth_states.size() >= kMaxEvictionStates) g_growth_states.clear();
+        GrowthState fresh;
+        fresh.model = model;
+        fresh.raw_size = raw_size;
+        fresh.last_tokens = final_tokens;
+        g_growth_states[key] = std::move(fresh);
+        return;
+    }
+    GrowthState& st = it->second;
+    if (raw_size > st.raw_size && tokens_before_evict > st.last_tokens) {
+        st.growth.push_back(tokens_before_evict - st.last_tokens);
+        if (st.growth.size() > kGrowthWindow) st.growth.erase(st.growth.begin());
+    }
+    st.raw_size = raw_size;
+    st.last_tokens = final_tokens;
+}
+
+constexpr size_t kMaxTruncFloorEntries = 4096;
+std::mutex g_trunc_floor_mutex;
+std::unordered_map<size_t, size_t> g_trunc_floor_chars;
+
+size_t HashTruncKey(const std::string& role, const std::string& original_content)
+{
+    size_t h = std::hash<std::string>()(role);
+    const std::string prefix = original_content.substr(0, std::min<size_t>(256, original_content.size()));
+    h ^= std::hash<std::string>()(prefix) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    h ^= std::hash<size_t>()(original_content.size()) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+}
+
+size_t ClampToTruncFloor(size_t key, size_t target_chars)
+{
+    std::lock_guard<std::mutex> lk(g_trunc_floor_mutex);
+    auto it = g_trunc_floor_chars.find(key);
+    if (it != g_trunc_floor_chars.end() && it->second < target_chars) {
+        return it->second;
+    }
+    return target_chars;
+}
+
+void UpdateTruncFloor(size_t key, size_t truncated_chars)
+{
+    std::lock_guard<std::mutex> lk(g_trunc_floor_mutex);
+    auto it = g_trunc_floor_chars.find(key);
+    if (it == g_trunc_floor_chars.end()) {
+        if (g_trunc_floor_chars.size() >= kMaxTruncFloorEntries) g_trunc_floor_chars.clear();
+        g_trunc_floor_chars[key] = truncated_chars;
+    } else if (truncated_chars < it->second) {
+        it->second = truncated_chars;
+    }
+}
 
 const char kToolCallOpenTag[] = "<tool_call>";
 const char kToolCallCloseTag[] = "</tool_call>";
@@ -95,6 +500,15 @@ bool ShrinkToolCallEnvelope(const std::string& content,
 MessagePreFilter::MessagePreFilter(IModelConfig& model_config, ContextBase* context)
     : model_config_(model_config), context_override_(context)
 {}
+
+bool MessagePreFilter::PrefixCacheActive()
+{
+    if (context_override_) {
+        return context_override_->UsesCrossRequestPrefixCache();
+    }
+    auto handle = model_config_.get_genie_model_handle().lock();
+    return handle && handle->UsesCrossRequestPrefixCache();
+}
 
 // ============================================================
 // CountTokens
@@ -256,6 +670,10 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
     if (total_tokens > context_size) {
         My_Log{My_Log::Level::kDebug} << "[FitMessagesToContext] Step 3: Dropping old messages to fit context..." << std::endl;
 
+        const size_t evict_target_size = PrefixCacheActive()
+            ? static_cast<size_t>(static_cast<float>(context_size) * kEvictionLowWaterRatio)
+            : context_size;
+
         // 找到最后一条 user 消息的位置
         int last_user_index = -1;
         for (int i = (int)final_messages.size() - 1; i >= 0; i--) {
@@ -368,7 +786,7 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
 
         // 第一阶段：优先丢弃 recent_boundary 之前的旧消息
         My_Log{My_Log::Level::kDebug} << "[FitMessagesToContext] Step 3a: Dropping old messages (before recent_boundary)..." << std::endl;
-        while (total_tokens > context_size) {
+        while (total_tokens > evict_target_size) {
             if (final_messages.empty()) break;
             int recent_boundary = compute_recent_boundary();
             if (recent_boundary <= 0) break;  // 没有旧消息可丢弃，进入第二阶段
@@ -376,10 +794,10 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         }
 
         // 第二阶段：若仍超出，丢弃 recent_boundary 之后（但 last_user_index 之前）的消息
-        if (total_tokens > context_size) {
+        if (total_tokens > evict_target_size) {
             My_Log{My_Log::Level::kDebug} << "[FitMessagesToContext] Step 3b: Dropping recent messages (before last_user_index)..." << std::endl;
         }
-        while (total_tokens > context_size) {
+        while (total_tokens > evict_target_size) {
             if (final_messages.empty()) break;
             if (is_fit_protected(0)) {
                 My_Log{My_Log::Level::kWarning}
@@ -456,12 +874,23 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                         const std::string original_content = final_messages[idx].content;
                         const bool is_envelope = (final_messages[idx].role == "assistant");
                         size_t target_tokens = (msg_tokens > cut_amount) ? (msg_tokens - cut_amount) : 0;
+                        {
+                            const size_t floor_tokens = static_cast<size_t>(
+                                static_cast<float>(msg_tokens) * (1.0f - et_cfg.max_truncation_ratio));
+                            size_t step = msg_tokens;
+                            while (step > target_tokens && step > floor_tokens) {
+                                step = step * 3 / 4;
+                            }
+                            target_tokens = std::max(step, floor_tokens);
+                        }
                         size_t target_chars = (original_content.length() > 0 && msg_tokens > 0)
                             ? static_cast<size_t>(
                                 static_cast<float>(original_content.length()) *
                                 static_cast<float>(target_tokens) /
                                 static_cast<float>(msg_tokens) * 0.9f)
                             : 0;
+                        const size_t trunc_key = HashTruncKey(final_messages[idx].role, original_content);
+                        target_chars = ClampToTruncFloor(trunc_key, target_chars);
                         if (target_chars == 0 || target_chars >= original_content.length()) continue;
 
                         CondenseBudget emergency_budget;
@@ -491,6 +920,7 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
 
                         backups.emplace_back(idx, original_content);
                         final_messages[idx].content = truncated;
+                        UpdateTruncFloor(trunc_key, truncated.length());
 
                         size_t new_tokens = CountTokens(truncated);
                         size_t actually_freed = (msg_tokens > new_tokens) ? (msg_tokens - new_tokens) : 0;
@@ -740,18 +1170,7 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
     // 消息数量/角色序列（assistant+tool 配对等既有约束不受影响）。
     // 关闭 drop_placeholder 时完全不产生这段前缀，逐字节回退到当前行为。
     if (total_dropped_all_phases > 0 && fidelity_cfg_drop.drop_placeholder && !final_messages.empty()) {
-        std::string placeholder = "[" + std::to_string(total_dropped_all_phases) +
-            " earlier message(s) omitted]\n";
-
-        // Task Memo 尾部保护槽位兜底：无论本次是否刚刚触发过 Update()，重新查一次表（覆盖本次
-        // 未触发但历史已存在的情况），命中则在数字占位后追加紧凑摘要；未命中（未开启/存储丢失）
-        // 时逐字节回退到现有纯数字行为。
-        if (memo_builder && raw_messages_for_memo) {
-            auto memo_entry = memo_builder->Lookup(*raw_messages_for_memo);
-            if (memo_entry) {
-                placeholder += TaskMemoBuilder::RenderCompact(*memo_entry);
-            }
-        }
+        static const std::string placeholder = "[earlier message(s) omitted]\n";
 
         total_tokens += CountTokens(placeholder);
         final_messages[0].content = placeholder + final_messages[0].content;
@@ -1331,7 +1750,27 @@ void MessagePreFilter::DropOldMessagesBatch(
     size_t tokens_to_free = current_tokens - available_tokens;  // 需要释放的 token 数
     size_t freed_tokens = 0;
 
-    // 从前往后扫描，贪心选择最旧的可删除消息
+    size_t non_system_total = 0;
+    size_t non_system_tokens = 0;
+    std::vector<size_t> msg_tokens_cache(n, 0);
+    for (size_t k = 0; k < n; ++k) {
+        std::string counted = get_json_value(filtered_msg[k], "content", BLANK_STRING);
+        const std::string k_role = get_json_value(filtered_msg[k], "role", BLANK_STRING);
+        if (k_role == "assistant" && filtered_msg[k].contains("tool_calls") &&
+            filtered_msg[k]["tool_calls"].is_array() && !filtered_msg[k]["tool_calls"].empty()) {
+            counted += filtered_msg[k]["tool_calls"].dump();
+        }
+        msg_tokens_cache[k] = handle->TokenLength(counted);
+        if (k_role == "system") continue;
+        non_system_total++;
+        non_system_tokens += msg_tokens_cache[k];
+    }
+    const size_t avg_tokens = non_system_total > 0 ? std::max<size_t>(1, non_system_tokens / non_system_total) : 1;
+    const size_t survivor_floor = std::min<size_t>(
+        std::max<size_t>(kMinSurvivorFloor, available_tokens / (2 * avg_tokens)), 2 * kMinSurvivorFloor);
+    size_t deleted_count = 0;
+    bool floor_hit = false;
+
     size_t i = 0;
     while (i < n && freed_tokens < tokens_to_free) {
         auto role = get_json_value(filtered_msg[i], "role", BLANK_STRING);
@@ -1352,13 +1791,16 @@ void MessagePreFilter::DropOldMessagesBatch(
                    get_json_value(filtered_msg[chain_end], "role", BLANK_STRING) == "tool") {
                 chain_end++;
             }
-            // 累计整条链的 token 数
+            if (non_system_total - deleted_count - (chain_end - i) < survivor_floor) {
+                floor_hit = true;
+                break;
+            }
             size_t chain_tokens = 0;
             for (size_t k = i; k < chain_end; k++) {
-                chain_tokens += handle->TokenLength(
-                    get_json_value(filtered_msg[k], "content", BLANK_STRING));
+                chain_tokens += msg_tokens_cache[k];
                 to_delete[k] = true;
             }
+            deleted_count += chain_end - i;
             freed_tokens += chain_tokens;
             if (model_config_.getenablePromptDebug()) {
                 My_Log{My_Log::Level::kInfo} << "[PreFilter]   Phase 1"
@@ -1370,10 +1812,13 @@ void MessagePreFilter::DropOldMessagesBatch(
             prefilter_stats_.total_dropped += (chain_end - i);
             i = chain_end;  // 跳过整条链
         } else {
-            // 普通消息：直接标记删除
-            size_t msg_tokens = handle->TokenLength(
-                get_json_value(filtered_msg[i], "content", BLANK_STRING));
+            if (non_system_total - deleted_count - 1 < survivor_floor) {
+                floor_hit = true;
+                break;
+            }
+            size_t msg_tokens = msg_tokens_cache[i];
             to_delete[i] = true;
+            deleted_count++;
             freed_tokens += msg_tokens;
             if (model_config_.getenablePromptDebug()) {
                 My_Log{My_Log::Level::kInfo} << "[PreFilter]   Phase 1"
@@ -1387,7 +1832,44 @@ void MessagePreFilter::DropOldMessagesBatch(
         }
     }
 
-    // 步骤 2：批量删除（从后往前，避免索引偏移）
+    if (floor_hit && freed_tokens < tokens_to_free) {
+        const size_t condense_min_tokens = std::max<size_t>(1, available_tokens / kSurvivorCondenseMinShare);
+        size_t excess = tokens_to_free - freed_tokens;
+        size_t largest = n;
+        for (size_t k = 0; k < n; ++k) {
+            if (to_delete[k]) continue;
+            const std::string r = get_json_value(filtered_msg[k], "role", BLANK_STRING);
+            if (r == "system" || r == "user") continue;
+            if (msg_tokens_cache[k] < condense_min_tokens) continue;
+            if (largest == n || msg_tokens_cache[k] > msg_tokens_cache[largest]) largest = k;
+        }
+        if (largest != n) {
+            const std::string content = get_json_value(filtered_msg[largest], "content", BLANK_STRING);
+            const size_t old_tok = msg_tokens_cache[largest];
+            const size_t target_tok = old_tok > excess + condense_min_tokens / 2
+                ? old_tok - excess : condense_min_tokens / 2;
+            CondenseBudget budget;
+            budget.max_tokens = target_tok;
+            budget.max_chars = content.size() * target_tok / std::max<size_t>(1, old_tok);
+            std::function<size_t(const std::string&)> tl = [&](const std::string& s) { return handle->TokenLength(s); };
+            const std::string condensed = ContentCondenser::Condense(content, ContentKind::kToolResponse, budget, &tl).text;
+            const size_t new_tok = handle->TokenLength(condensed);
+            if (new_tok < old_tok) {
+                filtered_msg[largest]["content"] = condensed;
+                freed_tokens += old_tok - new_tok;
+                prefilter_stats_.truncated_count++;
+            }
+            My_Log{My_Log::Level::kWarning} << "[PreFilter] Survivor floor hit: floor=" << survivor_floor
+                                             << " non_system=" << non_system_total - deleted_count
+                                             << " avg_tok=" << avg_tokens << "; condensed msg[" << largest
+                                             << "] " << old_tok << "->" << new_tok << " tok instead of dropping" << std::endl;
+        } else {
+            My_Log{My_Log::Level::kWarning} << "[PreFilter] Survivor floor hit: floor=" << survivor_floor
+                                             << " non_system=" << non_system_total - deleted_count
+                                             << "; no condensable survivor" << std::endl;
+        }
+    }
+
     for (size_t k = n; k-- > 0; ) {
         if (to_delete[k]) {
             filtered_msg.erase(filtered_msg.begin() + k);
@@ -1607,6 +2089,9 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
             } else if (is_harmony && role == "user") {
                 // Harmony 路径：user 消息在传入 FitMessagesToContext 之前会被包装为 Harmony 格式
                 content = HarmonyProcessor::BuildUserMessage(content);
+            } else if (role == "assistant" && element.contains("tool_calls") &&
+                       element["tool_calls"].is_array() && !element["tool_calls"].empty()) {
+                content += element["tool_calls"].dump();
             }
             total += handle->TokenLength(content);
         }
@@ -1618,20 +2103,47 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
     // 触发 SmartSelectMessages 裁剪；否则哪怕条数超限，只要预算充足就不裁剪，交由后续
     // Phase 0-5/FitMessagesToContext 的 token-aware 逻辑处理。无 model handle 时无法计算
     // token 使用率，保持旧行为（纯按条数裁剪，视为预算始终紧张）。
+    const bool prefix_cache_active = PrefixCacheActive();
+    const std::string evict_key = (handle && prefix_cache_active) ? TaskMemoBuilder::ComputeFirstMsgKey(msg) : std::string();
+    ApplyRepeatResultStubs(msg, evict_key, handle.get(), contextSize > 0 ? static_cast<size_t>(contextSize) : 0);
+    json source = msg;
+    for (size_t i = 0; i < source.size(); ++i) {
+        if (source[i].is_object()) source[i][kRawIdxKey] = i;
+    }
+    const json raw_tagged = source;
+    EvictionState prior_state;
+    std::string invalid_reason;
+    const bool have_prior = !evict_key.empty() &&
+        LookupEvictionState(evict_key, handle.get(), msg, prior_state, invalid_reason);
+    if (have_prior) {
+        std::unordered_set<size_t> prior_set(prior_state.dropped.begin(), prior_state.dropped.end());
+        json kept_source = json::array();
+        for (const auto& m : source) {
+            if (m.is_object() && m.contains(kRawIdxKey) &&
+                prior_set.count(m[kRawIdxKey].get<size_t>())) continue;
+            kept_source.push_back(m);
+        }
+        source = std::move(kept_source);
+        prefilter_stats_.dropped_by_token_limit += prior_state.dropped.size();
+        prefilter_stats_.total_dropped += prior_state.dropped.size();
+    } else if (!evict_key.empty() && invalid_reason != "first_eviction") {
+        My_Log{My_Log::Level::kInfo} << "[PreFilter] Eviction state invalidated: reason=" << invalid_reason << std::endl;
+    }
+
     const size_t max_messages = cfg.max_messages_limit;
     json filtered_msg = json::array();
-    const bool count_exceeded = (msg.size() > max_messages);
+    const bool count_exceeded = (source.size() > max_messages);
     bool budget_pressure = true;
     size_t current_msg_tokens = 0;
     if (count_exceeded && handle && available_tokens > 0) {
-        current_msg_tokens = calc_msg_tokens(msg);
+        current_msg_tokens = calc_msg_tokens(source);
         double usage_ratio = static_cast<double>(current_msg_tokens) / static_cast<double>(available_tokens);
         budget_pressure = (usage_ratio >= cfg.token_pressure_trigger_ratio);
     }
 
     if (count_exceeded && budget_pressure) {
-        filtered_msg = SmartSelectMessages(msg, max_messages);
-        size_t dropped = msg.size() - filtered_msg.size();
+        filtered_msg = SmartSelectMessages(source, max_messages);
+        size_t dropped = source.size() - filtered_msg.size();
         prefilter_stats_.dropped_by_smart_select = dropped;
         prefilter_stats_.total_dropped += dropped;
         if (model_config_.getenablePromptDebug()) {
@@ -1640,10 +2152,10 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
                                            << current_msg_tokens << "/" << available_tokens << ")" << std::endl;
         }
     } else {
-        filtered_msg = msg;
+        filtered_msg = source;
         if (model_config_.getenablePromptDebug()) {
             if (count_exceeded) {
-                My_Log{My_Log::Level::kInfo} << "[PreFilter] Step 1: Count exceeded (" << msg.size()
+                My_Log{My_Log::Level::kInfo} << "[PreFilter] Step 1: Count exceeded (" << source.size()
                                                << " > " << max_messages << ") but token budget sufficient ("
                                                << current_msg_tokens << "/" << available_tokens
                                                << "), skip trimming" << std::endl;
@@ -1657,6 +2169,7 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         if (model_config_.getenablePromptDebug()) {
             My_Log{My_Log::Level::kInfo} << "[PreFilter] Skipped (no model handle)" << std::endl;
         }
+        StripRawIdx(filtered_msg);
         CaptureDroppedMessages(msg, filtered_msg);
         return filtered_msg;
     }
@@ -1739,6 +2252,7 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
             << " tok), skipping all phases, FitMessagesToContext will handle" << std::endl;
         // 打印诊断信息（system prompt 超出时，messages 尚未压缩，但仍有参考价值）
         print_diag_dump(filtered_msg);
+        StripRawIdx(filtered_msg);
         CaptureDroppedMessages(msg, filtered_msg);
         return filtered_msg;
     }
@@ -1970,12 +2484,70 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         }
     }
 
+    if (prefix_cache_active && contextSize > 0) {
+        const size_t cap_tokens = static_cast<size_t>(static_cast<float>(contextSize) * kToolEntryCapRatio);
+        size_t capped_count = 0;
+        for (size_t i = 0; i < filtered_msg.size(); i++) {
+            if (get_json_value(filtered_msg[i], "role", BLANK_STRING) != "tool") continue;
+            std::string content = get_json_value(filtered_msg[i], "content", BLANK_STRING);
+            if (content.size() <= cap_tokens) continue;
+            std::string capped = CapToolResultHeadTail(content, CountTokens(content), cap_tokens);
+            if (capped.size() < content.size()) {
+                filtered_msg[i]["content"] = capped;
+                capped_count++;
+            }
+        }
+        if (capped_count > 0) {
+            after_phase0_tokens = calc_msg_tokens(filtered_msg);
+            budget_satisfied = (after_phase0_tokens <= available_tokens);
+            My_Log{My_Log::Level::kInfo} << "[PreFilter] Tool entry cap: capped=" << capped_count
+                                          << ", cap=" << cap_tokens << " tok"
+                                          << ", tokens=" << after_phase0_tokens << std::endl;
+        }
+    }
+
     // ── Phase 1: 旧消息处理（recent_window 之外）──────────────────────────
     // 按以下子步骤顺序执行，优先使用破坏性最小的手段：
     //   Step A：压缩旧 user/assistant 消息内容（old_compress_len）
     //   Step B：若仍超预算，删除旧消息（DropOldMessagesBatch）
     //   Step C：若仍超预算，压缩旧 tool 响应内容（old_compress_len）
     size_t compress_current_tokens = after_phase0_tokens;
+    const float high_water_ratio = prefix_cache_active ? kEvictionHighWaterRatio : 1.0f;
+    const float low_water_ratio = prefix_cache_active ? kEvictionLowWaterRatio : 1.0f;
+    const size_t evict_high_water = static_cast<size_t>(
+        static_cast<float>(available_tokens) * high_water_ratio);
+    const size_t tokens_before_evict = compress_current_tokens;
+    const size_t recent_growth = evict_key.empty() ? 0 :
+        ObserveRecentGrowth(evict_key, handle.get(), msg.size(), compress_current_tokens);
+    size_t evict_low_water = static_cast<size_t>(static_cast<float>(available_tokens) * low_water_ratio);
+    if (prefix_cache_active && recent_growth > 0) {
+        const size_t reserve = static_cast<size_t>(static_cast<float>(recent_growth) * kGrowthReserveRounds);
+        const size_t floor_tokens = static_cast<size_t>(static_cast<float>(available_tokens) * kEvictionLowWaterFloorRatio);
+        const size_t adaptive = evict_high_water > reserve ? evict_high_water - reserve : 0;
+        evict_low_water = std::max(floor_tokens, std::min(evict_low_water, adaptive));
+    }
+    if ((!budget_satisfied || compress_current_tokens > evict_high_water) && !evict_key.empty()) {
+        const MessageCategoryStats stats_before = prefilter_stats_;
+        json working = filtered_msg;
+        size_t evict_tokens = compress_current_tokens;
+        current_prot_idx = compute_protection_indices(working);
+        auto old_flags_ev = precompute_old_flags(working);
+        DropOldMessagesBatch(working, old_flags_ev, is_protected,
+                             handle, evict_tokens, evict_low_water,
+                             [&]() { current_prot_idx = compute_protection_indices(working); });
+        My_Log{My_Log::Level::kInfo} << "[PreFilter] Eviction low-water: target=" << evict_low_water
+                                      << ", recent_growth=" << recent_growth
+                                      << ", available=" << available_tokens << std::endl;
+        evict_tokens = calc_msg_tokens(working);
+        if (evict_tokens <= available_tokens) {
+            filtered_msg = std::move(working);
+            compress_current_tokens = evict_tokens;
+            budget_satisfied = true;
+        } else {
+            prefilter_stats_ = stats_before;
+        }
+        current_prot_idx = compute_protection_indices(filtered_msg);
+    }
     if (!budget_satisfied) {
         if (model_config_.getenablePromptDebug()) {
             My_Log{My_Log::Level::kInfo} << "[PreFilter] Phase 1: Processing old messages (recent_window="
@@ -2008,12 +2580,14 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         // ── Phase 1 Step B: 删除旧消息（仍超预算时）────────────────────
         if (!budget_satisfied) {
             if (model_config_.getenablePromptDebug()) {
-                My_Log{My_Log::Level::kInfo} << "[PreFilter] Phase 1 Step B: Dropping old messages (batch mode)..." << std::endl;
+                My_Log{My_Log::Level::kInfo} << "[PreFilter] Phase 1 Step B: Dropping old messages (batch mode, low-water)..." << std::endl;
             }
             current_prot_idx = compute_protection_indices(filtered_msg);
             auto old_flags_1b = precompute_old_flags(filtered_msg);
+            const size_t low_water_target_1b = static_cast<size_t>(
+                static_cast<float>(available_tokens) * low_water_ratio);
             DropOldMessagesBatch(filtered_msg, old_flags_1b, is_protected,
-                                 handle, compress_current_tokens, available_tokens,
+                                 handle, compress_current_tokens, low_water_target_1b,
                                  [&]() { current_prot_idx = compute_protection_indices(filtered_msg); });
             budget_satisfied = (compress_current_tokens <= available_tokens);
             if (model_config_.getenablePromptDebug()) {
@@ -2128,8 +2702,10 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         }
         current_prot_idx = compute_protection_indices(filtered_msg);
         std::vector<bool> all_flags(filtered_msg.size(), true);
+        const size_t low_water_target_p3 = static_cast<size_t>(
+            static_cast<float>(available_tokens) * low_water_ratio);
         DropOldMessagesBatch(filtered_msg, all_flags, is_protected,
-                             handle, compress_current_tokens, available_tokens,
+                             handle, compress_current_tokens, low_water_target_p3,
                              [&]() { current_prot_idx = compute_protection_indices(filtered_msg); });
         budget_satisfied = (compress_current_tokens <= available_tokens);
         if (model_config_.getenablePromptDebug()) {
@@ -2181,7 +2757,7 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
                 if (!validated_msg.empty() && validated_msg[0]["role"] == "system") {
                     insert_pos = 1;
                 }
-                validated_msg.insert(validated_msg.begin() + insert_pos, msg[i]);
+                validated_msg.insert(validated_msg.begin() + insert_pos, raw_tagged[i]);
                 My_Log{My_Log::Level::kWarning} << "[PreFilter] Step 5: Force added last user message" << std::endl;
                 break;
             }
@@ -2199,6 +2775,47 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         print_diag_dump(validated_msg);
     }
 
+    {
+        std::vector<bool> present(msg.size(), false);
+        for (const auto& m : validated_msg) {
+            if (m.is_object() && m.contains(kRawIdxKey)) {
+                const size_t ri = m[kRawIdxKey].get<size_t>();
+                if (ri < present.size()) present[ri] = true;
+            }
+        }
+        EvictionState next_state;
+        next_state.model = handle.get();
+        next_state.raw_size = msg.size();
+        for (size_t i = 0; i < present.size(); ++i) {
+            if (!present[i]) next_state.dropped.push_back(i);
+        }
+        next_state.boundary = next_state.dropped.empty() ? 0 : next_state.dropped.back() + 1;
+        next_state.prefix_hash = HashRawPrefix(msg, next_state.boundary);
+        const size_t prior_count = have_prior ? prior_state.dropped.size() : 0;
+        std::string reset_reason = "none";
+        if (evict_key.empty()) {
+            if (!next_state.dropped.empty()) reset_reason = "untracked_drop";
+        } else if (have_prior) {
+            if (next_state.dropped.size() > prior_count) reset_reason = "forced_budget";
+        } else if (!next_state.dropped.empty()) {
+            reset_reason = invalid_reason;
+        }
+        prefilter_stats_.messages_dropped_prefix_len = next_state.dropped.size();
+        prefilter_stats_.prefix_reset_reason = reset_reason;
+        if (!next_state.dropped.empty() || have_prior) {
+            My_Log{My_Log::Level::kInfo} << "[PreFilter] Eviction: sticky=" << prior_count
+                                          << ", dropped=" << next_state.dropped.size()
+                                          << ", boundary=" << next_state.boundary
+                                          << ", tokens=" << compress_current_tokens
+                                          << ", reset_reason=" << reset_reason << std::endl;
+        }
+        if (!evict_key.empty()) {
+            StoreEvictionState(evict_key, std::move(next_state));
+            StoreRoundTokens(evict_key, handle.get(), msg.size(), tokens_before_evict, compress_current_tokens);
+        }
+    }
+
+    StripRawIdx(validated_msg);
     CaptureDroppedMessages(msg, validated_msg);
     return validated_msg;
 }

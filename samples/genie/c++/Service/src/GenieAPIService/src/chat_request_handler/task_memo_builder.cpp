@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <algorithm>
 #include <functional>
+#include <cstring>
 
 TaskMemoBuilder::TaskMemoBuilder(
     const PromptOptimizationConfig::TaskMemoConfig& config,
@@ -126,9 +127,45 @@ namespace {
             field.erase(field.begin());
     }
 
+    bool HasNonEmptyErrorField(const std::string& content, const char* key) {
+        size_t pos = 0;
+        while ((pos = content.find(key, pos)) != std::string::npos) {
+            size_t cursor = pos + strlen(key);
+            while (cursor < content.size() && (content[cursor] == ' ' || content[cursor] == '\t'))
+                cursor++;
+            if (cursor < content.size() && content[cursor] == ':') {
+                cursor++;
+                while (cursor < content.size() && (content[cursor] == ' ' || content[cursor] == '\t'))
+                    cursor++;
+                static const char* kFalsy[] = { "null", "false", "0", "\"\"" };
+                bool is_falsy = false;
+                for (const char* f : kFalsy) {
+                    size_t flen = strlen(f);
+                    if (content.compare(cursor, flen, f) == 0)
+                        is_falsy = true;
+                }
+                if (!is_falsy)
+                    return true;
+            }
+            pos += strlen(key);
+        }
+        return false;
+    }
+
     bool LooksLikeFailure(const std::string& content) {
-        return content.find("error") != std::string::npos || content.find("Error") != std::string::npos ||
-               content.find("failed") != std::string::npos || content.find("Failed") != std::string::npos;
+        static const char* kSignals[] = {
+            "Error:", "ERROR:", "Exception:", "Traceback (most recent call last)",
+            "No such file or directory",
+            "Permission denied", "command not found", "is not recognized as",
+            "Failed to", "failed to", "Failed:",
+        };
+        for (const char* sig : kSignals) {
+            if (content.find(sig) != std::string::npos)
+                return true;
+        }
+        if (HasNonEmptyErrorField(content, "\"error\"") || HasNonEmptyErrorField(content, "\"is_error\""))
+            return true;
+        return false;
     }
 
     void CapObjectSize(json& obj, size_t cap) {
@@ -137,6 +174,112 @@ namespace {
         while (obj.size() > cap)
             obj.erase(obj.begin());
     }
+
+    bool IsReadLikeToolName(const std::string& name) {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)tolower(c); });
+        // exec 类工具（即便名字含 "read"，如某些 shell 别名）不计入，由调用方对 exec 结果
+        // 走正常的失败/成功摘要路径，不参与"已读文件索引"。
+        return lower.find("read") != std::string::npos && lower.find("exec") == std::string::npos;
+    }
+
+    // 从承载 tool_call 的 assistant 消息文本里抽取 read 类工具调用的路径参数；兼容 Harmony
+    // （to=functions.NAME ... {"path":"..."}）与 general 格式（<tool_call>{"name":"NAME",
+    // "arguments":{"path":"..."}}</tool_call>）两种拼接方式。只用子串朴素扫描，不引入 <regex>，
+    // 与本文件其余解析风格一致；误判的代价只是漏报/多报一次提示，不影响正确性。
+    std::string ExtractReadToolPathImpl(const std::string& assistant_content) {
+        std::string name;
+        size_t search_from = 0;
+        size_t name_pos = assistant_content.find("to=functions.");
+        if (name_pos != std::string::npos) {
+            size_t start = name_pos + strlen("to=functions.");
+            size_t end = start;
+            while (end < assistant_content.size() &&
+                   (isalnum((unsigned char) assistant_content[end]) || assistant_content[end] == '_'))
+                ++end;
+            name = assistant_content.substr(start, end - start);
+            search_from = end;
+        } else {
+            size_t np = assistant_content.find("\"name\"");
+            if (np != std::string::npos) {
+                size_t colon = assistant_content.find(':', np);
+                size_t q1 = (colon == std::string::npos) ? std::string::npos : assistant_content.find('"', colon + 1);
+                size_t q2 = (q1 == std::string::npos) ? std::string::npos : assistant_content.find('"', q1 + 1);
+                if (q1 != std::string::npos && q2 != std::string::npos) {
+                    name = assistant_content.substr(q1 + 1, q2 - q1 - 1);
+                    search_from = q2;
+                }
+            }
+        }
+        if (name.empty() || !IsReadLikeToolName(name))
+            return "";
+
+        static const char* kPathKeys[] = { "\"path\"", "\"file\"", "\"file_path\"", "\"filename\"" };
+        for (const char* key : kPathKeys) {
+            size_t kp = assistant_content.find(key, search_from);
+            if (kp == std::string::npos)
+                continue;
+            size_t colon = assistant_content.find(':', kp);
+            size_t q1 = (colon == std::string::npos) ? std::string::npos : assistant_content.find('"', colon + 1);
+            size_t q2 = (q1 == std::string::npos) ? std::string::npos : assistant_content.find('"', q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos)
+                return assistant_content.substr(q1 + 1, q2 - q1 - 1);
+        }
+        return "";
+    }
+
+    std::string ExtractKeyFacts(const std::string& content, size_t max_len) {
+        if (LooksLikeFailure(content)) {
+            size_t nl = content.find('\n');
+            std::string first_line = (nl == std::string::npos) ? content : content.substr(0, nl);
+            return safe_utf8_truncate(first_line, max_len, "...");
+        }
+
+        std::vector<std::string> facts;
+        try {
+            json parsed = json::parse(content, nullptr, false);
+            if (parsed.is_object()) {
+                for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+                    if (facts.size() >= 4) break;
+                    std::string v = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+                    facts.push_back(it.key() + "=" + v);
+                }
+            }
+        } catch (...) {}
+
+        if (facts.empty()) {
+            static const char* kPathHints[] = { "path\":", "file\":", "C:\\", "/home/", "/root/", "/mnt/", "/usr/" };
+            for (const char* hint : kPathHints) {
+                size_t pos = content.find(hint);
+                if (pos != std::string::npos) {
+                    size_t start = (pos > 20) ? pos - 20 : 0;
+                    facts.push_back(content.substr(start, 80));
+                    break;
+                }
+            }
+        }
+
+        std::string out;
+        if (!facts.empty()) {
+            for (const auto& f : facts) {
+                if (!out.empty()) out += "; ";
+                out += f;
+            }
+        } else {
+            out = content.substr(0, max_len);
+        }
+        return safe_utf8_truncate(out, max_len, "...");
+    }
+}
+
+std::string TaskMemoBuilder::ExtractReadToolPath(const std::string& assistant_content)
+{
+    return ExtractReadToolPathImpl(assistant_content);
+}
+
+bool TaskMemoBuilder::LooksLikeToolFailure(const std::string& content)
+{
+    return LooksLikeFailure(content);
 }
 
 json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieChatMessage>& dropped_messages) const
@@ -151,9 +294,13 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
     if (!entry.contains("tool_state") || !entry["tool_state"].is_object())
         entry["tool_state"] = json::object();
 
+    if (!entry.contains("read_files") || !entry["read_files"].is_object())
+        entry["read_files"] = json::object();
+
     size_t tool_seq = entry["tool_state"].size();
+    std::string last_assistant_content;
     for (const auto& m : dropped_messages) {
-        std::string preview = m.content.substr(0, config_.rule_layer_preview_chars);
+        std::string preview = ExtractKeyFacts(m.content, config_.rule_layer_preview_chars);
         if (m.role == "user") {
             AppendCapped(entry["facts_constraints"], "用户提及: " + preview, kMaxItemsPerField);
             size_t todo_pos = m.content.find("TODO");
@@ -166,12 +313,23 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
                                  m.content.find("<tool_call>") != std::string::npos;
             if (is_tool_call)
                 AppendCapped(entry["completed"], "已发起工具调用: " + preview, kMaxItemsPerField);
+            last_assistant_content = m.content;
         } else if (m.role == "tool") {
             bool failed = LooksLikeFailure(m.content);
             entry["tool_state"]["tool_result_" + std::to_string(tool_seq++)] =
                 (failed ? "失败: " : "成功: ") + preview;
             CapObjectSize(entry["tool_state"], kMaxItemsPerField);
             AppendCapped(entry["completed"], (failed ? "工具调用失败: " : "工具调用完成: ") + preview, kMaxItemsPerField);
+
+            // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
+            // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。
+            if (!failed) {
+                std::string read_path = ExtractReadToolPathImpl(last_assistant_content);
+                if (!read_path.empty()) {
+                    entry["read_files"][read_path] = preview;
+                    CapObjectSize(entry["read_files"], kMaxItemsPerField);
+                }
+            }
         }
     }
 
@@ -370,6 +528,8 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
             // 必须显式透传，否则模型层触发时这批 Update() 新增的分页记录会被整体丢失。
             model_entry["pages"] = entry["pages"];
             model_entry["_next_page_id"] = entry["_next_page_id"];
+            // read_files（已读文件索引）同理：模型层不感知、不生成，必须显式透传。
+            model_entry["read_files"] = entry["read_files"];
             // original_goal_raw/confidence 权威兜底，从 entry 显式透传，不允许模型层输出覆盖。
             model_entry["original_goal_raw"] = entry["original_goal_raw"];
             model_entry["original_goal_confidence"] = entry["original_goal_confidence"];
@@ -491,6 +651,19 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         tool_state_block = oss.str();
     }
 
+    // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，模型重复 read 同一路径前
+    // 可以先看这里判断是否真的需要重读；仅记路径与关键事实摘要，不含原始文件内容。
+    std::string read_files_block;
+    if (entry.contains("read_files") && entry["read_files"].is_object() && !entry["read_files"].empty()) {
+        std::ostringstream oss;
+        oss << "Files already read (content evicted from context, summary only):\n";
+        for (auto it = entry["read_files"].begin(); it != entry["read_files"].end(); ++it) {
+            oss << "- " << it.key() << ": "
+                << (it.value().is_string() ? it.value().get<std::string>() : it.value().dump()) << "\n";
+        }
+        read_files_block = oss.str();
+    }
+
     // 轻量分页目录：最低优先级，预算不足时第一个被整块丢弃。只渲染 page_id/source_range/
     // gist 三个字段，不含任何原始消息文本——与 BuildRuleLayer() 落盘时的安全边界一致。
     std::string page_directory_block;
@@ -514,6 +687,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         render_list("Facts / constraints", "facts_constraints"),
         render_list("Open questions", "open_questions"),
         tool_state_block,
+        read_files_block,
         page_directory_block,
     };
 

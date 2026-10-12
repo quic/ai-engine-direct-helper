@@ -19,6 +19,7 @@
 #include "../chat_request_handler/task_memo_store.h"
 #include "../chat_request_handler/tool_call_circuit_breaker_store.h"
 #include "../chat_request_handler/tool_call_repetition_store.h"
+#include "../chat_request_handler/request_trace_writer.h"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -1070,6 +1071,7 @@ bool ModelManager::InitializeConfig()
                         rg_cfg.enabled = rg.value("enabled", true);
                         rg_cfg.repeat_threshold = rg.value("repeat_threshold", 2);
                         rg_cfg.ttl_seconds = rg.value("ttl_seconds", 300);
+                        rg_cfg.consecutive_failure_threshold = rg.value("consecutive_failure_threshold", 3);
                     }
                     ToolCallRepetitionStore::GetInstance().Configure(tool_call_repair_config_.redundant_call_guard);
 
@@ -1093,6 +1095,34 @@ bool ModelManager::InitializeConfig()
                              << tool_call_repair_config_.circuit_breaker.cooldown_seconds
                              << std::endl;
                 }
+
+                if (pe_json.contains("debug") && pe_json["debug"].is_object())
+                {
+                    const auto &dbg = pe_json["debug"];
+                    if (dbg.contains("request_trace") && dbg["request_trace"].is_object())
+                    {
+                        const auto &rt = dbg["request_trace"];
+                        request_trace_config_.enabled = rt.value("enabled", false);
+                        request_trace_config_.path = rt.value("path", std::string("tmp/request_trace.jsonl"));
+                        My_Log{} << "[Config] debug.request_trace loaded: enabled="
+                                 << request_trace_config_.enabled
+                                 << ", path=" << request_trace_config_.path
+                                 << std::endl;
+                    }
+                }
+                RequestTraceWriter::GetInstance().Configure(request_trace_config_);
+
+#ifdef USE_GGUF
+                {
+                    bool prefix_cache_enabled = true;
+                    if (pe_json.contains("llama_prefix_cache") && pe_json["llama_prefix_cache"].is_object())
+                    {
+                        prefix_cache_enabled = pe_json["llama_prefix_cache"].value("enabled", true);
+                    }
+                    LLAMACppBuilder::SetPrefixCacheEnabled(prefix_cache_enabled);
+                    My_Log{} << "[Config] llama_prefix_cache.enabled=" << prefix_cache_enabled << std::endl;
+                }
+#endif
 
                 if (pe_json.contains("prompt_optimization"))
                 {

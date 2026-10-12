@@ -30,7 +30,9 @@
             "_comment_repeat_threshold": "同一(工具名,参数)签名连续成功调用达到此次数后触发纠偏提示，默认 2（即发现重复的第一时间）",
             "repeat_threshold": 2,
             "_comment_ttl_seconds": "距上一次调用超过此秒数视为新的序列，重新从 1 计数，默认 300（5 分钟）",
-            "ttl_seconds": 300
+            "ttl_seconds": 300,
+            "_comment_consecutive_failure_threshold": "请求尾部连续为空或失败的 tool 结果达到此次数时追加纠偏提示，默认 3；0 或负数关闭",
+            "consecutive_failure_threshold": 3
         }
     },
 
@@ -117,8 +119,8 @@
         "long_text_summarization": {
             "_comment_enabled": "总开关：false=禁用（默认），true=启用长文本摘要化前置优化",
             "enabled": true,
-            "_comment_trigger_ratio": "触发阈值比率：单条消息 token 数超过 context_size × trigger_ratio 时触发摘要；默认 0.5",
-            "trigger_ratio": 0.5,
+            "_comment_trigger_ratio": "触发阈值比率：单条消息 token 数超过 context_size × trigger_ratio 时触发摘要；默认 0.9",
+            "trigger_ratio": 0.9,
             "_comment_chunk_ratio": "分块大小比率：每个 chunk 的 token 上限 = context_size × chunk_ratio；默认 0.45",
             "chunk_ratio": 0.45,
             "_comment_max_chunks": "最大分块数：超出时截断尾部块并输出 warning；默认 12",

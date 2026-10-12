@@ -48,6 +48,10 @@ struct PromptLedger {
     double memo_confidence = 0.0;
     size_t memo_refresh_count = 0;
     size_t memo_pages_total = 0;
+    // 单调驱逐边界可观测性：数据源 MessagePreFilter::GetStats() 的
+    // messages_dropped_prefix_len/prefix_reset_reason，不新建统计口径。
+    size_t messages_dropped_prefix_len = 0;
+    std::string prefix_reset_reason = "none";
 
     // 真实 JSON 类型（bool 用真实 bool，数字用真实数字），供流式 status 帧
     // （status="prompt_optimized"）payload 复用，与响应头字段口径完全一致。
@@ -76,6 +80,8 @@ struct PromptLedger {
         j["memo_confidence"] = memo_confidence;
         j["memo_refresh_count"] = memo_refresh_count;
         j["memo_pages_total"] = memo_pages_total;
+        j["messages_dropped_prefix_len"] = messages_dropped_prefix_len;
+        j["prefix_reset_reason"] = prefix_reset_reason;
         return j;
     }
 
@@ -105,6 +111,8 @@ struct PromptLedger {
         res.set_header("X-Genie-Prompt-Memo-Confidence", std::to_string(memo_confidence));
         res.set_header("X-Genie-Prompt-Memo-Refresh-Count", std::to_string(memo_refresh_count));
         res.set_header("X-Genie-Prompt-Memo-Pages", std::to_string(memo_pages_total));
+        res.set_header("X-Genie-Prompt-Messages-Dropped-Prefix-Len", std::to_string(messages_dropped_prefix_len));
+        res.set_header("X-Genie-Prompt-Prefix-Reset-Reason", prefix_reset_reason);
     }
 };
 
