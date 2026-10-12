@@ -1,5 +1,6 @@
 {
-  "backend": "gpu",
+  "backend": "gguf",
+  "device": "gpu",
   "draft_model": {
     "path": "Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
     "spec_type": "draft-dflash",
