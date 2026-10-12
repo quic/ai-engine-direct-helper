@@ -308,6 +308,10 @@ public:
 
         // Fix: 重置输出限制状态
         stopped_by_output_limit_ = false;
+        if (!is_aux_inference)
+        {
+            last_trace_metrics_ = nullptr;
+        }
         int n_generated = 0;
         bool should_stop = false;
 
@@ -1590,6 +1594,25 @@ json LLAMACppBuilder::HandleProfile()
 {
     json result;
     
+    if (impl_ && impl_->last_trace_metrics_.is_object())
+    {
+        const json &m = impl_->last_trace_metrics_;
+        auto fmt = [](double v)
+        {
+            std::ostringstream o;
+            o << std::fixed << std::setprecision(2) << v;
+            return o.str();
+        };
+        int64_t ttft_ms = m.value("ttft_ms", (int64_t) 0);
+        result["time_to_first_token"] = fmt(ttft_ms > 0 ? ttft_ms / 1000.0 : 0.0);
+        result["token_generation_time"] = fmt(m.value("decode_ms", (int64_t) 0) / 1000.0);
+        result["prompt_processing_rate"] = fmt(m.value("prefill_tok_s", 0.0));
+        result["token_generation_rate"] = fmt(m.value("decode_tok_s", 0.0));
+        result["num_prompt_tokens"] = m.value("prompt_tokens", 0);
+        result["num_generated_tokens"] = m.value("gen_tokens", 0);
+        return result;
+    }
+
     if (impl_)
     {
         llama_context *ctx = impl_->llama_init->context();
