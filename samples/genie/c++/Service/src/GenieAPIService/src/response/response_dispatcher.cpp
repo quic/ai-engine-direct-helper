@@ -617,7 +617,7 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                         // chatHistory 完全隔离，SendResponse() 返回后自动销毁。
                         auto *mutable_instance_config = const_cast<ModelInstanceConfig *>(instance_config_);
                         ChatHistory scratch_chat_history(*mutable_instance_config);
-                        ModelInputBuilder scratch_builder(scratch_chat_history, mutable_instance_config);
+                        ModelInputBuilder scratch_builder(scratch_chat_history, mutable_instance_config, scratch_data);
 
                         bool scratch_is_tool = false;
                         std::function<bool()> scratch_is_alive_fn = nullptr;

@@ -1147,6 +1147,17 @@ public:
         }
         if (n == 0)
         {
+            const int n_cmp = std::min(n_cached, limit);
+            int common = 0;
+            while (common < n_cmp && prefix_cache_tokens_[common] == embd_inp[common])
+            {
+                ++common;
+            }
+            My_Log{My_Log::Level::kWarning}
+                << "[LLAMACpp] Prefix cache miss: mode="
+                << ((partial_tgt || partial_dft) ? "partial" : "incremental")
+                << ", n_cached=" << n_cached << ", limit=" << limit
+                << ", common_prefix=" << common << "\n";
             return 0;
         }
         bool ok = !partial_tgt || RestoreSeqState(c, prefix_ckpt_tgt_);

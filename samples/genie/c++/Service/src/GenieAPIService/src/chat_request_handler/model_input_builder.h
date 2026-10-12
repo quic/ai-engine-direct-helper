@@ -372,7 +372,10 @@ private:
             }
 
             auto stats = optimizer_.GetLastStats();
-            My_Log{My_Log::Level::kInfo} << "[Optimization] System prompt savings: " << stats.savings_percent << "%" << std::endl;
+            My_Log{My_Log::Level::kInfo} << "[Optimization] System prompt rebuilt: original="
+                                         << stats.original_tokens << " tok, rebuilt="
+                                         << stats.optimized_tokens << " tok, delta="
+                                         << -stats.savings_percent << "%" << std::endl;
         }
 
         // 必须在 PreFilterMessages 之前处理工具定义，确保 token 预算计算包含工具定义的 tokens

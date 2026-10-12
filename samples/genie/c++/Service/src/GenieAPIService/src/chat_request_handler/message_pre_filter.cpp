@@ -546,17 +546,43 @@ bool MessagePreFilter::ShouldKeepFull(const GenieChatMessage& msg) const
 
 void MessagePreFilter::CaptureDroppedMessages(const json& original, const json& kept)
 {
+    auto message_content_for_memo = [](const json& m) -> std::string {
+        std::string content = get_json_value(m, "content", BLANK_STRING);
+        if (get_json_value(m, "role", BLANK_STRING) != "assistant" ||
+            !m.contains("tool_calls") || !m["tool_calls"].is_array())
+            return content;
+        for (const auto& tc : m["tool_calls"]) {
+            if (!tc.is_object() || !tc.contains("function") || !tc["function"].is_object())
+                continue;
+            const auto& fn = tc["function"];
+            std::string name = (fn.contains("name") && fn["name"].is_string())
+                ? fn["name"].get<std::string>() : std::string();
+            if (name.empty())
+                continue;
+            std::string args;
+            if (fn.contains("arguments") && !fn["arguments"].is_null()) {
+                args = fn["arguments"].is_string() ? fn["arguments"].get<std::string>()
+                                                   : fn["arguments"].dump();
+            }
+            if (args.empty())
+                args = "{}";
+            content += std::string(kToolCallOpenTag) + "\n{\"name\": \"" + name +
+                       "\", \"arguments\": " + args + "}\n" + kToolCallCloseTag;
+        }
+        return content;
+    };
+
     std::unordered_multiset<std::string> kept_signatures;
     for (const auto& m : kept) {
         std::string role = get_json_value(m, "role", BLANK_STRING);
-        std::string content = get_json_value(m, "content", BLANK_STRING);
+        std::string content = message_content_for_memo(m);
         kept_signatures.insert(role + "\x01" + content);
     }
     for (const auto& m : original) {
         std::string role = get_json_value(m, "role", BLANK_STRING);
         if (role == "system" || role == "developer")
             continue;
-        std::string content = get_json_value(m, "content", BLANK_STRING);
+        std::string content = message_content_for_memo(m);
         auto it = kept_signatures.find(role + "\x01" + content);
         if (it != kept_signatures.end()) {
             kept_signatures.erase(it);

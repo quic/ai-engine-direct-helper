@@ -9,6 +9,7 @@
 #include "task_memo_builder.h"
 #include "tool_call_circuit_breaker_store.h"
 #include <utils.h>
+#include "log.h"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -691,6 +692,10 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         tool_state_block,
         page_directory_block,
     };
+    static const char* kBlockNames[] = {
+        "completed", "next_actions", "facts_constraints", "open_questions",
+        "read_files", "tool_state", "page_directory",
+    };
 
     std::string out = header;
     if (!goal_block.empty()) {
@@ -702,11 +707,19 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
             out += goal_block;
         }
     }
+    size_t block_index = 0;
     for (const auto& block : blocks) {
+        const char* block_name = kBlockNames[block_index++];
         if (block.empty())
             continue;
-        if (max_chars > 0 && out.size() + block.size() > max_chars)
+        if (max_chars > 0 && out.size() + block.size() > max_chars) {
+            My_Log{My_Log::Level::kWarning}
+                << "[TaskMemo] Render block skipped: name=" << block_name
+                << ", block_chars=" << block.size()
+                << ", used_chars=" << out.size()
+                << ", max_chars=" << max_chars << std::endl;
             continue;
+        }
         out += block;
     }
     if (max_chars > 0 && out.size() > max_chars)
