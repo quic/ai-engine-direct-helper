@@ -602,7 +602,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
 
     std::string header = "## Task Memo\n";
 
-    // 目标锚点块：最高优先级，不参与下面的"整块丢弃"循环；预算不足时只截断该块文本
+    // 目标锚点块：最高优先级，不参与下面的"整块跳过"循环；预算不足时只截断该块文本
     // 本身（复用 safe_utf8_truncate），绝不整块跳过——这是"不遗忘目标"的硬保证。
     // 连续失败持久化提示行同属这一不可整块丢弃的段落，与目标锚点块拼在一起。
     std::string goal_block;
@@ -656,7 +656,8 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     std::string read_files_block;
     if (entry.contains("read_files") && entry["read_files"].is_object() && !entry["read_files"].empty()) {
         std::ostringstream oss;
-        oss << "Files already read (content evicted from context, summary only):\n";
+        oss << "Files already read, content evicted from context (re-reading the same call "
+               "returns the full content again; summary below is for reference only):\n";
         for (auto it = entry["read_files"].begin(); it != entry["read_files"].end(); ++it) {
             oss << "- " << it.key() << ": "
                 << (it.value().is_string() ? it.value().get<std::string>() : it.value().dump()) << "\n";
@@ -664,7 +665,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         read_files_block = oss.str();
     }
 
-    // 轻量分页目录：最低优先级，预算不足时第一个被整块丢弃。只渲染 page_id/source_range/
+    // 轻量分页目录：最低优先级，预算放不下时整块跳过。只渲染 page_id/source_range/
     // gist 三个字段，不含任何原始消息文本——与 BuildRuleLayer() 落盘时的安全边界一致。
     std::string page_directory_block;
     if (entry.contains("pages") && entry["pages"].is_array() && !entry["pages"].empty()) {
@@ -680,14 +681,14 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         page_directory_block = oss.str();
     }
 
-    // 由高到低优先级排列；预算不足时从末尾（最低优先级）整块丢弃，不做块内截断。
+    // 由高到低优先级排列；预算不足时跳过放不下的块，不做块内截断。
     const std::string blocks[] = {
         render_list("Completed", "completed"),
         render_list("Next actions", "next_actions"),
         render_list("Facts / constraints", "facts_constraints"),
         render_list("Open questions", "open_questions"),
-        tool_state_block,
         read_files_block,
+        tool_state_block,
         page_directory_block,
     };
 
@@ -705,7 +706,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         if (block.empty())
             continue;
         if (max_chars > 0 && out.size() + block.size() > max_chars)
-            break;
+            continue;
         out += block;
     }
     if (max_chars > 0 && out.size() > max_chars)
@@ -717,8 +718,9 @@ std::string TaskMemoBuilder::RenderRedundantToolCallNote(int repeat_count)
 {
     std::ostringstream oss;
     oss << "Note: you have called the same tool with the same arguments " << repeat_count
-        << " time(s) in a row and already received the same result. Do not repeat this call; "
-           "use the information you already have to make a decision and take the next concrete action.\n";
+        << " time(s) in a row. If that earlier result is still visible above, re-reading it won't "
+           "give new information; use what you already have. If it's no longer visible (evicted "
+           "from context), calling it again will return the full content.\n";
     return oss.str();
 }
 

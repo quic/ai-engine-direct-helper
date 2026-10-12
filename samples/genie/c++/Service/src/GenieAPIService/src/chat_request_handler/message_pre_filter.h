@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <functional>
 #include <optional>
 #include <memory>
@@ -194,6 +195,9 @@ private:
     ContextBase* context_override_{nullptr};
     MessageCategoryStats prefilter_stats_;
     std::vector<GenieChatMessage> prefilter_dropped_messages_;
+    std::unordered_set<size_t> repeat_protected_raw_;
+    std::unordered_set<size_t> repeat_must_keep_raw_;
+    size_t repeat_retain_budget_{0};
 };
 
 #endif // MESSAGE_PRE_FILTER_H
