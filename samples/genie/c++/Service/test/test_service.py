@@ -6912,6 +6912,13 @@ _STATELESS_MODE_READ_TOOL_DEF = {
 }
 
 
+_STATELESS_MODE_SYSPROMPT_MARKER = "[Optimization] System prompt rebuilt:"
+_STATELESS_MODE_LONGTEXT_TRIGGER_MARKER = "[LongTextSummarizer][Map] chunk 1/"
+_STATELESS_MODE_LONGTEXT_SUCCESS_MARKER = "[LongTextSummarizer] User message summarized:"
+_STATELESS_MODE_LONGTEXT_REDUCE_FAIL_MARKER = "[LongTextSummarizer] Reduce failed"
+_STATELESS_MODE_LONGTEXT_TIMEOUT_S = 900
+
+
 def _read_long_text_trigger_ratio(exe_dir):
     """从构建产物目录下实际生效的 prompt_engineering.json 读取
     prompt_optimization.long_text_summarization.trigger_ratio；读取不到时按 0.5 兜底
@@ -7052,7 +7059,8 @@ def run_numresponse_stateless_mode_regressions(args, models, all_results, all_cr
             except Exception:
                 pass
             long_text = _build_stateless_long_text_probe(context_size, trigger_ratio)
-            resp4, err4 = _stateless_chat_request(args.host, args.port, model_name, long_text, timeout=240)
+            resp4, err4 = _stateless_chat_request(args.host, args.port, model_name, long_text,
+                                                    timeout=_STATELESS_MODE_LONGTEXT_TIMEOUT_S)
             data["longtext_resp"] = resp4
             data["longtext_err"] = err4
             data["longtext_log"] = svc.read_log_tail(svc._stdout_log, 800)
@@ -7156,8 +7164,10 @@ def run_numresponse_stateless_mode_regressions(args, models, all_results, all_cr
     # 唯一的真实用途在 response_dispatcher.cpp，只决定是否在客户端断开后把历史持久化在服务端（即
     # 上面探针1验证的 `[History] Skipped` vs `✓ Added` 差异），与本探针验证的压缩管线完全无关。
     # 曾错误断言 `30` 侧不应出现该日志（旧假设：压缩管线按 -n 分支），已被真机回归证伪并纠正于此。
+    # 判据标记取自 model_input_builder.h 的实际 kInfo 输出，不要改回已不存在的 savings 文案
+    # （理由见 test_service.md「探针标记必须对齐源码实际输出」）。
     try:
-        name = f"{name_prefix} 系统提示词优化 ([Optimization] System prompt savings，一致性断言)"
+        name = f"{name_prefix} 系统提示词优化 ([Optimization] System prompt rebuilt，一致性断言)"
         if data_neg1 is None or data_30 is None:
             all_results.append(TestResult(
                 name=name, round_num=1, model_name=model_name, passed=False, status_code=0, latency_ms=0,
@@ -7166,10 +7176,10 @@ def run_numresponse_stateless_mode_regressions(args, models, all_results, all_cr
         else:
             log_neg1 = data_neg1["hist_sysprompt_log"]
             log_30 = data_30["hist_sysprompt_log"]
-            neg1_has_savings = "[Optimization] System prompt savings:" in log_neg1
-            mode30_has_savings = "[Optimization] System prompt savings:" in log_30
+            neg1_has_savings = _STATELESS_MODE_SYSPROMPT_MARKER in log_neg1
+            mode30_has_savings = _STATELESS_MODE_SYSPROMPT_MARKER in log_30
             passed = neg1_has_savings and mode30_has_savings
-            detail = f"-1侧出现savings日志={neg1_has_savings}; 30侧出现savings日志={mode30_has_savings}（两侧应一致）"
+            detail = f"-1侧出现rebuilt日志={neg1_has_savings}; 30侧出现rebuilt日志={mode30_has_savings}（两侧应一致）"
             all_results.append(TestResult(
                 name=name, round_num=1, model_name=model_name, passed=passed, status_code=200 if passed else 0,
                 latency_ms=0, detail=detail
@@ -7206,8 +7216,12 @@ def run_numresponse_stateless_mode_regressions(args, models, all_results, all_cr
         ))
 
     # ── 探针4：长文本摘要（一致性断言；原理同探针2/3，压缩管线不分 -n 分支） ──────────
+    # 判据是"Map 阶段被触发"而不是"摘要成功"：成功标记只在 Reduce 收敛时才打印，而 Reduce 能否在
+    # 服务端 300s 推理预算内收敛取决于模型、与 -n 无关（实测两次运行一次成功一次撞预算回退原文）。
+    # 请求超时仍需覆盖整条 Map-Reduce 链，否则客户端先断开、探针会在标记落盘前读快照。
+    # 实测数字与判据选择理由见 test_service.md「探针4 的判据与超时」。
     try:
-        name = f"{name_prefix} 长文本摘要 ([LongTextSummarizer] User message summarized，一致性断言)"
+        name = f"{name_prefix} 长文本摘要 ([LongTextSummarizer][Map] chunk 1/N，一致性断言)"
         if data_neg1 is None or data_30 is None:
             all_results.append(TestResult(
                 name=name, round_num=1, model_name=model_name, passed=False, status_code=0, latency_ms=0,
@@ -7216,12 +7230,18 @@ def run_numresponse_stateless_mode_regressions(args, models, all_results, all_cr
         else:
             log_neg1 = data_neg1["longtext_log"]
             log_30 = data_30["longtext_log"]
-            neg1_has_summarized = "[LongTextSummarizer] User message summarized:" in log_neg1
-            mode30_has_summarized = "[LongTextSummarizer] User message summarized:" in log_30
-            passed = neg1_has_summarized and mode30_has_summarized
+            neg1_triggered = _STATELESS_MODE_LONGTEXT_TRIGGER_MARKER in log_neg1
+            mode30_triggered = _STATELESS_MODE_LONGTEXT_TRIGGER_MARKER in log_30
+            passed = neg1_triggered and mode30_triggered
             detail = (f"context_size(-1侧)={data_neg1.get('context_size')}, "
                       f"context_size(30侧)={data_30.get('context_size')}, trigger_ratio={trigger_ratio}; "
-                      f"-1侧出现摘要日志={neg1_has_summarized}; 30侧出现摘要日志={mode30_has_summarized}（两侧应一致）")
+                      f"-1侧 Map 被触发={neg1_triggered}; 30侧 Map 被触发={mode30_triggered}（两侧应一致）; "
+                      f"Reduce 成功(-1侧)={_STATELESS_MODE_LONGTEXT_SUCCESS_MARKER in log_neg1}, "
+                      f"Reduce 成功(30侧)={_STATELESS_MODE_LONGTEXT_SUCCESS_MARKER in log_30}, "
+                      f"Reduce 回退原文(-1侧)={_STATELESS_MODE_LONGTEXT_REDUCE_FAIL_MARKER in log_neg1}, "
+                      f"Reduce 回退原文(30侧)={_STATELESS_MODE_LONGTEXT_REDUCE_FAIL_MARKER in log_30}; "
+                      f"timeout={_STATELESS_MODE_LONGTEXT_TIMEOUT_S}s, 请求异常(-1侧)={data_neg1.get('longtext_err')}, "
+                      f"请求异常(30侧)={data_30.get('longtext_err')}")
             all_results.append(TestResult(
                 name=name, round_num=1, model_name=model_name, passed=passed, status_code=200 if passed else 0,
                 latency_ms=0, detail=detail
