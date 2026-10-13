@@ -33,6 +33,7 @@ test_builder_agent_tasks.py 相同的约定），直接管理 GenieAPIService.ex
 """
 import argparse
 import json
+import random
 import re
 import shutil
 import sys
@@ -152,6 +153,7 @@ class Question:
     judge: JudgeFn
     description: str = ""
     lazy_check_min_len: int = 80
+    history: Optional[List[dict]] = None
 
 
 QUESTION_BANK: List[Question] = [
@@ -218,9 +220,127 @@ QUESTION_BANK: List[Question] = [
 ]
 
 
+_NKV_TIERS = {"2k": 3700, "6k": 12000, "12k": 24400}
+_NKV_DOCS_PER_TIER = 3
+_NKV_MODULES = ["net", "codec", "sched", "cache", "auth", "store", "render", "parser", "audio", "index"]
+_NKV_UNITS = ["conn_pool", "frame_queue", "token_ring", "lru_map", "ctx_guard", "blob_writer",
+              "shader_cache", "tile_mixer", "retry_gate", "span_table", "lock_pool", "seg_reader"]
+_NKV_ERRORS = ["use of undeclared identifier", "no member named", "cannot convert argument",
+               "unresolved external symbol", "expected ';' after expression",
+               "call to deleted constructor", "static assertion failed"]
+
+
+def _make_build_log(seed: int, target_chars: int) -> str:
+    rng = random.Random(seed)
+    lines = [f"[build {seed}] cmake --build out/arm64 --config Release -j 18"]
+    n_err = 0
+    while sum(len(x) + 1 for x in lines) < target_chars:
+        mod = rng.choice(_NKV_MODULES)
+        unit = rng.choice(_NKV_UNITS)
+        path = f"src/{mod}/{unit}_{rng.randint(1, 99)}.cpp"
+        line_no = rng.randint(10, 900)
+        if rng.random() < 0.12:
+            n_err += 1
+            lines.append(f"{path}({line_no},{rng.randint(1, 80)}): error C{rng.randint(2000, 3999)}: "
+                         f"{rng.choice(_NKV_ERRORS)} '{unit}_{rng.randint(1, 9)}'")
+        else:
+            lines.append(f"[{rng.randint(1, 400)}/400] Building CXX object {mod}/{unit}.obj "
+                         f"({path}:{line_no}) size={rng.randint(1000, 90000)}")
+    if n_err < 12:
+        for i in range(12 - n_err):
+            mod = rng.choice(_NKV_MODULES)
+            unit = rng.choice(_NKV_UNITS)
+            lines.append(f"src/{mod}/{unit}_{100 + i}.cpp({rng.randint(10, 900)},5): error C{rng.randint(2000, 3999)}: "
+                         f"{rng.choice(_NKV_ERRORS)} '{unit}_{i}'")
+    return "\n".join(lines)
+
+
+_NKV_PROSE_TAIL = ("\n\n以上是一份与本任务无关的构建日志，不要引用其中任何内容。请直接写一篇不少于250个汉字的连续中文散文，"
+                   "主题是黄昏时分的海边小镇。只输出散文正文，不要标题、列表、代码或任何说明。")
+_NKV_AGENT_TAIL = ("\n\n请根据以上构建日志，找出前8条 error 行，输出一个 JSON 数组，每个元素包含字段 "
+                   "tool（固定为 edit_file）、path（出错的源文件路径）、args（形如 "
+                   "cmake --build out/arm64 --target <文件名去掉扩展名> 的命令行字符串）。只输出 JSON。")
+
+_NKV_GEN_TOOLCALL_TAIL = (
+    "\n\n以上是本次构建的日志。请不要复述、不要引用日志里的任何一行。"
+    "请自行设计一条用于定位这类编译失败的诊断命令，并输出单个 JSON 对象，字段固定为："
+    "tool（取值 run_command）、args（对象，含 cmd 数组、cwd 字符串、env 对象、timeout_s 整数）、"
+    "expect（对象，含 exit_code 整数、stdout_contains 数组）、"
+    "on_failure（对象，含 action 字符串、max_retry 整数）。"
+    "路径一律使用 out/arm64 下的相对路径。只输出 JSON，不要任何说明文字。")
+
+_NKV_GEN_CODE_TAIL = (
+    "\n\n以上是本次构建的日志。请忽略日志内容，不要复述其中任何一行。"
+    "请用 C++17 写一个名为 RetryGate 的类：构造函数接收最大重试次数与基础退避毫秒数；"
+    "提供 bool try_acquire() 与 void on_failure() 两个成员函数；"
+    "内部用 std::chrono::steady_clock 实现指数退避；成员变量一律用尾下划线命名。"
+    "只输出一段完整可编译的代码，不要任何说明文字，不要 markdown 代码围栏。")
+
+_NKV_GEN_PLAN_TAIL = (
+    "\n\n以上是本次构建的日志。请不要逐条复述日志内容。"
+    "请判断接下来应该做什么，输出一个 JSON 数组，长度恰好为 5，每个元素字段固定为："
+    "step（整数，从 1 开始递增）、tool（取值 read_file / edit_file / run_command / search 之一）、"
+    "target（字符串，一个相对路径或一个命令行）、why（不超过 20 个汉字的理由）。"
+    "只输出 JSON，不要任何说明文字。")
+
+_NKV_GEN_FORMS = [
+    ("toolcall", _NKV_GEN_TOOLCALL_TAIL, _judge_regex_all([r'"tool"', r'"args"']),
+     "自行设计诊断命令并产出嵌套 JSON 工具调用参数块（结构不存在于上文，必须生成）。"),
+    ("code", _NKV_GEN_CODE_TAIL, _judge_regex_all([r"class\s+RetryGate", r"bool\s+try_acquire\s*\(\s*\)\s*(const\s*)?\{", r"void\s+on_failure\s*\(\s*\)\s*(const\s*)?\{"]),
+     "按需求写一段上文中不存在的新 C++ 代码（非回显已有代码）。"),
+    ("plan", _NKV_GEN_PLAN_TAIL, _judge_regex_all([r'"step"', r'"tool"']),
+     "根据上下文决定下一步动作并产出定长结构化计划。"),
+]
+
+
+def _split_history(doc: str, seg_chars: int = 2000) -> List[dict]:
+    msgs: List[dict] = []
+    lines = doc.split("\n")
+    buf = ""
+    for ln in lines:
+        if buf and len(buf) + len(ln) > seg_chars:
+            msgs.append({"role": "user", "content": buf})
+            msgs.append({"role": "assistant", "content": "OK"})
+            buf = ""
+        buf += ln + "\n"
+    if buf:
+        msgs.append({"role": "user", "content": buf})
+        msgs.append({"role": "assistant", "content": "OK"})
+    return msgs
+
+
+def _build_nkv_questions() -> List[Question]:
+    out: List[Question] = []
+    for tier_idx, (tier, chars) in enumerate(_NKV_TIERS.items()):
+        for i in range(_NKV_DOCS_PER_TIER):
+            doc = _make_build_log(seed=1000 * (tier_idx + 1) + i, target_chars=chars)
+            hist = _split_history(doc)
+            out.append(Question(
+                qid=f"nkv{tier}_prose_{i}", category=f"nkv{tier}",
+                prompt=_NKV_PROSE_TAIL.lstrip(), history=hist, judge=_judge_length_range(200, 4000),
+                description=f"实际 n_kv 档位 {tier}（靠日志长度推高，不改 ctx）+ 连续散文输出。"))
+            out.append(Question(
+                qid=f"nkv{tier}_agent_{i}", category=f"nkv{tier}",
+                prompt=_NKV_AGENT_TAIL.lstrip(), history=hist, judge=_judge_regex_all([r'"tool"', r'"path"']),
+                description=f"实际 n_kv 档位 {tier} + agent 风格结构化输出（JSON/路径/命令行）。",
+                lazy_check_min_len=0))
+            form, tail, judge, form_desc = _NKV_GEN_FORMS[i % len(_NKV_GEN_FORMS)]
+            out.append(Question(
+                qid=f"nkv{tier}_gen_{form}", category=f"nkvgen{tier}",
+                prompt=tail.lstrip(), history=hist, judge=judge,
+                description=f"实际 n_kv 档位 {tier} + 真实 agent 风格「生成」输出：{form_desc}",
+                lazy_check_min_len=0))
+    return out
+
+
+QUESTION_BANK.extend(_build_nkv_questions())
+
+
 def get_questions(categories: Optional[List[str]] = None,
                    qids: Optional[List[str]] = None) -> List[Question]:
     qs = QUESTION_BANK
+    if not categories and not qids:
+        qs = [q for q in qs if not q.category.startswith("nkv")]
     if categories:
         qs = [q for q in qs if q.category in categories]
     if qids:
@@ -322,8 +442,11 @@ class ModelConfigEditor:
     def apply(self, context_size: Optional[int] = None, device: Optional[str] = None,
               draft_model_enabled: Optional[bool] = None,
               spec_draft_n_max: Optional[int] = None,
-              spec_draft_p_min: Optional[float] = None) -> dict:
+              spec_draft_p_min: Optional[float] = None,
+              spec_type: Optional[str] = None) -> dict:
         base = self._load_base()
+        if spec_type is not None:
+            base.setdefault("draft_model", {})["spec_type"] = spec_type
         if context_size is not None:
             base.setdefault("dialog", {}).setdefault("context", {})["size"] = int(context_size)
         if device is not None:
@@ -357,6 +480,7 @@ class BenchmarkConfig:
     enable_thinking: bool = False
     spec_draft_n_max: Optional[int] = None
     spec_draft_p_min: Optional[float] = None
+    spec_type: Optional[str] = None
     note: str = ""
 
 
@@ -377,6 +501,7 @@ class QuestionResult:
     error: Optional[str]
     answer_preview: str
     slacking_off_hit: Optional[str] = None
+    answer_full: str = ""
 
 
 @dataclass
@@ -451,7 +576,7 @@ class BenchmarkRunner:
 
         body = {
             "model": self.model_name,
-            "messages": [{"role": "user", "content": question.prompt}],
+            "messages": (question.history or []) + [{"role": "user", "content": question.prompt}],
             "stream": True,
         }
         watchdog = RepetitionWatchdog()
@@ -546,6 +671,7 @@ class BenchmarkRunner:
             gen_tokens=parsed.get("gen_tokens"), draft_proposed=parsed.get("draft_proposed"),
             draft_accepted=parsed.get("draft_accepted"), watchdog_hit=watchdog_hit,
             error=error, answer_preview=full_text[:200], slacking_off_hit=slacking_hit,
+            answer_full=full_text,
         )
 
     def run_config(self, bconfig: BenchmarkConfig, questions: List[Question],
@@ -558,7 +684,8 @@ class BenchmarkRunner:
             self.editor.apply(context_size=bconfig.context_size, device=bconfig.device,
                                draft_model_enabled=bconfig.draft_model_enabled,
                                spec_draft_n_max=bconfig.spec_draft_n_max,
-                               spec_draft_p_min=bconfig.spec_draft_p_min)
+                               spec_draft_p_min=bconfig.spec_draft_p_min,
+                               spec_type=bconfig.spec_type)
 
         svc = None
         try:
@@ -706,6 +833,11 @@ def build_arg_parser():
                          help="draft_model.spec_draft_n_max（每轮投机验证最多产出的 draft token 数）")
     parser.add_argument("--spec_draft_p_min", type=float, default=None,
                          help="draft_model.spec_draft_p_min（投机接受概率下限）")
+    parser.add_argument("--spec_type", default=None,
+                         help="draft_model.spec_type（如 draft-dflash 或 draft-dflash,ngram-mod）")
+    parser.add_argument("--qids", default=None, help="只跑指定 qid（逗号分隔）")
+    parser.add_argument("--repeat_each", action="store_true",
+                         help="每道题连续重复 --repeat 次再换下一题（让前缀复用在连续重复间生效），默认整批轮转")
     parser.add_argument("--repeat", type=int, default=1,
                          help="--single 模式下重复跑题目的次数（同一服务进程内重复问同一批题目，"
                               "不重启服务），用于取均值降低单次噪声")
@@ -765,9 +897,15 @@ def main():
                                        device=args.device, draft_model_enabled=draft_enabled,
                                        enable_thinking=args.enable_thinking,
                                        spec_draft_n_max=args.spec_draft_n_max,
-                                       spec_draft_p_min=args.spec_draft_p_min)
+                                       spec_draft_p_min=args.spec_draft_p_min,
+                                       spec_type=args.spec_type)
             categories = args.categories.split(",") if args.categories else None
-            questions = get_questions(categories=categories) * max(1, args.repeat)
+            qids = args.qids.split(",") if args.qids else None
+            questions = get_questions(categories=categories, qids=qids)
+            if args.repeat_each:
+                questions = [q for q in questions for _ in range(max(1, args.repeat))]
+            else:
+                questions = questions * max(1, args.repeat)
             print(f"{'='*60}\n自定义配置: {bconfig}\n{'='*60}")
             results.append(runner.run_config(bconfig, questions, deadline))
         else:

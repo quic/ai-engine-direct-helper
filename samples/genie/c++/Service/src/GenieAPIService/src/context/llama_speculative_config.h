@@ -37,6 +37,12 @@ struct DraftModelConfig
     int spec_draft_n_max = 0;          // 每轮投机验证最多产出的 draft token 数（对应 --spec-draft-n-max）
     double spec_draft_p_min = 0.0;     // 投机接受概率下限（对应 --spec-draft-p-min）
     bool required = true;              // drafter 加载失败时是否导致整体模型加载失败（默认 true，不静默降级）
+    std::string flash_attn;            // "on"/"off"；空 = 未配置，保持现状（投机 off）
+    std::string samplers;              // 对应 --samplers；空 = 未配置，不拼进 argv
+    float temp = 0.0f;                 // 对应 --temp；默认 0（greedy）；<0 = 不拼进 argv
+    int top_k = 1;                     // 对应 --top-k；默认 1（greedy）；<0 = 不拼进 argv
+    float top_p = -1.0f;               // 对应 --top-p；<0 = 未配置，不拼进 argv
+    int ngram_mod_n_min = -1;          // 对应 --spec-ngram-mod-n-min；<0 = 未配置，不拼进 argv
 
     // 从模型 config.json 解析出的 json 对象中提取 draft_model 字段块。
     // 不含该字段块、字段类型不匹配、或传入的 json 本身为空/非 object 时，均返回 present=false

@@ -1301,7 +1301,9 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         "--ctx-size", std::to_string(n_ctx),
         "--no-warmup",
         "-s", "42",
-        "-fa", speculative_requested ? "off" : "on",
+        "-fa",
+        (speculative_requested && !draft_config.flash_attn.empty()) ? draft_config.flash_attn
+                                                                    : (speculative_requested ? "off" : "on"),
     };
     if (!speculative_requested)
     {
@@ -1349,6 +1351,27 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         if (device != "cpu")
         {
             arg_strings.insert(arg_strings.end(), {"-ngld", "99"});
+        }
+        if (!draft_config.samplers.empty())
+        {
+            arg_strings.insert(arg_strings.end(), {"--samplers", draft_config.samplers});
+        }
+        if (draft_config.temp >= 0.0f)
+        {
+            arg_strings.insert(arg_strings.end(), {"--temp", std::to_string(draft_config.temp)});
+        }
+        if (draft_config.top_k >= 0)
+        {
+            arg_strings.insert(arg_strings.end(), {"--top-k", std::to_string(draft_config.top_k)});
+        }
+        if (draft_config.top_p >= 0.0f)
+        {
+            arg_strings.insert(arg_strings.end(), {"--top-p", std::to_string(draft_config.top_p)});
+        }
+        if (draft_config.ngram_mod_n_min >= 0)
+        {
+            arg_strings.insert(arg_strings.end(),
+                                {"--spec-ngram-mod-n-min", std::to_string(draft_config.ngram_mod_n_min)});
         }
     }
 
@@ -1401,6 +1424,15 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // 张量上传阶段崩溃。不给 -ngl 时 --fit 自动决定 offload 层数（实测58-61/66），加载与推理均
     // 成功，且 prefill 速度最快；--fit 同样会把 common_fit_extra_model（草稿模型）计入显存预算，
     // -ngld 99 不受影响。不带 --device 的原因同上：裁剪掉 CPU 设备后超设备上限的 buffer 无处 fallback。
+
+    {
+        std::string argv_dump;
+        for (const auto &s: arg_strings)
+        {
+            argv_dump += s + " ";
+        }
+        My_Log{} << "[LLAMACpp] ARGV: " << argv_dump << "\n";
+    }
 
     std::vector<char *> argv;
     argv.reserve(arg_strings.size());

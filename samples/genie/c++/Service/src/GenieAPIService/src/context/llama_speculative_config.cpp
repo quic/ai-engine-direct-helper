@@ -133,6 +133,36 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.spec_draft_p_min = block["spec_draft_p_min"].get<double>();
     }
 
+    if (block.contains("flash_attn") && block["flash_attn"].is_string())
+    {
+        result.flash_attn = block["flash_attn"].get<std::string>();
+    }
+
+    if (block.contains("samplers") && block["samplers"].is_string())
+    {
+        result.samplers = block["samplers"].get<std::string>();
+    }
+
+    if (block.contains("temp") && block["temp"].is_number())
+    {
+        result.temp = block["temp"].get<float>();
+    }
+
+    if (block.contains("top_k") && block["top_k"].is_number_integer())
+    {
+        result.top_k = block["top_k"].get<int>();
+    }
+
+    if (block.contains("top_p") && block["top_p"].is_number())
+    {
+        result.top_p = block["top_p"].get<float>();
+    }
+
+    if (block.contains("ngram_mod_n_min") && block["ngram_mod_n_min"].is_number_integer())
+    {
+        result.ngram_mod_n_min = block["ngram_mod_n_min"].get<int>();
+    }
+
     // required 默认 true：drafter 加载失败则整个模型加载失败，不静默降级为纯 target 解码。
     if (block.contains("required") && block["required"].is_boolean())
     {
