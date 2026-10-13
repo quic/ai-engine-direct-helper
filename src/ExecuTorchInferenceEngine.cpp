@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 #if defined(_WIN32)
@@ -35,10 +37,39 @@ std::string resultError(const executorch::runtime::Error error) {
   return "ExecuTorch runtime error " + std::to_string(static_cast<int>(error));
 }
 
-void loadBackendLibrary(const std::string& path, void*& handle) {
+struct BackendLibraryCache {
+  std::mutex mutex;
+  std::unordered_map<std::string, void*> handles;
+};
+
+BackendLibraryCache& backendLibraryCache() {
+  // Backend plugins register with process-wide ExecuTorch registries from
+  // static initializers. Deliberately retain their loader handles until
+  // process exit so releasing one context cannot unregister a plugin that a
+  // later context will use.
+  static auto* cache = new BackendLibraryCache();
+  return *cache;
+}
+
+std::string normalizedBackendLibraryPath(const std::string& path) {
+  std::error_code error;
+  const auto normalized = std::filesystem::weakly_canonical(path, error);
+  return error ? path : normalized.string();
+}
+
+void* loadBackendLibrary(const std::string& path) {
   if (path.empty()) {
-    return;
+    return nullptr;
   }
+  const auto normalized_path = normalizedBackendLibraryPath(path);
+  auto& cache = backendLibraryCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const auto existing = cache.handles.find(normalized_path);
+  if (existing != cache.handles.end()) {
+    return existing->second;
+  }
+
+  void* handle = nullptr;
 #if defined(_WIN32)
   handle = static_cast<void*>(LoadLibraryA(path.c_str()));
   if (handle == nullptr) {
@@ -53,17 +84,13 @@ void loadBackendLibrary(const std::string& path, void*& handle) {
         (error == nullptr ? "unknown loader error" : error));
   }
 #endif
+  cache.handles.emplace(normalized_path, handle);
+  return handle;
 }
 
-void unloadBackendLibrary(void*& handle) noexcept {
-  if (handle == nullptr) {
-    return;
-  }
-#if defined(_WIN32)
-  FreeLibrary(static_cast<HMODULE>(handle));
-#else
-  dlclose(handle);
-#endif
+void releaseBackendLibrary(void*& handle) noexcept {
+  // The shared cache owns non-empty backend plugin handles for the process
+  // lifetime. Contexts only relinquish their non-owning reference.
   handle = nullptr;
 }
 
@@ -110,7 +137,7 @@ void ExecuTorchInferenceEngine::initialize() {
   }
 
   try {
-    loadBackendLibrary(m_backend_lib_path, m_backend_handle);
+    m_backend_handle = loadBackendLibrary(m_backend_lib_path);
     m_module = std::make_unique<executorch::extension::Module>(
         m_model_path, executorch::extension::Module::LoadMode::Mmap);
     const auto load_error = m_module->load();
@@ -153,7 +180,7 @@ void ExecuTorchInferenceEngine::release() noexcept {
 void ExecuTorchInferenceEngine::releaseLocked() noexcept {
   m_method_meta.reset();
   m_module.reset();
-  unloadBackendLibrary(m_backend_handle);
+  releaseBackendLibrary(m_backend_handle);
   m_input_shapes.clear();
   m_output_shapes.clear();
   m_input_types.clear();
