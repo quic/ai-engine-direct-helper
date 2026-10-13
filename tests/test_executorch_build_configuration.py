@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 SRC_CMAKE = (ROOT / "src" / "CMakeLists.txt").read_text(encoding="utf-8")
+SVC_CMAKE = (ROOT / "src" / "SVC" / "CMakeLists.txt").read_text(encoding="utf-8")
 PYBIND_CMAKE = (ROOT / "pybind" / "CMakeLists.txt").read_text(encoding="utf-8")
 ANDROID_MK = (ROOT / "make" / "Android.mk").read_text(encoding="utf-8")
 SETUP_PY = (ROOT / "setup.py").read_text(encoding="utf-8")
@@ -98,6 +99,13 @@ def test_executorch_runtime_libraries_use_package_rpath() -> None:
     assert "BUILD_WITH_INSTALL_RPATH TRUE" not in SRC_CMAKE
 
 
+def test_service_can_link_and_run_with_executorch_shared_dependencies() -> None:
+    assert 'target_link_options(${APP} PRIVATE "-Wl,-rpath-link,$ENV{EXECUTORCH_ROOT}/lib")' in SVC_CMAKE
+    assert 'target_link_options(${APP} PRIVATE "-Wl,--disable-new-dtags")' in SVC_CMAKE
+    assert 'BUILD_RPATH "$ENV{EXECUTORCH_ROOT}/lib;$ORIGIN/libs"' in SVC_CMAKE
+    assert 'INSTALL_RPATH "$ORIGIN/libs"' in SVC_CMAKE
+
+
 def test_packaging_covers_versioned_and_transitive_executorch_libraries() -> None:
     for name in ("pthreadpool", "cpuinfo", "quantized_ops_lib", "quantized_kernels"):
         assert name in SETUP_PY
@@ -110,6 +118,27 @@ def test_packaging_covers_versioned_and_transitive_executorch_libraries() -> Non
 
 
 def test_ci_contains_gated_real_executorch_job() -> None:
+    start = CI_YML.index("  build-executorch-linux-arm64:\n")
+    end = CI_YML.index("\n  # -----------------------------------------------------------------\n  # Android", start)
+    job = CI_YML[start:end]
+
     assert "EXECUTORCH_SDK_URL" in CI_YML
     assert "APPBUILDER_ENABLE_EXECUTORCH: 'ON'" in CI_YML
     assert "python -m pytest tests/test_executorch_sdk_smoke.py" in CI_YML
+    assert "EXECUTORCH_BACKEND_LIB=" in job
+    assert "EXECUTORCH_ASSERT_BACKEND_RETAINED=1" in job
+
+
+def test_ci_contains_ungated_executorch_cpu_smoke_job() -> None:
+    job_marker = "  build-executorch-cpu-linux-arm64:\n"
+    start = CI_YML.index(job_marker)
+    end = CI_YML.index("\n  build-executorch-linux-arm64:", start)
+    job = CI_YML[start:end]
+
+    assert "runs-on: ubuntu-22.04-arm" in job
+    assert "if:" not in job
+    assert "github.com/pytorch/executorch" in job
+    assert "submodule update --init --recursive --depth 1" in job
+    assert 'cmake --install "$executorch_src/build" --prefix "$executorch_src"' in job
+    assert "APPBUILDER_ENABLE_EXECUTORCH: 'ON'" in job
+    assert "tests/test_executorch_sdk_smoke.py" in job

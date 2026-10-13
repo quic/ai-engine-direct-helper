@@ -45,3 +45,17 @@ else()
         target_link_libraries(${APP} PRIVATE android log)
     endif()
 endif()
+# The installed ExecuTorch shared libraries reference additional kernel
+# libraries without an embedded search path.  QAIAppSvc links through
+# libappbuilder.so, so make those indirect dependencies visible both while
+# linking the service and when running it from an SDK or package directory.
+if (APPBUILDER_ENABLE_EXECUTORCH AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(${APP} PRIVATE "-Wl,-rpath-link,$ENV{EXECUTORCH_ROOT}/lib")
+    # EXECUTORCH_ROOT is required by indirect dependencies as well.  DT_RPATH
+    # remains transitive whereas DT_RUNPATH does not.
+    target_link_options(${APP} PRIVATE "-Wl,--disable-new-dtags")
+    set_target_properties(${APP} PROPERTIES
+        BUILD_RPATH "$ENV{EXECUTORCH_ROOT}/lib;$ORIGIN/libs"
+        INSTALL_RPATH "$ORIGIN/libs"
+    )
+endif()

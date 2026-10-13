@@ -32,6 +32,9 @@ def executorch_context_module():
     saved_modules = {name: sys.modules.get(name) for name in module_names}
     for name in module_names:
         sys.modules.pop(name, None)
+    package = ModuleType("qai_appbuilder")
+    package.__path__ = [str(Path(__file__).parents[1] / "script" / "qai_appbuilder")]
+    sys.modules["qai_appbuilder"] = package
     sys.modules["qai_appbuilder.appbuilder"] = ModuleType("qai_appbuilder.appbuilder")
     try:
         yield importlib.import_module("qai_appbuilder.qnncontext")

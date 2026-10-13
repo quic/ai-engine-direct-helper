@@ -501,6 +501,75 @@ jobs:
           if-no-files-found: ignore
 
   # -----------------------------------------------------------------
+  # Always-on ExecuTorch CPU build. This job builds a pinned public
+  # ExecuTorch revision on native ARM64, then builds and runs the actual
+  # AppBuilder native + pybind path. Keep the QNN-specific job below for
+  # proprietary backend coverage.
+  # -----------------------------------------------------------------
+  build-executorch-cpu-linux-arm64:
+    name: linux arm64 ExecuTorch CPU build + run
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init pybind11 submodule
+        run: git submodule update --init --depth 1 pybind/pybind11
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git unzip
+          python -m pip install --upgrade pip
+          pip install wheel==0.45.1 setuptools==80.9.0 pybind11==2.13.6 build==1.4.0 "cmake>=3.21" pytest numpy pyyaml torch
+
+      - name: Setup QNN SDK
+        uses: ./.github/actions/setup-qnn-sdk
+        with:
+          version: '2.48.40.260702'
+
+      - name: Build public ExecuTorch runtime
+        run: |
+          set -euo pipefail
+          executorch_src="$RUNNER_TEMP/executorch"
+          executorch_ref="defd9cae1b37b3edd1a4ae60b171f9a4bd7b1526"
+          git init "$executorch_src"
+          git -C "$executorch_src" remote add origin https://github.com/pytorch/executorch.git
+          git -C "$executorch_src" fetch --depth 1 origin "$executorch_ref"
+          git -C "$executorch_src" checkout --detach "$executorch_ref"
+          git -C "$executorch_src" submodule update --init --recursive --depth 1
+          cmake -S "$executorch_src" -B "$executorch_src/build" -G Ninja \
+            -DBUILD_SHARED_LIBS=ON \
+            -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
+            -DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON \
+            -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
+            -DEXECUTORCH_BUILD_KERNELS_QUANTIZED=ON
+          cmake --build "$executorch_src/build" --parallel 2
+          cmake --install "$executorch_src/build" --prefix "$executorch_src"
+          echo "EXECUTORCH_ROOT=$executorch_src" >> "$GITHUB_ENV"
+          echo "EXECUTORCH_SMOKE_MODEL=$executorch_src/examples/arduino/examples/AddModel/model.pte" >> "$GITHUB_ENV"
+          python - <<'PY' >> "$GITHUB_ENV"
+          import pathlib
+          import torch
+          print("EXECUTORCH_TORCH_INCLUDE_ROOT=" + str(pathlib.Path(torch.__file__).resolve().parent / "include"))
+          PY
+
+      - name: Build wheel with ExecuTorch
+        env:
+          APPBUILDER_ENABLE_EXECUTORCH: 'ON'
+          QAI_TOOLCHAINS: aarch64-oe-linux-gcc11.2
+          QAI_HEXAGONARCH: '68'
+        run: python -m build -w --no-isolation
+
+      - name: Install wheel
+        run: pip install --force-reinstall dist/qai_appbuilder-*.whl
+
+      - name: Run real ExecuTorch CPU smoke test
+        run: python -m pytest tests/test_executorch_sdk_smoke.py -v
+
+  # -----------------------------------------------------------------
   # Optional real ExecuTorch SDK build. Enable with the repository
   # variable EXECUTORCH_CI_ENABLED=true and provide organization secrets:
   #   EXECUTORCH_SDK_URL          - .tar.gz/.tgz/.zip SDK archive URL
@@ -557,6 +626,10 @@ jobs:
           test -n "$module_header" || { echo "ExecuTorch SDK is missing extension/module/module.h"; exit 1; }
           sdk_root=$(cd "$(dirname "$module_header")/../.." && pwd)
           echo "EXECUTORCH_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          backend_lib=$(find "$sdk_root" -type f \( -name 'libqnn_executorch_backend.so' -o -name 'libexecutorch_backend_qnn.so' \) -print -quit)
+          test -n "$backend_lib" || { echo "ExecuTorch SDK is missing the Qualcomm QNN backend library"; exit 1; }
+          echo "EXECUTORCH_BACKEND_LIB=$backend_lib" >> "$GITHUB_ENV"
+          echo "EXECUTORCH_ASSERT_BACKEND_RETAINED=1" >> "$GITHUB_ENV"
           model_path="$RUNNER_TEMP/executorch-smoke.pte"
           curl -fL --retry 3 -o "$model_path" "$EXECUTORCH_SMOKE_MODEL_URL"
           echo "EXECUTORCH_SMOKE_MODEL=$model_path" >> "$GITHUB_ENV"
