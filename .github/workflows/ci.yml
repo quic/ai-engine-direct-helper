@@ -530,7 +530,7 @@ jobs:
         with:
           version: '2.48.40.260702'
 
-      - name: Build public ExecuTorch runtime
+      - name: Fetch pinned public ExecuTorch source
         run: |
           set -euo pipefail
           executorch_src="$RUNNER_TEMP/executorch"
@@ -539,7 +539,28 @@ jobs:
           git -C "$executorch_src" remote add origin https://github.com/pytorch/executorch.git
           git -C "$executorch_src" fetch --depth 1 origin "$executorch_ref"
           git -C "$executorch_src" checkout --detach "$executorch_ref"
-          git -C "$executorch_src" submodule update --init --recursive --depth 1
+
+      - name: Initialize public ExecuTorch submodules
+        run: |
+          set -euo pipefail
+          executorch_src="$RUNNER_TEMP/executorch"
+          git -C "$executorch_src" submodule sync --recursive
+          for attempt in 1 2 3; do
+            if git -C "$executorch_src" -c protocol.version=2 submodule update --init --recursive --depth 1; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "ExecuTorch submodule initialization failed after ${attempt} attempts."
+              exit 1
+            fi
+            echo "ExecuTorch submodule initialization attempt ${attempt} failed; retrying."
+            sleep 10
+          done
+
+      - name: Build public ExecuTorch runtime
+        run: |
+          set -euo pipefail
+          executorch_src="$RUNNER_TEMP/executorch"
           cmake -S "$executorch_src" -B "$executorch_src/build" -G Ninja \
             -DBUILD_SHARED_LIBS=ON \
             -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
