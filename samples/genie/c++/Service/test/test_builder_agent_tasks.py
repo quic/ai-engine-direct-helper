@@ -62,8 +62,10 @@ done/error 终止帧即可。多轮 agent 任务里的"多轮"，指的是本脚
 
 import argparse
 import json
+import os
 import py_compile
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1091,6 +1093,263 @@ def run_tetris_task(builder, model_name, results, round_num=1,
     return ok
 
 
+_XP_NOTEPAD_USER_PROMPT = "请实现一个高度还原 Windows XP notepad 单个 msvc可执行程序，要求代码结构清晰且无功能 Bug。"
+
+_XP_NOTEPAD_INITIAL_PROMPT_TEMPLATE = (
+    _XP_NOTEPAD_USER_PROMPT + "\n\n"
+    "工作目录是 {work_dir}，源码和最终的单个 .exe 都放在这个目录里。用 write 工具写源码文件，"
+    "用 exec 工具编译；编译前先运行 vcvarsall.bat 初始化 MSVC 环境，再用 cl.exe 编译。"
+    "把编译命令写进 {work_dir}\\build.bat，用 exec 工具运行这个 bat 文件，不要在 exec 里写带嵌套引号的单行命令。\n\n"
+    "规则：每次回复必须以一个工具调用开始；不要复述任务或计划。思考不超过三句话。"
+    "单次输出有长度上限，一次 write 的内容不得超过约 150 行：把程序拆成多个小文件"
+    "（例如 main.cpp、file_io.cpp、find_replace.cpp、menu.cpp 及对应头文件），每个文件单独一次 write。"
+)
+
+_XP_NOTEPAD_FOLLOWUP_PROMPT_TEMPLATE = (
+    "不要复述计划。继续完成 {work_dir} 下的 notepad 程序：用 write 工具补全或修复源码，"
+    "用 exec 工具运行 {work_dir}\\build.bat 编译，编译报错就立即修复后重新编译，"
+    "直到得到可运行的 .exe。思考不超过三句话。"
+)
+
+_XP_NOTEPAD_STATIC_CHECKS = {
+    "menu_bar": re.compile(r"CreateMenu|LoadMenu|AppendMenu|\bMENU\b|IDR_MENU", re.I),
+    "open_save": re.compile(r"GetOpenFileName|GetSaveFileName"),
+    "find_replace": re.compile(r"FindText|ReplaceText|FINDREPLACE"),
+    "word_wrap": re.compile(r"word\s*wrap|ES_AUTOHSCROLL|WS_HSCROLL", re.I),
+}
+
+_XP_NOTEPAD_STATIC_MARKER_HINTS = {
+    "menu_bar": "菜单栏（文件/编辑/格式/查看/帮助，用 CreateMenu/AppendMenu 或资源菜单真正创建）",
+    "open_save": "打开/保存文件（GetOpenFileName/GetSaveFileName 并真正读写文件）",
+    "find_replace": "查找/替换（FindText/ReplaceText 对话框并真正处理 FINDREPLACE 消息）",
+    "word_wrap": "自动换行开关（切换 ES_AUTOHSCROLL/WS_HSCROLL 并重建编辑控件）",
+}
+
+_XP_NOTEPAD_SOURCE_SUFFIXES = (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".rc")
+
+
+def _clean_xp_notepad_dir(work_dir):
+    """清理上一轮产物，防止模型复用旧结果。返回 (已存在的旧条目列表, 清理是否成功)。"""
+    p = Path(work_dir)
+    leftover = []
+    if p.exists():
+        leftover = sorted(c.name for c in p.iterdir())
+        shutil.rmtree(p, ignore_errors=True)
+    p.mkdir(parents=True, exist_ok=True)
+    return leftover, not any(p.iterdir())
+
+
+def _find_vcvarsall():
+    vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
+        "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    if not vswhere.is_file():
+        return None
+    try:
+        out = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*", "-property", "installationPath"],
+            capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    cand = Path(out) / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat" if out else None
+    return cand if cand and cand.is_file() else None
+
+
+def _check_xp_notepad_artifacts(work_dir, task_started_ts):
+    """返回 dict：exe_files（本次任务期间产出的 .exe）、source_files、static_ok/markers、
+    compile_ok/compile_detail（脚本自己用 cl /c 逐文件只编译不链接，要求零错误）。"""
+    p = Path(work_dir)
+    info = {"exe_files": [], "source_files": [], "static_ok": False, "static_markers": {},
+            "compile_ok": False, "compile_detail": None, "exe_is_pe": False}
+    if not p.is_dir():
+        return info
+    for f in p.rglob("*"):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() == ".exe" and f.stat().st_mtime >= task_started_ts:
+            info["exe_files"].append(f)
+        elif f.suffix.lower() in _XP_NOTEPAD_SOURCE_SUFFIXES:
+            info["source_files"].append(f)
+    if len(info["exe_files"]) == 1:
+        try:
+            info["exe_is_pe"] = info["exe_files"][0].read_bytes()[:2] == b"MZ"
+        except OSError:
+            pass
+    content = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in info["source_files"])
+    markers = {k: bool(pat.search(content)) for k, pat in _XP_NOTEPAD_STATIC_CHECKS.items()}
+    info["static_markers"] = markers
+    info["static_ok"] = all(markers.values())
+    compile_srcs = [f for f in info["source_files"] if f.suffix.lower() in (".c", ".cpp", ".cc", ".cxx")]
+    vcvars = _find_vcvarsall()
+    if not compile_srcs:
+        info["compile_detail"] = "没有 C/C++ 源文件"
+    elif vcvars is None:
+        info["compile_detail"] = "未找到 vcvarsall.bat"
+    else:
+        obj_dir = p / "_check_obj"
+        obj_dir.mkdir(exist_ok=True)
+        arch = "arm64" if "ARM" in os.environ.get("PROCESSOR_ARCHITECTURE", "").upper() else "x64"
+        srcs = " ".join(f'"{f}"' for f in compile_srcs)
+        check_bat = obj_dir / "check.bat"
+        check_bat.write_text(
+            f'@echo off\r\ncall "{vcvars}" {arch} >nul\r\n'
+            f'cl /nologo /c /EHsc /Fo"{obj_dir.as_posix()}/" {srcs}\r\n', encoding="ascii", errors="replace")
+        try:
+            proc = subprocess.run(["cmd", "/c", str(check_bat)], capture_output=True, text=True,
+                                  timeout=300, cwd=str(p))
+            info["compile_ok"] = proc.returncode == 0
+            info["compile_detail"] = f"exit_code={proc.returncode}; tail={(proc.stdout + proc.stderr)[-600:]!r}"
+        except (OSError, subprocess.SubprocessError) as e:
+            info["compile_detail"] = f"{type(e).__name__}: {e}"
+        shutil.rmtree(obj_dir, ignore_errors=True)
+    return info
+
+
+def run_xp_notepad_task(builder, model_name, results, round_num=1,
+                         workspace_root=_DEFAULT_WORKSPACE_ROOT,
+                         max_turns=15, per_turn_timeout=900, total_deadline_seconds=7200,
+                         busy_poll_interval_seconds=30, transcript_path=None):
+    """长链路任务：驱动本地模型用 write/exec 写出单个 MSVC notepad 可执行程序。
+
+    判据：本次任务期间产出的恰好一个 .exe（PE 头有效）+ 脚本自己用 cl /c 编译全部源文件零错误
+    + 源码静态标记命中（菜单栏/打开保存/查找替换/自动换行）。不套 inception 的 FP16 产物判据。"""
+    work_dir = str(Path(workspace_root) / "xp_notepad")
+    name = f"AGENT-TASK: xp_notepad model={model_name} dir={work_dir}"
+    leftover, cleaned_ok = _clean_xp_notepad_dir(work_dir)
+    print(f"  [STAGE] xp_notepad 工作目录已清理: leftover={leftover}; cleaned_ok={cleaned_ok}", flush=True)
+    task_started = time.time()
+    task_deadline = task_started + total_deadline_seconds
+
+    ready, ready_err = wait_local_backend_ready(builder_genie_port_of(builder), model_name)
+    if not ready:
+        results.append(TestResult(
+            name=name, round_num=round_num, model_name=model_name,
+            passed=False, status_code=0, latency_ms=0,
+            detail=f"后端未就绪，跳过任务: {ready_err}", crashed=True))
+        return False
+
+    prompt = _XP_NOTEPAD_INITIAL_PROMPT_TEMPLATE.format(work_dir=work_dir)
+    conversation_id = None
+    transcript = []
+    real_turns_used = 0
+    attempts_used = 0
+    gave_up_while_busy = False
+    aborted_reason = None
+    info = _check_xp_notepad_artifacts(work_dir, task_started)
+    log_probe = _ServiceLogTail(builder.csrf)
+    log_probe.start()
+    empty_streak = 0
+
+    while True:
+        remaining = task_deadline - time.time()
+        if remaining <= 30:
+            transcript.append(f"[总时限] 剩余 {remaining:.0f}s，终止")
+            break
+        if real_turns_used >= max_turns:
+            transcript.append(f"[真实续问轮次] 已用完 max_turns={max_turns}，终止")
+            break
+
+        real_turns_used += 1
+        print(f"  [STAGE] xp_notepad 真实轮次 {real_turns_used}/{max_turns} 开始: "
+              f"conversation_id={conversation_id}", flush=True)
+
+        while True:
+            attempts_used += 1
+            remaining = task_deadline - time.time()
+            if remaining <= 30:
+                break
+            call_timeout = min(per_turn_timeout, max(30, remaining))
+            passed, detail, text, conversation_id, frame_types, frame_reasons, busy = send_agent_chat_turn(
+                builder, model_name, prompt, conversation_id=conversation_id,
+                title="Agent Task: xp_notepad", stream_timeout=call_timeout,
+                transcript_path=transcript_path,
+                turn_label=f"xp_notepad real_turn={real_turns_used} attempt={attempts_used}",
+                watchdog=RepetitionWatchdog())
+            if not busy:
+                break
+            remaining = task_deadline - time.time()
+            transcript.append(f"[real_turn {real_turns_used}] busy; attempts_used={attempts_used}; "
+                               f"remaining={remaining:.0f}s; detail={detail}")
+            if remaining <= busy_poll_interval_seconds + 30:
+                break
+            time.sleep(busy_poll_interval_seconds)
+
+        print(f"  [STAGE] xp_notepad 真实轮次 {real_turns_used}/{max_turns} 结束: passed={passed}; "
+              f"busy={busy}; frame_types={frame_types}; frame_reasons={frame_reasons}", flush=True)
+        transcript.append(f"[real_turn {real_turns_used}] passed={passed}; busy={busy}; detail={detail}; "
+                           f"text_excerpt={text[:500]!r}")
+
+        if busy:
+            gave_up_while_busy = True
+            break
+        empty_streak = empty_streak + 1 if ("error" in frame_types and "chunk" not in frame_types) else 0
+        if empty_streak >= 2:
+            aborted_reason = f"连续 {empty_streak} 轮 error 帧且无任何 chunk 输出（empty_response）: {detail}"
+            transcript.append(f"[real_turn {real_turns_used}] {aborted_reason}")
+            break
+        if "repetition" in str(detail).lower():
+            aborted_reason = f"RepetitionWatchdog 命中: {detail}"
+            transcript.append(f"[real_turn {real_turns_used}] {aborted_reason}")
+            break
+
+        info = _check_xp_notepad_artifacts(work_dir, task_started)
+        print(f"  [STAGE] xp_notepad 轮次 {real_turns_used} exe={[f.name for f in info['exe_files']]}; "
+              f"pe={info['exe_is_pe']}; compile_ok={info['compile_ok']}; static_ok={info['static_ok']}; "
+              f"markers={info['static_markers']}", flush=True)
+        transcript.append(f"[real_turn {real_turns_used}] exe={[str(f) for f in info['exe_files']]}; "
+                           f"pe={info['exe_is_pe']}; compile_ok={info['compile_ok']}; "
+                           f"compile_detail={info['compile_detail']}; static_ok={info['static_ok']}; "
+                           f"markers={info['static_markers']}")
+        exe_ok = len(info["exe_files"]) == 1 and info["exe_is_pe"]
+        if exe_ok and info["compile_ok"] and info["static_ok"]:
+            break
+
+        if not passed and conversation_id is None:
+            transcript.append(f"[real_turn {real_turns_used}] SSE 请求失败且无 conversation_id，终止")
+            break
+
+        extra = ""
+        if info["source_files"] and info["compile_detail"] and not info["compile_ok"]:
+            extra = f"\n\n脚本复查编译未通过：{info['compile_detail']}"
+        elif info["source_files"] and not info["static_ok"]:
+            missing = [_XP_NOTEPAD_STATIC_MARKER_HINTS.get(k, k)
+                       for k, ok in info["static_markers"].items() if not ok]
+            extra = ("\n\n静态检查发现源码里缺少关键功能（缺失: " + "; ".join(missing) +
+                     "）。不要写占位实现，立即用 write 工具补全真实逻辑。")
+        elif not exe_ok:
+            extra = "\n\n目录里还没有本次编译出的单个 .exe，请先成功编译。"
+        prompt = _XP_NOTEPAD_FOLLOWUP_PROMPT_TEMPLATE.format(work_dir=work_dir) + extra
+
+    service_log_text = log_probe.stop()
+    if transcript_path:
+        service_log_path = Path(transcript_path).with_suffix(".genie_service.log")
+        service_log_path.write_text(service_log_text, encoding="utf-8")
+        transcript.append(f"[service_log] {len(service_log_text)} chars -> {service_log_path}")
+    token_rate_stats = _summarize_token_generation_rates(service_log_text)
+    transcript.append(f"[token_generation_rate] {token_rate_stats}")
+    elapsed = time.time() - task_started
+    exe_ok = len(info["exe_files"]) == 1 and info["exe_is_pe"]
+    ok = exe_ok and info["compile_ok"] and info["static_ok"]
+    detail_text = (
+        f"token_generation_rate={token_rate_stats}; "
+        f"workspace_cleaned={cleaned_ok}; leftover_before_clean={leftover}; "
+        f"real_turns_used={real_turns_used}/{max_turns}; attempts_used={attempts_used}; "
+        f"gave_up_while_busy={gave_up_while_busy}; aborted_reason={aborted_reason}; elapsed={elapsed:.0f}s; "
+        f"exe_files={[str(f) for f in info['exe_files']]}; exe_is_pe={info['exe_is_pe']}; "
+        f"compile_ok={info['compile_ok']}; compile_detail={info['compile_detail']}; "
+        f"static_ok={info['static_ok']}; static_markers={info['static_markers']}; "
+        f"transcript=\n" + "\n".join(transcript))
+    results.append(TestResult(
+        name=name, round_num=round_num, model_name=model_name,
+        passed=ok, status_code=0, latency_ms=elapsed * 1000, detail=detail_text,
+        response_data={"conversation_id": conversation_id, "work_dir": work_dir,
+                       "workspace_cleaned": cleaned_ok, "leftover_before_clean": leftover,
+                       "real_turns_used": real_turns_used,
+                       "token_generation_rate": token_rate_stats,
+                       "static_markers": info["static_markers"],
+                       "compile_ok": info["compile_ok"], "exe_is_pe": info["exe_is_pe"]}))
+    return ok
+
+
 _INCEPTION_PRECISION_COMPARE_PROMPT = (
     "帮我下载原始的 inception_v3 模型，分别转成 FP16 与 W8A8 两种精度的 QNN 模型并进行推理，"
     "对比两者的差异。测试图片使用项目自带的 samples/images/flower.jpg（相对项目根目录）。"
@@ -1559,7 +1818,7 @@ def build_arg_parser():
         description="QAIModelBuilder + 本地模型真实多轮 agent 任务测试",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--task", default="model_conversion",
-                        choices=["model_conversion", "model_build_probe", "tetris",
+                        choices=["model_conversion", "model_build_probe", "tetris", "xp_notepad",
                                  "inception_precision_compare", "inception_fp16_only"],
                         help="要运行的任务场景：model_conversion 是完整的模型转换多轮任务；"
                              "model_build_probe 是极简 prompt 探测 model-build 模式基础可用性"
@@ -1710,6 +1969,11 @@ def main():
                     builder, args.model_name, all_results,
                     tetris_path=args.tetris_path,
                     python_exe=args.python_exe,
+                    transcript_path=transcript_path, **budget_kwargs)
+            elif args.task == "xp_notepad":
+                run_xp_notepad_task(
+                    builder, args.model_name, all_results,
+                    workspace_root=args.workspace_root,
                     transcript_path=transcript_path, **budget_kwargs)
             elif args.task in ("inception_precision_compare", "inception_fp16_only"):
                 run_inception_precision_compare_task(
