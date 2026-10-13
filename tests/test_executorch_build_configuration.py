@@ -138,7 +138,10 @@ def test_ci_contains_ungated_executorch_cpu_smoke_job() -> None:
     assert "runs-on: ubuntu-22.04-arm" in job
     assert "if:" not in job
     assert "github.com/pytorch/executorch" in job
+    assert "Fetch pinned public ExecuTorch source" in job
+    assert "Initialize public ExecuTorch submodules" in job
     assert "submodule update --init --recursive --depth 1" in job
+    assert "for attempt in 1 2 3" in job
     assert 'cmake --install "$executorch_src/build" --prefix "$executorch_src"' in job
     assert "APPBUILDER_ENABLE_EXECUTORCH: 'ON'" in job
     assert "tests/test_executorch_sdk_smoke.py" in job
