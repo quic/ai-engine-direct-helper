@@ -229,6 +229,28 @@ namespace {
         return "";
     }
 
+    std::string ReplaceInvalidUtf8(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        const size_t n = s.size();
+        size_t i = 0;
+        while (i < n) {
+            const unsigned char c = static_cast<unsigned char>(s[i]);
+            size_t len = c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2 : (c >= 0xE0 && c <= 0xEF) ? 3 : (c >= 0xF0 && c <= 0xF4) ? 4 : 0;
+            bool ok = len != 0 && i + len <= n;
+            for (size_t k = 1; ok && k < len; ++k)
+                ok = (static_cast<unsigned char>(s[i + k]) & 0xC0) == 0x80;
+            if (ok) {
+                out.append(s, i, len);
+                i += len;
+            } else {
+                out += '?';
+                ++i;
+            }
+        }
+        return out;
+    }
+
     std::string ExtractKeyFacts(const std::string& content, size_t max_len) {
         if (LooksLikeFailure(content)) {
             size_t nl = content.find('\n');
@@ -253,8 +275,8 @@ namespace {
             for (const char* hint : kPathHints) {
                 size_t pos = content.find(hint);
                 if (pos != std::string::npos) {
-                    size_t start = (pos > 20) ? pos - 20 : 0;
-                    facts.push_back(content.substr(start, 80));
+                    size_t start = utf8_align_start(content, (pos > 20) ? pos - 20 : 0);
+                    facts.push_back(safe_utf8_truncate(content.substr(start), 80, ""));
                     break;
                 }
             }
@@ -267,7 +289,7 @@ namespace {
                 out += f;
             }
         } else {
-            out = content.substr(0, max_len);
+            out = content;
         }
         return safe_utf8_truncate(out, max_len, "...");
     }
@@ -301,14 +323,14 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
     size_t tool_seq = entry["tool_state"].size();
     std::string last_assistant_content;
     for (const auto& m : dropped_messages) {
-        std::string preview = ExtractKeyFacts(m.content, config_.rule_layer_preview_chars);
+        std::string preview = ReplaceInvalidUtf8(ExtractKeyFacts(m.content, config_.rule_layer_preview_chars));
         if (m.role == "user") {
             AppendCapped(entry["facts_constraints"], "用户提及: " + preview, kMaxItemsPerField);
             size_t todo_pos = m.content.find("TODO");
             if (todo_pos == std::string::npos)
                 todo_pos = m.content.find("todo");
             if (todo_pos != std::string::npos)
-                AppendCapped(entry["open_questions"], "待办: " + m.content.substr(todo_pos, 160), kMaxItemsPerField);
+                AppendCapped(entry["open_questions"], "待办: " + ReplaceInvalidUtf8(safe_utf8_truncate(m.content.substr(todo_pos), 160, "")), kMaxItemsPerField);
         } else if (m.role == "assistant") {
             bool is_tool_call = m.content.find("to=functions.") != std::string::npos ||
                                  m.content.find("<tool_call>") != std::string::npos;
