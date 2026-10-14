@@ -133,7 +133,7 @@ REM Verify pnpm is reachable before doing anything; give a clear hint otherwise.
 where pnpm >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] pnpm not found. Node.js / pnpm is missing.
-    echo [ERROR] Run Setup.bat first ^(it installs portable Node + pnpm into
+    echo [ERROR] Run Setup.bat --frontend first ^(it installs portable Node + pnpm into
     echo [ERROR] %NODE_DIR%^), then re-run Build.bat.
     exit /b 1
 )

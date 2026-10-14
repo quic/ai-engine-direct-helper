@@ -419,7 +419,7 @@ def convert_model(model_info, cwd, calibration_list_path, act_bw=16, weight_bw=8
         if not qnn_sdk_root:
             print("Error: QAIRT_SDK_ROOT not set.", file=sys.stderr)
             print("  Option 1: set QAIRT_SDK_ROOT=<path to QAIRT SDK>", file=sys.stderr)
-            print("  Option 2: Run Setup.bat (reads from data\\config\\qairt_env.json)", file=sys.stderr)
+            print("  Option 2: Run Setup.bat --builder (reads from data\\config\\qairt_env.json)", file=sys.stderr)
             return False
 
     # Check if QAIRT_SDK_ROOT exists

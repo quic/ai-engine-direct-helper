@@ -673,7 +673,7 @@ if __name__ == "__main__":
     if not qnn_sdk_root:
         print("Error: QAIRT_SDK_ROOT is not set.")
         print("  Option 1: Set environment variable: set QAIRT_SDK_ROOT=<path to QAIRT SDK>")
-        print("  Option 2: Run Setup.bat to auto-configure (reads from data\\config\\qairt_env.json)")
+        print("  Option 2: Run Setup.bat --builder to auto-configure (reads from data\\config\\qairt_env.json)")
         sys.exit(2)
 
     # Auto-detect host architecture if not provided

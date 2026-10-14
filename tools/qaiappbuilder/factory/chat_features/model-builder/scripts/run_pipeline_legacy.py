@@ -183,7 +183,7 @@ def init_vs_arm64(vcvarsall: str, vc_targets_path: str) -> None:
         print(f"[ERROR] vcvarsall.bat not found: {vcvarsall!r}")
         print("[ERROR] VS ARM64 environment cannot be initialized.")
         print("[ERROR] Install Visual Studio 2022 Community (not BuildTools) and")
-        print("[ERROR] re-run Setup.bat to update data/config/qairt_env.json.")
+        print("[ERROR] re-run Setup.bat --builder to update data/config/qairt_env.json.")
         sys.exit(1)
 
     print(f"[INFO] Initializing VS ARM64 env from: {vcvarsall}")
@@ -253,7 +253,7 @@ def apply_qairt_env(cfg: dict) -> tuple:
         print("  This path comes from qairt_env.json (qairt_sdk_root) or the")
         print("  QAIRT_SDK_ROOT env var. It likely points at an old SDK version")
         print("  that has since been upgraded/removed.")
-        print("  Fix: re-run Setup.bat to refresh")
+        print("  Fix: re-run Setup.bat --builder to refresh")
         print("  data\\config\\qairt_env.json with the installed SDK path.")
         sys.exit(2)
 
@@ -745,11 +745,11 @@ def main():
     # which hides the real root cause. Give an actionable message instead.
     if not cfg:
         print("[ERROR] 未找到 QAIRT 配置文件 data/config/qairt_env.json。")
-        print("[ERROR] 该文件由 Setup.bat 的 Step 8.6 生成。最常见原因是 Setup.bat")
-        print("[ERROR] 的 Step 8（含约 2GB 的 QAIRT SDK 下载）未完整执行就中断了，")
+        print("[ERROR] 该文件由 Setup.bat --builder 的 Step 8.6 生成。最常见原因是未带 --builder 运行 Setup.bat，或")
+        print("[ERROR] Step 8（含约 2GB 的 QAIRT SDK 下载）未完整执行就中断了，")
         print("[ERROR] 因此从未生成此配置（连 data/config 目录都不存在）。")
         print("[ERROR] 解决办法（任选其一）：")
-        print("[ERROR]   1) 重新运行 Setup.bat（不要带 --no-builder），等它跑完整个")
+        print("[ERROR]   1) 运行 Setup.bat --builder，等它跑完整个")
         print("[ERROR]      Step 8（SDK 下载较慢，支持断点续传，请耐心等到打印")
         print("[ERROR]      '[OK] qairt_env.json generated' 为止）；")
         print("[ERROR]   2) 仅生成配置（无需重下 SDK）：")
@@ -782,7 +782,7 @@ def main():
     sdk, python_x64 = apply_qairt_env(cfg)
     if not sdk:
         print("[ERROR] QAIRT_SDK_ROOT not found in config or environment.")
-        print("  Run Setup.bat, or ensure data/config/qairt_env.json exists.")
+        print("  Run Setup.bat --builder, or ensure data/config/qairt_env.json exists.")
         sys.exit(1)
 
     print(f"[INFO] SDK    = {sdk}")

@@ -27,15 +27,23 @@ REM and uv does not receive absolute paths with spaces or CJK characters.
 cd /d "%ROOT_DIR%"
 
 REM --- Argument parsing -------------------------------------------------------
-REM   --no-builder : skip the QAIRT model-builder environment (Step 8, ~2GB SDK
-REM                  download + x64 venv + VS build tools). The base runtime
-REM                  (pre-built models) does NOT need it. Default on x64 hosts
-REM                  (no Snapdragon NPU); explicit on arm64 (WoS) hosts, which
-REM                  default to installing it.
-REM   --builder    : force Step 8 ON on an x64 host (where it is skipped by
-REM                  default). No effect on arm64 (WoS), which already
-REM                  installs it by default.
-REM   --no-pause   : do not pause at the end (for non-interactive / scripted runs).
+REM DEFAULT INSTALL = fast base runtime only: Python venv + dependencies +
+REM pre-built-model inference. Heavy optional components are OPT-IN:
+REM   --builder       : QAIRT model-builder env (Step 8: ~2GB SDK download + x64
+REM                     converter venv + VS build tools). Needed only to CONVERT
+REM                     models; pre-built models run without it.
+REM   --voice-models  : pre-download Whisper / Zipformer / MeloTTS weights (Step
+REM                     7b). Otherwise fetched on first use by the runtime
+REM                     (weight_downloader.py).
+REM   --git           : PortableGit (Step 5). Only needed for exec shell='sh'.
+REM   --frontend      : portable Node.js + pnpm (Step 5b). Only needed for Build.bat.
+REM   --full          : all of the above (the old default on arm64).
+REM   --desktop       : Rust + tauri-cli (Step 9). Implies --builder (the MSVC C++
+REM                     tools from Step 8.3 are required to compile tauri-cli).
+REM   --no-builder    : kept for compatibility; the builder is already OFF by
+REM                     default. An explicit --no-builder wins over the
+REM                     implication of --desktop / --full.
+REM   --no-pause      : do not pause at the end (for non-interactive / scripted runs).
 REM This script merges the former V1 Setup_Builder_Env.bat in full (Step 8);
 REM everything runs in-process via scripts\setup\setup_qairt_env.py and
 REM scripts\setup\install_vs.ps1 - it does NOT depend on the qai.exe CLI.
@@ -46,13 +54,14 @@ REM                  end-user install does NOT need them. Default OFF. NOTE:
 REM                  Playwright + the ~150MB Chromium browser are now installed
 REM                  by DEFAULT (the ``search`` runtime extra + Step 4d), because
 REM                  the web-search browser engine needs them at runtime.
-REM NO_BUILDER default is ARCH-DEPENDENT (set after host-arch detection
-REM below): WoS (arm64) installs the QAIRT model-builder env by default,
-REM same as before; a plain x64 PC has no Snapdragon NPU, so it defaults to
-REM SKIPPING the ~2GB SDK download unless the user opts in. Left unset here
-REM (not 0/1) so the two explicit flags below can be told apart from "no
-REM flag passed" when the arch-based default is applied.
+REM NO_BUILDER is left unset here (not 0/1) so an explicit --builder /
+REM --no-builder can be told apart from "no flag passed"; the default (1, or 0
+REM when --desktop / --full implies it) is applied right after argument parsing.
 set "NO_BUILDER="
+set "_IMPLY_BUILDER=0"
+set "VOICE_MODELS=0"
+set "WITH_GIT=0"
+set "WITH_FRONTEND=0"
 set "NO_PAUSE=0"
 set "DEV_EXTRAS=0"
 set "DESKTOP_EXTRAS=0"
@@ -66,7 +75,11 @@ if /i "%~1"=="--no-builder" ( set "NO_BUILDER=1" & shift & goto :parse_setup_arg
 if /i "%~1"=="--builder" ( set "NO_BUILDER=0" & shift & goto :parse_setup_args )
 if /i "%~1"=="--no-pause" ( set "NO_PAUSE=1" & shift & goto :parse_setup_args )
 if /i "%~1"=="--dev" ( set "DEV_EXTRAS=1" & shift & goto :parse_setup_args )
-if /i "%~1"=="--desktop" ( set "DESKTOP_EXTRAS=1" & shift & goto :parse_setup_args )
+if /i "%~1"=="--desktop" ( set "DESKTOP_EXTRAS=1" & set "_IMPLY_BUILDER=1" & shift & goto :parse_setup_args )
+if /i "%~1"=="--voice-models" ( set "VOICE_MODELS=1" & shift & goto :parse_setup_args )
+if /i "%~1"=="--git" ( set "WITH_GIT=1" & shift & goto :parse_setup_args )
+if /i "%~1"=="--frontend" ( set "WITH_FRONTEND=1" & shift & goto :parse_setup_args )
+if /i "%~1"=="--full" ( set "VOICE_MODELS=1" & set "WITH_GIT=1" & set "WITH_FRONTEND=1" & set "_IMPLY_BUILDER=1" & shift & goto :parse_setup_args )
 if /i "%~1"=="--arch" goto :opt_arch
 shift & goto :parse_setup_args
 :opt_arch
@@ -144,17 +157,13 @@ if /i "%PROCESSOR_ARCHITEW6432%"=="AMD64" set "HOST_ARCH=x64"
 set "_ARCH_SOURCE=auto-detected"
 :arch_resolved
 
-REM Apply the arch-based NO_BUILDER default now that HOST_ARCH is known.
-REM Only when neither --no-builder nor --builder was explicitly passed
-REM (NO_BUILDER still unset) -- an explicit flag always wins over the
-REM arch-based default. arm64 (WoS) keeps installing by default (unchanged
-REM behaviour); x64 defaults to skipping (see the NO_BUILDER comment above).
+REM Apply the NO_BUILDER default. It is the same on every architecture now: the
+REM model-builder env (Step 8) is OFF unless asked for. Only when neither
+REM --builder nor --no-builder was passed (NO_BUILDER still unset): --desktop /
+REM --full imply it ON, otherwise OFF. An explicit flag always wins.
 if not defined NO_BUILDER (
-    if /i "%HOST_ARCH%"=="x64" (
-        set "NO_BUILDER=1"
-    ) else (
-        set "NO_BUILDER=0"
-    )
+    set "NO_BUILDER=1"
+    if "%_IMPLY_BUILDER%"=="1" set "NO_BUILDER=0"
 )
 
 REM Per-arch variable group. arm64 branch reproduces the previous hardcoded values.
@@ -990,6 +999,11 @@ REM ===========================================================================
 
 echo.
 echo -- Step 5: PortableGit -------------------------------------------------------
+if not "%WITH_GIT%"=="1" (
+    echo [SKIP] PortableGit not requested ^(opt-in: pass --git or --full^).
+    echo [INFO] Only needed for exec shell='sh'; shell='cmd' / 'powershell' work without it.
+    goto :git_done
+)
 
 set "PORTABLE_GIT_DIR=%LOCALAPPDATA%\QAIModelBuilder\git"
 set "GIT_VERSION=2.54.0"
@@ -1149,6 +1163,11 @@ REM pnpm is enabled via Node's bundled corepack. Idempotent: skips when
 REM node.exe + a pnpm shim are already present.
 echo.
 echo -- Step 5b: Node.js ^(%HOST_ARCH%^) + pnpm -------------------------------------------
+if not "%WITH_FRONTEND%"=="1" (
+    echo [SKIP] Node.js + pnpm not requested ^(opt-in: pass --frontend or --full^).
+    echo [INFO] Only needed to compile the web UI with Build.bat.
+    goto :node_done
+)
 
 set "NODE_VERSION=22.20.0"
 set "NODE_DIR=%LOCALAPPDATA%\QAIModelBuilder\node"
@@ -1367,12 +1386,17 @@ REM "first inference on a fresh machine" case at runtime; this step only
 REM warms the cache so the first inference is fast. Any failure here is
 REM logged as [WARN] and Setup proceeds (overall exit 0).
 REM
-REM Skip with: Setup.bat --no-builder ALSO skips this step? No ??? voice/TTS
-REM models are needed for the base runtime (inference), not the model-builder
-REM environment. So this runs regardless of --no-builder.
+REM OPT-IN (--voice-models / --full): the three archives are large and the
+REM runtime downloads them on first use anyway, so skipping keeps Setup fast.
+REM Independent of --builder.
 REM
 echo.
 echo -- Step 7b: Pre-download voice / TTS model weights --------------------------
+if not "%VOICE_MODELS%"=="1" (
+    echo [SKIP] Voice / TTS weights not requested ^(opt-in: pass --voice-models or --full^).
+    echo [INFO] They are downloaded automatically on first use.
+    goto :predownload_voice_models_done
+)
 call :predownload_voice_models
 :predownload_voice_models_done
 
@@ -1392,7 +1416,7 @@ if "%NO_BUILDER%"=="1" (
     echo.
     echo -- Step 8: QAIRT model-builder env -- [SKIP] --no-builder specified ----------
     echo [INFO] Base runtime is ready. To enable model conversion later, re-run
-    echo [INFO] Setup.bat without --no-builder.
+    echo [INFO] Setup.bat --builder
     goto :builder_done
 )
 call :setup_builder_env
@@ -1451,8 +1475,15 @@ echo [INFO] use Console.bat ^(drops you into the activated venv^).
 echo [INFO] ^(Power-user fallback if you prefer manual activation:
 echo [INFO]      call "%VENV_DIR%\Scripts\activate.bat"  ^&^&  qai --help^)
 echo.
-echo [INFO] Model conversion ^(model-builder^) environment was set up in Step 8
-echo [INFO] ^(QAIRT SDK + x64 converter venv + VS build tools + qairt_env.json^).
+if "%NO_BUILDER%"=="1" (
+    echo [INFO] Model conversion ^(model-builder^) environment was NOT installed ^(default^).
+    echo [INFO] Add it later with:  Setup.bat --builder
+) else (
+    echo [INFO] Model conversion ^(model-builder^) environment was set up in Step 8
+    echo [INFO] ^(QAIRT SDK + x64 converter venv + VS build tools + qairt_env.json^).
+)
+echo [INFO] Optional components, off by default: --voice-models  --git  --frontend
+echo [INFO] ^(or --full for everything^). Re-run Setup.bat with them at any time.
 echo.
 REM --- Persist the resolved architecture for sibling launchers ---------------
 REM Written only on the success path so an aborted / half-broken install does
@@ -1864,14 +1895,34 @@ exit /b 1
 :print_help
 echo.
 echo  QAIModelBuilder - Setup.bat
-echo  Sets up the Python environment ^(uv + ARM64 Python 3.13 venv^), installs
-echo  runtime dependencies, downloads tools ^(PortableGit / QAIRT SDK^), and
-echo  pre-deploys model/TTS data.
+echo  Sets up the Python environment ^(uv + Python 3.13 venv^) and installs the
+echo  runtime dependencies. The DEFAULT install is the fast base runtime ^(run
+echo  pre-built models^). Heavy optional components are opt-in via the flags below.
 echo.
 echo  USAGE:
 echo      Setup.bat [options]
 echo.
 echo  OPTIONS:
+echo      --builder      Also install the QAIRT model-builder environment ^(Step 8:
+echo                     ~2GB SDK download + x64 converter venv + VS build tools^).
+echo                     Needed only to CONVERT models; pre-built models run
+echo                     without it. OFF by default on every architecture.
+echo.
+echo      --voice-models Pre-download the Whisper / Zipformer / MeloTTS weights
+echo                     ^(Step 7b^). Otherwise they are fetched on first use.
+echo.
+echo      --git          Install PortableGit ^(Step 5^). Only needed for the
+echo                     exec tool's shell='sh'.
+echo.
+echo      --frontend     Install portable Node.js + pnpm ^(Step 5b^). Only needed
+echo                     to compile the web UI with Build.bat.
+echo.
+echo      --full         Everything above ^(--builder --voice-models --git
+echo                     --frontend^). This is what the old default installed.
+echo.
+echo      --no-builder   Compatibility flag: the builder is already off by
+echo                     default. Wins over the implication of --full/--desktop.
+echo.
 echo      --dev          Also install the developer / test toolchain:
 echo                     dev extras  ^(ruff, mypy, pytest, import-linter, ...^)
 echo                     e2e extras  ^(playwright, pytest-playwright^)
@@ -1879,27 +1930,14 @@ echo                     + the ~150MB Chromium browser for e2e tests.
 echo                     Default OFF. End users do NOT need this; only
 echo                     contributors who run the test suite should pass it.
 echo.
-echo      --no-builder   Skip Step 8 ^(QAIRT model-builder environment:
-echo                     ~2GB SDK download + x64 converter venv + VS build
-echo                     tools^). The base runtime with pre-built models does
-echo                     NOT need it. Re-run without this flag later to add it.
-echo                     Default on an x64 host ^(no Snapdragon NPU^); pass
-echo                     --builder to force it on anyway.
-echo.
-echo      --builder      Force Step 8 ^(QAIRT model-builder environment^) ON.
-echo                     Only needed on an x64 host, where it is skipped by
-echo                     default; a WoS ^(arm64^) host already installs it by
-echo                     default and does not need this flag.
-echo.
 echo      --desktop      Also install the desktop-shell BUILD toolchain
 echo                     ^(Step 9: Rust toolchain + tauri-cli^) needed to
-echo                     COMPILE Build.bat --desktop. This is for DEVELOPERS
-echo                     only — compiling the Tauri shell from source. Costs
-echo                     ^~600MB rustup download + 5-10min tauri-cli compile.
-echo                     NOT needed to RUN the desktop exe ^(WebView2 is
-echo                     installed unconditionally in Step 10^). Do NOT combine
-echo                     with --no-builder ^(MSVC C++ tools from Step 8.3 are
+echo                     COMPILE Build.bat --desktop. For DEVELOPERS only.
+echo                     Costs ^~600MB rustup download + 5-10min tauri-cli compile.
+echo                     Implies --builder ^(the MSVC C++ tools from Step 8.3 are
 echo                     required to compile tauri-cli's native deps^).
+echo                     NOT needed to RUN the desktop exe ^(WebView2 is
+echo                     installed unconditionally in Step 10^).
 echo.
 echo      --no-pause     Do not pause at the end ^(used when Setup.bat is
 echo                     called from another script^).
@@ -1916,12 +1954,12 @@ echo.
 echo      --help, -h, /? Show this help and exit ^(installs nothing^).
 echo.
 echo  EXAMPLES:
-echo      Setup.bat                     End-user install ^(recommended^).
-echo      Setup.bat --dev               Full developer environment + tests.
-echo      Setup.bat --no-builder        Runtime only, skip model conversion env.
-echo      Setup.bat --desktop           Also install Rust + tauri-cli for
-echo                                    Build.bat --desktop ^(adds ^~10min^).
-echo      Setup.bat --dev --no-builder  Dev tools, but skip the 2GB QAIRT SDK.
+echo      Setup.bat                     Fast base install ^(recommended^).
+echo      Setup.bat --builder           Add the model-conversion environment.
+echo      Setup.bat --frontend          Add Node.js + pnpm so Build.bat works.
+echo      Setup.bat --full              Everything ^(slowest, ~old default^).
+echo      Setup.bat --dev               Add the developer / test toolchain.
+echo      Setup.bat --desktop           Also Rust + tauri-cli ^(implies --builder^).
 echo.
 echo  After setup:  Start.bat ^(run server^)  ^|  qai.bat ^(CLI^)  ^|  Console.bat ^(venv shell^)
 echo.
@@ -2038,9 +2076,9 @@ REM compiling. `cargo install tauri-cli` builds native crates (ring) that need
 REM cl.exe + the CRT/SDK headers. If Step 8 was skipped (--no-builder) or VS is
 REM otherwise absent, fail fast with a clear hint rather than after a long build.
 if "%NO_BUILDER%"=="1" (
-    echo [WARN] --no-builder was passed, so Step 8.3 did NOT install the MSVC C++
-    echo [WARN] toolchain. tauri-cli's native deps ^(ring^) cannot compile without
-    echo [WARN] it. Re-run WITHOUT --no-builder ^(keep --desktop^) to install both.
+    echo [WARN] --no-builder was passed together with --desktop, so Step 8.3 did NOT
+    echo [WARN] install the MSVC C++ toolchain. tauri-cli's native deps ^(ring^) cannot
+    echo [WARN] compile without it. Re-run WITHOUT --no-builder ^(keep --desktop^).
     exit /b 0
 )
 

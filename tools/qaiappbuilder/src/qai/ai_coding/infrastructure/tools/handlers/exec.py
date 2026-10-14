@@ -661,7 +661,7 @@ def _select_shell(
         if resolved is None:
             raise ToolError(
                 f"exec: shell='{shell}' 在本机不可用（未找到 PortableGit "
-                f"{shell}.exe）。请运行 Setup.bat 安装 PortableGit 到 "
+                f"{shell}.exe）。请运行 Setup.bat --git 安装 PortableGit 到 "
                 "%LOCALAPPDATA%\\QAIModelBuilder\\git，或改用 shell='cmd' / "
                 "shell='powershell' 执行该命令。"
             )

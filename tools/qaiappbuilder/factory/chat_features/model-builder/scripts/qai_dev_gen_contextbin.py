@@ -136,7 +136,7 @@ def _ensure_vs_arm64_env(cfg: dict) -> None:
         print("[ERROR] VS ARM64 env is NOT active and vcvarsall.bat was not found.")
         print("  vs_vcvarsall in qairt_env.json = " + repr(vcvarsall))
         print("  Fix: install Visual Studio 2022 Community (not BuildTools) and")
-        print("  re-run Setup.bat to update data/config/qairt_env.json.")
+        print("  re-run Setup.bat --builder to update data/config/qairt_env.json.")
         sys.exit(1)
 
     print("[INFO] Initializing VS ARM64 env from: " + vcvarsall)
@@ -749,7 +749,7 @@ def _ensure_generator_healthy(generator_path: str) -> None:
     )
     print(
         "  Fix: re-extract bin/aarch64-windows-msvc/qnn-context-binary-generator.exe "
-        "from the kept SDK zip, or re-run Setup.bat to reinstall the QAIRT SDK."
+        "from the kept SDK zip, or re-run Setup.bat --builder to reinstall the QAIRT SDK."
     )
     sys.exit(2)
 
@@ -811,7 +811,7 @@ def run_generator(model_path, output_path=None, output_dir=None, binary_file=Non
     if not sdk_root:
         print("Error: QAIRT_SDK_ROOT environment variable is not set.")
         print("  Option 1: set QAIRT_SDK_ROOT=<path to QAIRT SDK>")
-        print("  Option 2: Run Setup.bat (reads from data\\config\\qairt_env.json)")
+        print("  Option 2: Run Setup.bat --builder (reads from data\\config\\qairt_env.json)")
         sys.exit(1)
 
     system = platform.system().lower()
