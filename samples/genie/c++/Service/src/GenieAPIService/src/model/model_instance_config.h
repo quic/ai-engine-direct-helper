@@ -50,6 +50,9 @@ public:
     bool is_speculative_draft_forced_cpu() const { return speculative_draft_forced_cpu_; }
     void set_speculative_draft_forced_cpu(bool forced) { speculative_draft_forced_cpu_ = forced; }
 
+    bool is_speculative_reduced_ubatch() const { return speculative_reduced_ubatch_; }
+    void set_speculative_reduced_ubatch(bool reduced) { speculative_reduced_ubatch_ = reduced; }
+
     // LoRA 配置
     const std::string &getloraAdapter() const { return loraAdapter_; }
     void set_lora_adapter(const std::string &adapter) { loraAdapter_ = adapter; }
@@ -102,6 +105,7 @@ private:
     bool thinking_model_{false};
     bool speculative_draft_configured_{false};
     bool speculative_draft_forced_cpu_{false};
+    bool speculative_reduced_ubatch_{false};
     PromptType prompt_type_{};
     ModelFormat model_format_{};
 

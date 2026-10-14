@@ -171,7 +171,12 @@ public:
 
         if (model == nullptr)
         {
-            throw std::runtime_error("unable to load model");
+            throw TargetWeightsLoadError("unable to load model");
+        }
+
+        if (ctx == nullptr)
+        {
+            throw std::runtime_error("unable to create llama context for model");
         }
 
         vocab = llama_model_get_vocab(model);
@@ -282,7 +287,35 @@ public:
                      << ", n_max=" << params_.speculative.draft.n_max
                      << ", p_min=" << params_.speculative.draft.p_min
                      << ", n_gpu_layers=" << params_.speculative.draft.n_gpu_layers << "\n";
+
+            ReserveWorstCaseGraph(ctx);
         }
+    }
+
+    void ReserveWorstCaseGraph(llama_context *ctx)
+    {
+        llama_token warmup_tok = llama_vocab_bos(vocab);
+        if (warmup_tok == LLAMA_TOKEN_NULL)
+        {
+            warmup_tok = llama_vocab_eos(vocab);
+        }
+        if (warmup_tok == LLAMA_TOKEN_NULL)
+        {
+            My_Log{My_Log::Level::kWarning}
+                    << "[LLAMACpp] worst-case graph reserve skipped: vocab has neither BOS nor EOS\n";
+            return;
+        }
+
+        My_Log{} << "[LLAMACpp] worst-case graph reserve: warmup decode\n";
+        const int rc = llama_decode(ctx, llama_batch_get_one(&warmup_tok, 1));
+        llama_memory_clear(llama_get_memory(ctx), false);
+        llama_perf_context_reset(ctx);
+        if (rc != 0)
+        {
+            throw std::runtime_error("worst-case graph reserve failed: llama_decode returned " +
+                                     std::to_string(rc));
+        }
+        My_Log{} << "[LLAMACpp] worst-case graph reserve: done\n";
     }
 
     bool Query(const std::string &prompt,
@@ -1404,6 +1437,13 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] n_ubatch=" << n_ubatch << " exceeds n_batch=" << n_batch
                                       << "; clamping n_ubatch to n_batch." << std::endl;
         n_ubatch = n_batch;
+    }
+    if (model_config_.is_speculative_reduced_ubatch() && n_ubatch > 1)
+    {
+        const int reduced = n_ubatch / 2;
+        My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] reduced ubatch requested: n_ubatch " << n_ubatch
+                                      << " -> " << reduced << std::endl;
+        n_ubatch = reduced;
     }
     arg_strings.insert(arg_strings.end(), {"-b", std::to_string(n_batch), "-ub", std::to_string(n_ubatch)});
     My_Log{My_Log::Level::kInfo} << "[LLAMACppBuilder] n_batch=" << n_batch << ", n_ubatch=" << n_ubatch

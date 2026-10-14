@@ -11,6 +11,12 @@
 
 #include "context_base.h"
 
+class TargetWeightsLoadError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
 class LLAMACppBuilder : public ContextBase
 {
 public:
