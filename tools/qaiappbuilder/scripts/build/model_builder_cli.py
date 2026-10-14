@@ -1,3 +1,8 @@
+# ---------------------------------------------------------------------
+# Copyright (c) 2026 Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause
+# ---------------------------------------------------------------------
+
 """CLI entry points for the ``model_builder`` bounded context (U-025).
 
 V2 equivalent of the three legacy ModelBuilder scripts that the
