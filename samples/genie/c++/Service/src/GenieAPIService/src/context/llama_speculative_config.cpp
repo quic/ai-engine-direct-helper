@@ -163,6 +163,11 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.ngram_mod_n_min = block["ngram_mod_n_min"].get<int>();
     }
 
+    if (block.contains("ngram_mod") && block["ngram_mod"].is_boolean())
+    {
+        result.ngram_mod = block["ngram_mod"].get<bool>();
+    }
+
     if (block.contains("n_gpu_layers") && block["n_gpu_layers"].is_number_integer())
     {
         result.n_gpu_layers = block["n_gpu_layers"].get<int>();

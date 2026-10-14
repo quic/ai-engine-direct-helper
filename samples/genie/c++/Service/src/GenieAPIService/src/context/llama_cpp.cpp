@@ -1370,9 +1370,21 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
 
         fs::path draft_path = fs::path(model_config_.get_model_path()) / draft_config.path;
         arg_strings.insert(arg_strings.end(), {"-md", draft_path.string()});
-        if (!draft_config.spec_type.empty())
+        // ngram-mod 是 draftless 的 n-gram 查表 drafter，优先于 dflash 出手、约 16 MB 纯 CPU 哈希池、
+        // 不占显存。32G/X2-90 实测（同一热稳态、背靠背五格、生成逐字相同）：接受率 0.6455 -> 0.6816
+        // 且提案数 959 -> 917，即分子升、分母降（真提升而非压分母），gen_rate 16.2 -> 17.0 tok/s。
+        // 故默认追加，而不是要求每个模型 config.json 自己写全；写 "ngram_mod": false 可关闭。
+        std::string spec_type = draft_config.spec_type;
+        if (draft_config.ngram_mod && !spec_type.empty() &&
+            spec_type.find("ngram-mod") == std::string::npos)
         {
-            arg_strings.insert(arg_strings.end(), {"--spec-type", draft_config.spec_type});
+            spec_type += ",ngram-mod";
+            My_Log{My_Log::Level::kWarning}
+                << "[LLAMACppBuilder] ngram-mod appended to spec_type: " << spec_type << std::endl;
+        }
+        if (!spec_type.empty())
+        {
+            arg_strings.insert(arg_strings.end(), {"--spec-type", spec_type});
         }
         if (draft_config.spec_draft_n_max > 0)
         {
