@@ -163,6 +163,16 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.ngram_mod_n_min = block["ngram_mod_n_min"].get<int>();
     }
 
+    if (block.contains("n_gpu_layers") && block["n_gpu_layers"].is_number_integer())
+    {
+        result.n_gpu_layers = block["n_gpu_layers"].get<int>();
+    }
+
+    if (block.contains("fit_target_mib") && block["fit_target_mib"].is_number_integer())
+    {
+        result.fit_target_mib = block["fit_target_mib"].get<int>();
+    }
+
     // required 默认 true：drafter 加载失败则整个模型加载失败，不静默降级为纯 target 解码。
     if (block.contains("required") && block["required"].is_boolean())
     {

@@ -43,6 +43,8 @@ struct DraftModelConfig
     int top_k = 1;                     // 对应 --top-k；默认 1（greedy）；<0 = 不拼进 argv
     float top_p = -1.0f;               // 对应 --top-p；<0 = 未配置，不拼进 argv
     int ngram_mod_n_min = -1;          // 对应 --spec-ngram-mod-n-min；<0 = 未配置，不拼进 argv
+    int n_gpu_layers = 99;             // 对应 -ngld；0 = drafter 权重全部留在 CPU；<0 = 不拼进 argv
+    int fit_target_mib = -1;           // 对应 -fitt（每设备显存预留）；<0 = 未配置，不拼进 argv
 
     // 从模型 config.json 解析出的 json 对象中提取 draft_model 字段块。
     // 不含该字段块、字段类型不匹配、或传入的 json 本身为空/非 object 时，均返回 present=false

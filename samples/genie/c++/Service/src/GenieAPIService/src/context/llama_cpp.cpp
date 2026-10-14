@@ -1348,9 +1348,16 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         }
         arg_strings.insert(arg_strings.end(),
                             {"--spec-draft-p-min", std::to_string(draft_config.spec_draft_p_min)});
-        if (device != "cpu")
+        const int draft_n_gpu_layers = model_config_.is_speculative_draft_forced_cpu()
+                                           ? 0
+                                           : draft_config.n_gpu_layers;
+        if (device != "cpu" && draft_n_gpu_layers >= 0)
         {
-            arg_strings.insert(arg_strings.end(), {"-ngld", "99"});
+            arg_strings.insert(arg_strings.end(), {"-ngld", std::to_string(draft_n_gpu_layers)});
+        }
+        if (draft_config.fit_target_mib >= 0)
+        {
+            arg_strings.insert(arg_strings.end(), {"-fitt", std::to_string(draft_config.fit_target_mib)});
         }
         if (!draft_config.samplers.empty())
         {

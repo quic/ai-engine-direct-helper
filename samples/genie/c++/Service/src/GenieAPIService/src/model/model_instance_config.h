@@ -47,6 +47,9 @@ public:
     bool is_speculative_draft_configured() const { return speculative_draft_configured_; }
     void set_speculative_draft_configured(bool configured) { speculative_draft_configured_ = configured; }
 
+    bool is_speculative_draft_forced_cpu() const { return speculative_draft_forced_cpu_; }
+    void set_speculative_draft_forced_cpu(bool forced) { speculative_draft_forced_cpu_ = forced; }
+
     // LoRA 配置
     const std::string &getloraAdapter() const { return loraAdapter_; }
     void set_lora_adapter(const std::string &adapter) { loraAdapter_ = adapter; }
@@ -98,6 +101,7 @@ private:
     json prompt_{json::object()};
     bool thinking_model_{false};
     bool speculative_draft_configured_{false};
+    bool speculative_draft_forced_cpu_{false};
     PromptType prompt_type_{};
     ModelFormat model_format_{};
 

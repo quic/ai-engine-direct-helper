@@ -576,9 +576,12 @@ struct ModelManager::ModeVerifier
 
         std::shared_ptr<ContextBase> CreateIfVerifiedImpl() override
         {
-            auto load_with_device = [this](const std::string &device) -> std::shared_ptr<ContextBase>
+            auto load_with_device = [this](const std::string &device, bool draft_on_cpu = false) -> std::shared_ptr<ContextBase>
             {
+                My_Log{} << "[GGUFVerify] load attempt: device=" << device
+                          << ", draft_device=" << (draft_on_cpu ? std::string("cpu") : device) << std::endl;
                 config_->set_device(device);
+                config_->set_speculative_draft_forced_cpu(draft_on_cpu);
                 config_->i_model_config_ = *self_;
                 config_->i_model_config_.genieModelHandle = self_->genieModelHandle = std::make_shared<LLAMACppBuilder>(*config_);
                 return self_->genieModelHandle;
@@ -687,6 +690,26 @@ struct ModelManager::ModeVerifier
             {
                 My_Log{My_Log::Level::kError}
                         << "[GGUFVerify] GPU load failed with unknown error, fallback to CPU" << std::endl;
+            }
+
+            if (draft_config.present)
+            {
+                try
+                {
+                    return load_with_device("gpu", true);
+                }
+                catch (const std::exception &e)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] GPU load with draft on CPU failed, fallback to CPU: " << e.what()
+                            << std::endl;
+                }
+                catch (...)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] GPU load with draft on CPU failed with unknown error, fallback to CPU"
+                            << std::endl;
+                }
             }
 
             try
