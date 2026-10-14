@@ -1,5 +1,10 @@
 dist/
-build/
+# Note: build/ matches the repo-root build/ artifacts dir.
+# IMPORTANT: anchored with leading "/" so it ONLY matches repo-root.
+# Unanchored `build/` recursively swallowed source dirs like
+# tools/qaiappbuilder/scripts/build/ (model_builder_cli.py), silently
+# excluding them from the remote.
+/build/
 /lib/
 *.egg-info/
 *.whl
