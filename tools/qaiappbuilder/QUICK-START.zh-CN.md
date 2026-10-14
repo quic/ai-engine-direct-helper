@@ -41,15 +41,25 @@ Setup.bat
 
 会做完：下载 uv / 安装 Python 3.13（默认 ARM64，`--arch x64` 时装 x64 版）/ 建 venv 到
 `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`（或 `.venv_x64_313`）/
-安装 `pyproject.toml` 全部依赖 / 装 PortableGit + Node.js + pnpm / 装 QAIRT SDK（模型转换需要，
-~2 GB）/ 预下载 Whisper / Zipformer / MeloTTS 模型权重 / 初始化 `data/`（`qai.db`、出厂种子、secret 命名空间）。
+安装 `pyproject.toml` 全部依赖 / 初始化 `data/`（`qai.db`、出厂种子、secret 命名空间）。
+默认只装「快速基础运行时」，足以运行预编译模型。
+
+较重的组件改为**按需安装**（现在加开关，或之后带开关重跑 `Setup.bat`）：
+模型转换用的 QAIRT SDK（`--builder`，~2 GB）、Whisper / Zipformer / MeloTTS 权重
+（`--voice-models`，否则首次使用时自动下载）、PortableGit（`--git`）、
+`Build.bat` 用的 Node.js + pnpm（`--frontend`）。`--full` 一次装全部。
 
 常用开关：
 
 | 开关 | 用途 |
 |---|---|
 | `--arch arm64\|x64` | 强制指定架构（默认自动探测）。在 WoS 上装 x64 栈用于验证时传 `--arch x64` |
-| `--no-builder` | 跳过 QAIRT SDK / VS 工具链（不做模型转换时省 ~2 GB） |
+| `--builder` | 额外装模型转换用的 QAIRT SDK / VS 工具链（~2 GB）。默认不装 |
+| `--voice-models` | 预下载 Whisper / Zipformer / MeloTTS 权重（否则首次使用时下载） |
+| `--git` | 装 PortableGit（仅 exec 工具的 `shell='sh'` 需要） |
+| `--frontend` | 装便携 Node.js + pnpm（运行 `Build.bat` 需要） |
+| `--full` | 以上全部（即之前的默认行为） |
+| `--no-builder` | 兼容开关；builder 现已默认不装 |
 | `--dev` | 额外装贡献者工具链（pytest / mypy / ruff / playwright + Chromium） |
 | `--no-pause` | 安装完不暂停（CI 调用时用） |
 

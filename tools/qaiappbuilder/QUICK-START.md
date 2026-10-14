@@ -41,19 +41,27 @@ or run one from AI Hub.
 Setup.bat
 ```
 
-Does everything: download uv / install Python 3.13 (ARM64 by default, or x64 with
-`--arch x64`) / create venv at `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`
-(or `.venv_x64_313`) / install every dep from `pyproject.toml` / install PortableGit
-+ Node.js + pnpm / install QAIRT SDK (needed for model conversion, ~2 GB) /
-pre-download Whisper / Zipformer / MeloTTS weights / initialize `data/` (`qai.db`,
-factory seeds, secret namespaces).
+Installs the fast base runtime: download uv / install Python 3.13 (ARM64 by default,
+or x64 with `--arch x64`) / create venv at `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`
+(or `.venv_x64_313`) / install every dep from `pyproject.toml` / initialize `data/`
+(`qai.db`, factory seeds, secret namespaces). That is enough to run pre-built models.
+
+Heavy components are **opt-in** (add them now or re-run `Setup.bat` with the flag later):
+the QAIRT SDK for model conversion (`--builder`, ~2 GB), Whisper / Zipformer / MeloTTS
+weights (`--voice-models`, otherwise fetched on first use), PortableGit (`--git`), and
+Node.js + pnpm for `Build.bat` (`--frontend`). `--full` installs all of them.
 
 Common flags:
 
 | Flag | Purpose |
 |---|---|
 | `--arch arm64\|x64` | Force architecture (default: auto-detect from host). Use `--arch x64` on WoS to install the x64 stack under Prism emulation for validation |
-| `--no-builder` | Skip QAIRT SDK / VS toolchain (~2 GB saved when you won't convert models) |
+| `--builder` | Also install the QAIRT SDK / VS toolchain for model conversion (~2 GB). Off by default |
+| `--voice-models` | Pre-download Whisper / Zipformer / MeloTTS weights (otherwise fetched on first use) |
+| `--git` | Install PortableGit (only needed for the exec tool's `shell='sh'`) |
+| `--frontend` | Install portable Node.js + pnpm (needed to run `Build.bat`) |
+| `--full` | All of the above (the previous default) |
+| `--no-builder` | Compatibility flag; the builder is already off by default |
 | `--dev` | Also install contributor toolchain (pytest / mypy / ruff / playwright + Chromium) |
 | `--no-pause` | Don't pause at the end (use from CI) |
 

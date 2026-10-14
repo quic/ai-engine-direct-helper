@@ -287,7 +287,7 @@ AI 会自动完成源模型下载、ONNX 导出、多精度转换、推理执行
 
 ### 前置要求
 
-`Setup.bat` 自动安装全部环境：QAIRT SDK（~2 GB）、Visual Studio 2022 C++ ARM64 构建工具、用于 QNN 转换器的 x86_64 Python 3.10 venv，以及 ARM64 Python 3.13 运行时。若只需聊天 / App Builder，可给 `Setup.bat` 传 `--no-builder` 跳过转换工具链。
+`Setup.bat` 默认只装快速基础运行时（Python 3.13 venv + 依赖），足以用预编译模型做聊天 / App Builder。需要转换模型时，用 `Setup.bat --builder` 追加转换工具链：QAIRT SDK（~2 GB）、Visual Studio 2022 C++ 构建工具，以及用于 QNN 转换器的 x86_64 Python 3.10 venv。其它按需组件：`--voice-models`、`--git`、`--frontend`；`--full` 一次装全部。
 
 ---
 
@@ -346,7 +346,7 @@ AI 会自动完成源模型下载、ONNX 导出、多精度转换、推理执行
 
 ## 🚀 安装
 
-> **平台：** Windows on Snapdragon（ARM64）下 `Setup.bat` 自动把 `uv`、Python 3.13 ARM64、PortableGit、Node.js 下载到 `%LOCALAPPDATA%\QAIModelBuilder\` —— **无需管理员权限，无需手动安装 Python**；Linux 下由 `setup.sh` 检测并安装。
+> **平台：** Windows on Snapdragon（ARM64）下 `Setup.bat` 自动把 `uv`、Python 3.13 ARM64 下载到 `%LOCALAPPDATA%\QAIModelBuilder\`（传 `--git` / `--frontend` / `--full` 时还会装 PortableGit、Node.js） —— **无需管理员权限，无需手动安装 Python**；Linux 下由 `setup.sh` 检测并安装。
 
 ### Windows
 
@@ -374,7 +374,7 @@ bash start.sh
 
 | Windows | Linux  | 作用 |
 |------|------|------|
-| `Setup.bat` | `setup.sh` | **唯一安装入口。** Windows：下载 `uv`、安装 Python 3.13（默认 ARM64；`--arch x64` 可装 x64 版）、在 `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`（或 `.venv_x64_313`）建 venv、安装运行时依赖、初始化 `data/`，并安装 PortableGit / Node+pnpm / QAIRT SDK / VS 2022 / TTS 数据 / WebView2；可选参数 `--arch arm64|x64`、`--no-builder`、`--dev`、`--desktop`、`--no-pause`。Linux：建 `envs/venv`（Python 3.12），安装 QAIRT SDK 与依赖，初始化 `data/`；默认跳过前端安装/构建，传 `--frontend` 可自动搭建项目本地 Node/pnpm（`scripts/setup/node_bootstrap.sh`）并一并构建。 |
+| `Setup.bat` | `setup.sh` | **唯一安装入口。** Windows：下载 `uv`、安装 Python 3.13（默认 ARM64；`--arch x64` 可装 x64 版）、在 `%LOCALAPPDATA%\QAIModelBuilder\envs\.venv_arm64_313`（或 `.venv_x64_313`）建 venv、安装运行时依赖、初始化 `data/`，并安装 WebView2。按需组件（默认不装）：QAIRT SDK / VS 2022（`--builder`）、TTS 数据（`--voice-models`）、PortableGit（`--git`）、Node+pnpm（`--frontend`），`--full` 一次启用全部；其它参数 `--arch arm64|x64`、`--dev`、`--desktop`、`--no-pause`。Linux：建 `envs/venv`（Python 3.12），安装 QAIRT SDK 与依赖，初始化 `data/`；默认跳过前端安装/构建，传 `--frontend` 可自动搭建项目本地 Node/pnpm（`scripts/setup/node_bootstrap.sh`）并一并构建。 |
 | `Start.bat` | `start.sh` | 启动服务（受监管）。端口**不硬编码**——探测回退列表，把真实 URL 写入 `data/runtime/server.endpoint.json`。Windows 自动开浏览器并支持 `--reload` 热重载；Linux 下用 `--port N` 覆盖端口，`Ctrl+C` 停止。 |
 | `Build.bat` | `build.sh` | 把 Vue 3 SPA 构建到 `frontend/dist/`（pnpm）。两边都支持 `--full`（typecheck+lint+test）、`--install`、`--clean`；`build.sh` 会自己搭建项目本地 Node.js/pnpm（`scripts/setup/node_bootstrap.sh`），`--desktop` 会被忽略（Tauri 仅 Windows 支持）。 |
 | `Console.bat` | *(无独立脚本，用 `source envs/venv/bin/activate`)* | 打开已激活宿主架构 venv 的交互式 shell。 |

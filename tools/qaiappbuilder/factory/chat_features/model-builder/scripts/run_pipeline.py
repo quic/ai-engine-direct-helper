@@ -185,7 +185,7 @@ def apply_qairt_env(cfg: dict) -> tuple:
         print("  This path comes from qairt_env.json (qairt_sdk_root) or the")
         print("  QAIRT_SDK_ROOT env var. It likely points at an old SDK version")
         print("  that has since been upgraded/removed.")
-        print("  Fix: re-run Setup.bat to refresh")
+        print("  Fix: re-run Setup.bat --builder to refresh")
         print("  data\\config\\qairt_env.json with the installed SDK path.")
         sys.exit(2)
 
@@ -771,7 +771,7 @@ def main():
     cfg = find_qairt_env(script_dir)
     if not cfg:
         print("[ERROR] 未找到 QAIRT 配置文件 data/config/qairt_env.json。")
-        print("[ERROR] 该文件由 Setup.bat 的 Step 8.6 生成。请重新运行 Setup.bat,")
+        print("[ERROR] 该文件由 Setup.bat --builder 的 Step 8.6 生成。请运行 Setup.bat --builder,")
         print("[ERROR] 或仅生成配置(无需重下 SDK):")
         print("[ERROR]   <.venv_x64_310>\\Scripts\\python.exe "
               "scripts\\setup\\setup_qairt_env.py --gen-config")

@@ -127,7 +127,7 @@ if [[ "$OS_TYPE" == "linux" && "$ARCH" == "aarch64" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 04c — qcom-fastrpc1 package & libcdsprpc.so symlink (Linux aarch64)
+# Step 04c — FastRPC package (qcom-fastrpc1 or fastrpc) & libcdsprpc.so (Linux aarch64)
 # ---------------------------------------------------------------------------
 # HTP/NPU inference requires libcdsprpc.so (unversioned) to be resolvable
 # via dlopen() by the QNN HTP backend (libQnnHtp.so). The qcom-fastrpc1
@@ -139,46 +139,60 @@ fi
 # board that uses this package. Detect + auto-install + auto-fix here so
 # every new board hits this exactly once, during setup.
 if [[ "$OS_TYPE" == "linux" && "$ARCH" == "aarch64" ]]; then
-  info "Step 04c: checking qcom-fastrpc1 package & libcdsprpc.so symlink..."
+  info "Step 04c: checking FastRPC package & libcdsprpc.so..."
 
-  if dpkg -s qcom-fastrpc1 &>/dev/null; then
-    info "  qcom-fastrpc1 already installed ($(dpkg -s qcom-fastrpc1 | grep -m1 '^Version:' | awk '{print $2}'))"
-  else
-    error "qcom-fastrpc1 is not installed. This package provides libcdsprpc.so,
-  which is required for HTP/NPU inference (dlopen'd by libQnnHtp.so). Without
-  it, HTP inference and context-binary generation will fail with:
-    [ERROR] Failed in loading stub: libcdsprpc.so: cannot open shared object file
-  Install it manually, then re-run setup.sh:
-    sudo apt update && sudo apt install -y qcom-fastrpc1"
+  # Package names differ between images: the Ubuntu/Debian image ships
+  # "qcom-fastrpc1"; Qualcomm IoT images (e.g. IQ10) ship "fastrpc". Accept either.
+  _FASTRPC_PKG=""
+  for _p in qcom-fastrpc1 fastrpc; do
+    if dpkg -s "$_p" &>/dev/null; then _FASTRPC_PKG="$_p"; break; fi
+  done
+  if [[ -n "$_FASTRPC_PKG" ]]; then
+    _FASTRPC_VER="$(dpkg-query -W -f='${Version}' "$_FASTRPC_PKG" 2>/dev/null || true)"
+    info "  FastRPC package installed: $_FASTRPC_PKG (${_FASTRPC_VER:-unknown})"
   fi
 
-  # Known defect: the package ships libcdsprpc.so.<N> but not the
-  # unversioned libcdsprpc.so symlink. Detect + fix.
-  _FASTRPC_LIBDIR="/usr/lib/aarch64-linux-gnu"
-  _CDSPRPC_UNVERSIONED="$_FASTRPC_LIBDIR/libcdsprpc.so"
-  if [[ -e "$_CDSPRPC_UNVERSIONED" ]]; then
-    info "  libcdsprpc.so symlink already present: $_CDSPRPC_UNVERSIONED"
+  # What actually matters is that dlopen("libcdsprpc.so") can resolve.
+  # Check the loader cache first; the library may live in /usr/lib or
+  # /usr/lib/aarch64-linux-gnu depending on the image.
+  # NOTE: capture into a variable instead of "ldconfig | grep -q": under
+  # "set -o pipefail", grep -q exiting early can SIGPIPE ldconfig and make the
+  # pipeline report failure intermittently.
+  _LDC_OUT="$(ldconfig -p 2>/dev/null || true)"
+  _CDSPRPC_LDC="$(printf '%s\n' "$_LDC_OUT" | grep -E '[[:space:]]libcdsprpc\.so[[:space:]]' | head -n1 | awk '{print $NF}' || true)"
+  if [[ -n "$_CDSPRPC_LDC" ]]; then
+    info "  libcdsprpc.so resolvable via ldconfig: $_CDSPRPC_LDC"
   else
-    # Find the highest versioned libcdsprpc.so.N (e.g. libcdsprpc.so.1)
-    _CDSPRPC_VERSIONED=$(find "$_FASTRPC_LIBDIR" -maxdepth 1 -name 'libcdsprpc.so.*' 2>/dev/null \
-      | grep -E 'libcdsprpc\.so\.[0-9]+$' | sort -V | tail -1)
+    # Known defect (qcom-fastrpc1): ships libcdsprpc.so.<N> but no unversioned
+    # libcdsprpc.so symlink. Search common dirs and create it.
+    _CDSPRPC_VERSIONED=""
+    _FASTRPC_LIBDIR=""
+    for _d in /usr/lib/aarch64-linux-gnu /usr/lib /lib; do
+      _v=$(find "$_d" -maxdepth 1 -name 'libcdsprpc.so.*' 2>/dev/null \
+        | grep -E 'libcdsprpc\.so\.[0-9]+$' | sort -V | tail -1 || true)
+      if [[ -n "$_v" ]]; then _CDSPRPC_VERSIONED="$_v"; _FASTRPC_LIBDIR="$_d"; break; fi
+    done
     if [[ -z "$_CDSPRPC_VERSIONED" ]]; then
-      error "libcdsprpc.so is missing and no versioned libcdsprpc.so.<N> was
-  found under $_FASTRPC_LIBDIR after installing qcom-fastrpc1.
+      error "libcdsprpc.so is not resolvable and no versioned libcdsprpc.so.<N> was
+  found under /usr/lib/aarch64-linux-gnu, /usr/lib or /lib.
   HTP/NPU inference will fail with:
     [ERROR] Failed in loading stub: libcdsprpc.so: cannot open shared object file
-  Verify the package installed correctly: dpkg -L qcom-fastrpc1 | grep cdsprpc"
+  Install the FastRPC package, then re-run setup.sh:
+    sudo apt update && sudo apt install -y qcom-fastrpc1   # or: fastrpc"
     fi
-    warn "libcdsprpc.so unversioned symlink missing (known qcom-fastrpc1
-  packaging defect) — creating: $_CDSPRPC_UNVERSIONED -> $_CDSPRPC_VERSIONED"
-    if ! command -v sudo &>/dev/null; then
-      error "'sudo' unavailable to create the required symlink. Run manually:
+    _CDSPRPC_UNVERSIONED="$_FASTRPC_LIBDIR/libcdsprpc.so"
+    warn "libcdsprpc.so unversioned symlink missing — creating: $_CDSPRPC_UNVERSIONED -> $_CDSPRPC_VERSIONED"
+    _SUDO=""
+    if [[ "$(id -u)" -ne 0 ]]; then
+      command -v sudo &>/dev/null || error "'sudo' unavailable to create the required symlink. Run manually:
     sudo ln -s $_CDSPRPC_VERSIONED $_CDSPRPC_UNVERSIONED"
+      _SUDO="sudo"
     fi
-    if ! sudo ln -s "$_CDSPRPC_VERSIONED" "$_CDSPRPC_UNVERSIONED"; then
+    if ! $_SUDO ln -s "$_CDSPRPC_VERSIONED" "$_CDSPRPC_UNVERSIONED"; then
       error "Failed to create symlink. Create manually with:
     sudo ln -s $_CDSPRPC_VERSIONED $_CDSPRPC_UNVERSIONED"
     fi
+    $_SUDO ldconfig 2>/dev/null || true
     info "  created symlink: $_CDSPRPC_UNVERSIONED -> $_CDSPRPC_VERSIONED"
   fi
 else
