@@ -192,7 +192,9 @@ if /i "%HOST_ARCH%"=="x64" (
     set "VCREDIST_ARCH=arm64"
     set "SIGNED_PY_ARCH=arm64"
     set "SIGNED_PY_SHA256=3090f98038f332ceeca0ba40d77b7a4d94a4a25b7107e6cf341547e91d983f18"
-    set "PY310_UV_SPEC=cpython-3.10-windows-aarch64"
+    REM The model-conversion venv (.venv_x64_310) is ALWAYS x86_64 Python 3.10,
+    REM even on ARM64 hosts (QAIRT converter ships x86_64 binaries only).
+    set "PY310_UV_SPEC=cpython-3.10-windows-x86_64"
 )
 REM Full dotted python.org version used ONLY on the WDAC/Code-Integrity fallback
 REM path (Step 2b): when this machine's Enterprise policy blocks uv's unsigned
@@ -386,6 +388,12 @@ set "PATH=%UV_BIN_DIR%;%PATH%"
 
 REM Use system certificates so uv trusts the corporate proxy certificate store
 set "UV_SYSTEM_CERTS=1"
+
+REM uv's default HTTP timeout is 30s, which is far too short for large wheels
+REM (tensorflow ~300MB, torch, ...) behind a slow / proxied link: the download
+REM times out 3x and the install fails. Raise it, unless the user already set one.
+if not defined UV_HTTP_TIMEOUT set "UV_HTTP_TIMEOUT=300"
+if not defined UV_HTTP_RETRIES set "UV_HTTP_RETRIES=5"
 
 REM --- Step 2: Install Python 3.13 (ARM64 native) ---
 REM Idempotent: skip the (re)install when uv can already resolve a managed
@@ -2609,6 +2617,14 @@ if exist "%QAIRT_SDK_ROOT%\bin\aarch64-windows-msvc\qnn-context-binary-generator
 echo.
 echo -- Step 8.1: x86_64 Python 3.10 venv ^(for model conversion^) ---
 call :sb_install_venv_310
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Step 8.1 failed: the x86_64 Python 3.10 converter venv ^(.venv_x64_310^)
+    echo [ERROR] could not be created ^(see the messages above^). Model conversion cannot
+    echo [ERROR] work without it, so Setup is stopping here instead of continuing.
+    echo [ERROR] Fix the cause shown above, then re-run: Setup.bat --builder
+    exit /b 1
+)
 echo.
 echo -- Step 8.2: QAIRT SDK %QAIRT_VERSION% ------------------------
 call :sb_install_qairt_sdk
@@ -2709,8 +2725,8 @@ REM --no-bin / --no-registry: same rationale as Step 2 (we use venv_310's
 REM python.exe directly; no shim or registry registration needed).
 uv python install --no-bin --no-registry cpython-3.10-windows-x86_64
 if errorlevel 1 (
-    echo [WARN] Failed to install x86_64 Python 3.10 ^(converter env unavailable^).
-    exit /b 0
+    echo [ERROR] Failed to install x86_64 Python 3.10 via uv ^(converter env unavailable^).
+    exit /b 1
 )
 REM WDAC/code-integrity fallback for the 3.10 converter interpreter, mirroring
 REM Step 2b for 3.13. The x86_64 pbs 3.10 DLL is blocked by the same enforced
@@ -2741,8 +2757,10 @@ if errorlevel 1 (
             echo [WARN] uv venv reported an error, but a usable .venv_x64_310 exists. Continuing...
             exit /b 0
         )
-        echo [WARN] Failed to create .venv_x64_310.
-        exit /b 0
+        echo [ERROR] Failed to create .venv_x64_310 ^(uv venv exited non-zero^).
+        echo [ERROR] If the log above mentions a certificate error ^(UnknownIssuer^), set
+        echo [ERROR] UV_SYSTEM_CERTS=1 and UV_NATIVE_TLS=1 and re-run Setup.bat --builder.
+        exit /b 1
     )
 )
 REM Redirect bytecode caches out of the source tree for this venv too.
