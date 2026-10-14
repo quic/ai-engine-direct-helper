@@ -133,9 +133,11 @@ def parse_report(report_path: Path) -> dict[str, Any]:
         )
         cosines = [float(m.group(1)) for m in md_table_pattern.finditer(text)]
 
-    # Latency: "Latency: 12.3 ms" / "latency_ms = 15.2".
+    # Latency: "Latency: 12.3 ms" / "latency_ms = 15.2" / "Latency (ms): 9".
+    # The optional ``_ms`` / ``(ms)`` unit tag between the keyword and the
+    # separator is what lets the code-style ``latency_ms = 15.2`` match.
     latency_pattern = re.compile(
-        r"[Ll]atency[\s:=_]*([0-9]+\.?[0-9]*)\s*(?:ms)?",
+        r"[Ll]atency(?:[\s_]*\(?ms\)?)?[\s:=_]*([0-9]+\.?[0-9]*)\s*(?:ms)?",
         re.IGNORECASE,
     )
     latencies = [float(m.group(1)) for m in latency_pattern.finditer(text)]

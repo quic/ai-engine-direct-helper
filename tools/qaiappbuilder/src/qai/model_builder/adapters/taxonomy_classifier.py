@@ -146,9 +146,19 @@ _check_keyword_uniqueness()
 # Word-boundary regex for the rule matcher. Matches a token bordered
 # by anything non-alphanumeric so ``mobilevit`` does not light up the
 # group-only ``vit`` rule.
+#
+# Version-prefix tokens (``yolov`` -> ``yolov8n``, ``yolo`` -> ``yolo11n``) are
+# *meant* to be followed by a version digit, so the trailing boundary only
+# rejects a letter. With the strict ``(?![a-z0-9])`` tail ``yolov`` could
+# never match any real name (it is always followed by a digit) and the most
+# common YOLO models fell through to the unclassified fallback.
+_VERSION_PREFIX_TOKENS: frozenset[str] = frozenset({"yolo", "yolov"})
+
+
 def _word_boundary_pattern(token: str) -> re.Pattern[str]:
     escaped = re.escape(token)
-    return re.compile(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])")
+    tail = "(?![a-z])" if token in _VERSION_PREFIX_TOKENS else "(?![a-z0-9])"
+    return re.compile(rf"(?<![a-z0-9]){escaped}{tail}")
 
 
 _TASK_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
