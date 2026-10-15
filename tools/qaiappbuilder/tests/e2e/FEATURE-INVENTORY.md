@@ -60,6 +60,58 @@
   这会改动认证行为。**这是设想中的后续优化,当前代码里没有。**
   实现后应补充用例:有效期内免登录、过期后回到登录、登出后令牌清除。
 
+### 2.1.1 服务端(qai-service)怎么换取和校验 JWT
+
+来源:`C:\work\code\qai-service`(`routers/auth.py`、`services/auth_service.py`、`api_key_auth.py`、`ceflow_verify.py`、`device_auth.py`),只读代码得出,未连真实服务实测。
+
+**换取 `POST /api/auth/exchange { id_token }`**,按顺序:
+1. 用 Okta JWKS 验 `id_token`(RS256,校验 iss/aud/exp);`iss` 只能路由到已配置的 provider,否则 401。
+2. 邮箱域名白名单(`ALLOWED_EMAIL_DOMAINS`),不通过 403;没有 email claim 400。
+3. 可选的"已注册邮箱"白名单(`registered_users`),未注册 403。
+4. 创建或更新用户,默认角色 `user`(groups 里有 admin 才是 admin),并确保有额度行。
+5. 用服务端的 `JWT_SECRET` 自签 **HS256** JWT,载荷 `sub/email/role/app_cid/exp`。
+   `exp = now + JWT_EXPIRE_HOURS`,环境变量,默认 **8 小时**。响应 `expires_in = JWT_EXPIRE_HOURS*3600`。
+
+**校验(每次 `/v1` 请求)**:
+- 只验 HS256 签名和 `exp`,**不再访问 Okta**。JWT 是自包含的。
+- Bearer JWT 的角色以 JWT 里的 `role` 为准;但每次都会重新检查注册白名单,并把 `user_id` 按邮箱重新解析成本实例的身份。
+  停用用户或从白名单删除会让已发出的 JWT 立刻失效(401/403)。
+- **没有 refresh 接口。** 过期后(401)只能重新拿 Okta `id_token` 再换一次,即重新 SSO。
+
+**另外两种凭据,直接当 api_key 用,不用换取、不过期**(服务端默认都关):
+
+| 路径 | 形态 | 开关 | 角色 |
+|---|---|---|---|
+| B:CEFlow App API Key | HS256 JWT,`kid`=我们的 clientId,无 `exp` | `CEFLOW_AUTH_ENABLED` 等 4 项齐全 | 封顶 `user` |
+| C:设备口令 | `<device_id>:<passphrase>` | `DEVICE_AUTH_ENABLED` + `DEVICE_SHARED_SECRET` | 固定 `user` |
+
+服务端文档称开发服 `fsm-sh01-lnx` 上 C 是开的、B 是关的(该文档写作时的状态,现在是否仍如此未核对)。
+
+**对客户端和 "7 天免登录" 的含义**:
+- 服务端要把 JWT 做成 7 天,**只需把 `JWT_EXPIRE_HOURS` 设为 168**,客户端按 `expires_in` 计时,会自动跟随。
+- 但客户端网页门禁认的是 session cookie(8 小时),不是这个 JWT;要免 SSO 仍需客户端新增逻辑(见 §2.1)。
+- 客户端取 JWT 只有一个入口:从 SecretStore(`qai.service.session` / `jwt`)读 `{"jwt","deadline"}`。
+  客户端**没有**为 B、C 路径写任何专门代码;把 B/C 凭据写进这个位置是否能用,**未验证**。
+
+### 2.1.2 E2E 登录方案(已选:复用真实 SSO 会话)
+
+做法:人工 SSO 登录一次,之后的 E2E 复用这份登录态。
+
+1. **登录一次**:用有头 Playwright(或 `launch_persistent_context` 指定固定用户目录)走一遍 SSO,
+   保存 `storage_state`。这一步后端同时把 JWT 写进 keyring。
+2. **固定 cookie 签名密钥**:E2E 后端要与登录时用同一把 `auth_session_secret`。
+   办法是同一个数据目录,或显式设 `QAI_AUTH__SESSION_SECRET`(变量名由配置规则推出,**未验证**)。否则 cookie 会被判无效。
+3. **JWT**:E2E 起的新后端进程从 keyring 读回。需要先实测:ARM64 Windows 上新进程读 keyring 偶尔失败(代码注释提到),
+   以及换了数据目录后读取是否受影响。
+4. **时效陷阱**:session cookie 是滑动续期,JWT 是固定 8 小时。登录 8 小时后,界面看起来仍是已登录,但调用 QAI Service 会 401。
+   所以涉及 QAI Service 的用例前,先检查 JWT 是否还有足够剩余时间,不够就 **skip 并写明原因**,不要当成失败。
+5. **只有少数用例真用 JWT**(聊天走 QAI Service 模型、额度显示)。它们消耗真实账号额度,默认不跑,需显式开启。
+6. **不要提交登录态**:`storage_state` 文件、用户目录、密钥文件都要加进 `.gitignore`。
+7. **登出类用例**会清掉 cookie 和 JWT,会破坏上面这份登录态。这类用例不要和其它用例共用同一份登录态。
+
+自动化的边界:这个方案**依赖人工先登录**,所以不适合无人值守的 CI。需要无人值守时,另一条路是在本地起一个测试用的
+qai-service,自己设 `JWT_SECRET` 并自签 JWT(服务端只验签名和 `exp`),这样不消耗真实额度。这条路这次没有选,先记在这里。
+
 ### 2.2 端口与启动入口
 
 | 入口 | 可指定端口 | 端口被占用时 |
