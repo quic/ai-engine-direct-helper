@@ -48,6 +48,13 @@ Set QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.48.40.260702\
 cd qai-appbuilder
 *Note: Make sure to build in the regular Windows Command Prompt — not in the 'ARM64 Native Tools Command Prompt for VS 2022' and not in the 'Power Shell' window.* <br>
      set QNN_SDK_ROOT=C:/Qualcomm/AIStack/QAIRT/2.48.40.260702/
+
+     set QAI_TOOLCHAINS=aarch64-windows-msvc (For ARM64 Windows Python) 
+     [or] 
+     set QAI_TOOLCHAINS=arm64x-windows-msvc (For AMD(X64) Windows on Snapdragon Python)
+     [or] 
+     set QAI_TOOLCHAINS=x86_64-windows-msvc  (For x86_64 Windows PC)
+
      python -m build -w
 
 # Install the extension:

@@ -10,6 +10,7 @@ This directory contains Python inference samples for audio AI models running on 
 | [Audio Generation](audio_generation/) | [pipertts_en](audio_generation/pipertts_en/) | English text → WAV speech (22050 Hz) | `audio-generation/pipertts_en/python/pipertts_en.py` |
 | [Speech Recognition](speech_recognition/) | [whisper_base_en](speech_recognition/whisper_base_en/) | WAV → English transcription (Base model) | `speech-recognition/whisper_base_en/python/whisper_base_en.py` |
 | [Speech Recognition](speech_recognition/) | [whisper_tiny_en](speech_recognition/whisper_tiny_en/) | WAV → English transcription (Tiny model, faster) | `speech-recognition/whisper_tiny_en/python/whisper_tiny_en.py` |
+| [Speaker Diarization](speaker_diarization/) | [pyannote_speaker_diarization](speaker_diarization/Pyannote-Speaker-Diarization/) *(Windows only)* | WAV → "who spoke when" speaker segments | `speaker_diarization/Pyannote-Speaker-Diarization/python/Pyannote-Speaker-Diarization.py` |
 
 ## Quick Start
 
@@ -25,10 +26,13 @@ python run_inference.py --model pipertts_en --args "--text 'Hello world.'"
 # Speech recognition
 python run_inference.py --model whisper_base_en --args "--audio_file path/to/audio.wav"
 python run_inference.py --model whisper_tiny_en --args "--audio_file path/to/audio.wav"
+
+# Speaker diarization (Windows only)
+python run_inference.py --model pyannote_speaker_diarization
 ```
 
 ## Dependencies
 
 ```
-pip install soundfile soxr gruut audio2numpy openai-whisper
+pip install soundfile soxr gruut audio2numpy openai-whisper scipy
 ```

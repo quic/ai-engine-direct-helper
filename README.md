@@ -297,7 +297,7 @@ python run_inference.py --model whisper_base_en --args "--audio_file input.wav"
 
 | Category | Description | Link |
 |----------|-------------|------|
-| **Audio** | TTS (PiperTTS), ASR (Whisper Base/Tiny), Audio Classification (YAMNet) | [audio/](samples/audio/) |
+| **Audio** | TTS (PiperTTS), ASR (Whisper Base/Tiny, Zipformer), Audio Classification (YAMNet), Speaker Diarization (Pyannote) | [audio/](samples/audio/) |
 | **Computer Vision** | Image classification, object detection, segmentation, depth estimation, pose estimation, face analysis, super-resolution, inpainting | [computerVision/](samples/computerVision/) |
 | **Generative AI** | Stable Diffusion v1.5 / v2.1 / v3.5 (text → image) | [generativeAI/](samples/generativeAI/) |
 | **Multimodal** | OCR (EasyOCR), text embedding (NomicEmbed), CLIP, Chinese→English translation (OpusMT), VLM (Qwen-VL) | [multimodal/](samples/multimodal/) |

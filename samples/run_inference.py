@@ -64,6 +64,7 @@ if PLATFORM in ("wos", "x86_win"):
         ("audio",           "whisper_tiny_en",               r"models\audio\speech_recognition\whisper_tiny_en\python\whisper_tiny_en.py",              None),
         ("audio",           "yamnet",                        r"models\audio\audio_classification\yamnet\python\yamnet.py",                              None),
         ("audio",           "zipformer",                     r"models\audio\speech_recognition\zipformer\python\zipformer.py",                          None),
+        ("audio",           "pyannote_speaker_diarization",  r"models\audio\speaker_diarization\Pyannote-Speaker-Diarization\python\Pyannote-Speaker-Diarization.py", ["Windows"]),
 
         # ── computervision ─────────────────────────────────────────────────────
         ("computervision",  "aotgan",                        r"models\computer_vision\image_editing\aotgan\python\aotgan.py",                            None),
