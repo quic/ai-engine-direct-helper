@@ -73,7 +73,7 @@ You can also run the batch file from [QAI AppBuilder Launcher](../tools/launcher
 
 ### Step 2: Install Python Dependencies
 ```
-pip install huggingface_hub==0.33.1 Pillow==10.4.0 numpy==1.26.4 torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 transformers==4.46.3 sentencepiece diffusers==0.32.2 tqdm==4.67.1 scikit-image==0.25.2 pygame==2.6.1 ftfy==6.3.1 av==15.0.0 resampy==0.4.3 soundfile==0.13.1 easyocr==1.7.2 samplerate==0.2.1 audio2numpy==0.1.2 ultralytics==8.0.193 opencv-python-headless==4.11.0.86 opencv-python==4.10.0.84 openai-whisper==20250625 openai-clip==1.0.1 gruut==2.4.0
+pip install huggingface_hub==0.33.1 Pillow==10.4.0 numpy==1.26.4 torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 transformers==4.46.3 sentencepiece diffusers==0.32.2 tqdm==4.67.1 scikit-image==0.25.2 pygame==2.6.1 ftfy==6.3.1 av==15.0.0 resampy==0.4.3 soundfile==0.13.1 easyocr==1.7.2 samplerate==0.2.1 audio2numpy==0.1.2 ultralytics==8.0.193 opencv-python-headless==4.11.0.86 opencv-python==4.10.0.84 openai-whisper==20250625 openai-clip==1.0.1 gruut==2.4.0 soxr scipy
 ```
 
 ### Step 3: Set Up QAI AppBuilder and QNN Libraries
@@ -100,6 +100,7 @@ See [models/README.md](models/README.md) for the full model catalog.
 | [whisper_tiny_en](models/audio/speech_recognition/whisper_tiny_en/) | `models\audio\speech_recognition\whisper_tiny_en\python\whisper_tiny_en.py` | English ASR: WAV → text. Whisper Tiny encoder-decoder, 4 layers, faster than Base. |
 | [zipformer](models/audio/speech_recognition/zipformer/) | `models\audio\speech_recognition\zipformer\python\zipformer.py` | Chinese ASR: WAV → text. Zipformer streaming speech recognition. |
 | [yamnet](models/audio/audio_classification/yamnet/) | `models\audio\audio_classification\yamnet\python\yamnet.py` | Audio event classification: WAV → top-5 of 521 AudioSet classes. |
+| [pyannote_speaker_diarization](models/audio/speaker_diarization/Pyannote-Speaker-Diarization/) *(Windows only)* | `models\audio\speaker_diarization\Pyannote-Speaker-Diarization\python\Pyannote-Speaker-Diarization.py` | Speaker diarization: WAV → "who spoke when" segments. Segmentation + WeSpeaker embedding + clustering. |
 
 ### 1.2 Computer Vision (`models/computer_vision/`)
 

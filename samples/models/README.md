@@ -1,6 +1,6 @@
 ﻿# Models
 
-This directory contains Python inference samples for 29 AI models organized by domain. Each model runs on the Snapdragon NPU (HTP) via QAI AppBuilder and follows the `Init → Inference → Release` pattern.
+This directory contains Python inference samples for 30 AI models organized by domain. Each model runs on the Snapdragon NPU (HTP) via QAI AppBuilder and follows the `Init → Inference → Release` pattern.
 
 ## Directory Structure
 
@@ -9,6 +9,7 @@ models/
 ├── audio/                    # Audio models
 │   ├── audio-classification/ # Sound event classification
 │   ├── audio-generation/     # Text-to-speech
+│   ├── speaker-diarization/  # "Who spoke when" segmentation
 │   └── speech-recognition/   # Automatic speech recognition
 ├── computer-vision/          # Computer vision models
 │   ├── depth-estimation/     # Monocular depth estimation
@@ -48,6 +49,7 @@ Each model directory has the following structure:
 | Audio Generation | [pipertts_en](audio/audio_generation/pipertts_en/) | Text → WAV (22050 Hz, English TTS) | [Link](https://aihub.qualcomm.com/compute/models/pipertts_en) |
 | Speech Recognition | [whisper_base_en](audio/speech_recognition/whisper_base_en/) | WAV → English text (Base, 6 layers) | [Link](https://aihub.qualcomm.com/compute/models/whisper_base_en) |
 | Speech Recognition | [whisper_tiny_en](audio/speech_recognition/whisper_tiny_en/) | WAV → English text (Tiny, 4 layers, faster) | [Link](https://aihub.qualcomm.com/compute/models/whisper_tiny_en) |
+| Speaker Diarization | [pyannote_speaker_diarization](audio/speaker_diarization/Pyannote-Speaker-Diarization/) *(Windows only)* | WAV → "who spoke when" speaker segments | [Link](https://aihub.qualcomm.com/compute/models/pyannote_speaker_diarization) |
 
 ### Computer Vision
 
