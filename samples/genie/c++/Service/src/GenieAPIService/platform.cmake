@@ -383,6 +383,7 @@ if (MSVC)
                     -DGGML_HEXAGON=ON
                     -DHEXAGON_SDK_ROOT=${HEXAGON_SDK_ROOT_CMAKE}
                     -DGGML_HEXAGON_HTP_CERT=${GGML_HEXAGON_HTP_CERT_CMAKE}
+                    -DPREBUILT_LIB_DIR=windows_aarch64
             )
             set(LLAMACPP_HEXAGON_TARGETS
                     --target ggml-hexagon
