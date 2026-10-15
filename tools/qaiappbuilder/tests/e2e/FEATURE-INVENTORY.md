@@ -334,8 +334,8 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 | SKILL-01 | 技能列表/启用/禁用;页面 `/skills` | L1/L2 | UI 需先补 testid | P1 |
 | SKILL-02 | 内置技能可加载(browser-automation、weather、read-arxiv-paper 等) | L1 | 部分 NET | P2 |
 | CODE-01 | AI Coding(Claude Code / OpenCode)面板:配置、会话、权限弹窗 | L2 | 外部 CLI | P2 |
-| SET-01 | 设置页:读写偏好 `user_prefs`、语言切换(中/英) | L1/L2 | - | P0 |
-| SET-02 | 全局代理配置,下载走代理 | L1 | - | P1 |
+| SET-01 | 设置页:读写偏好 `user_prefs`(`/api/preferences`、`/api/forge-config`)、语言(三语目录与归一化) | L1/L2 | - | P0 ✅ L1 已实现(`test_settings.py`);语言切换本身是前端行为,后端只有消息目录,L2 未做 |
+| SET-02 | 全局代理配置,下载走代理 | L1 | - | P1 ✅ 配置面已实现(`test_settings.py`,不写 keyring);"下载真正走代理"未验证 |
 | SET-03 | TLS 校验开关热生效 | L1 | - | P2 |
 | SRCH-01 | 搜索引擎配置 `/api/search/engines`;浏览器引擎 | L1 | NET | P2 |
 | REM-01 | 远程部署(`/api/remote-deploy`) | L1 | 开发板 | P2(多半不做) |
