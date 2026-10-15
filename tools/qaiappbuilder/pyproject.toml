@@ -497,6 +497,10 @@ markers = [
   "unit: unit-level tests (no I/O, no network, no fs writes)",
   "integration: integration tests (DB, FS, FastAPI TestClient)",
   "e2e: end-to-end tests (browser, full stack)",
+  "e2e_real_jwt: E2E tests that need the REAL QAI Service JWT from the OS keyring and consume real account quota. Skipped unless QAI_E2E_REAL_JWT=1; a missing/expired JWT is then a FAILURE, not a skip.",
+  "ui: E2E tests that drive a browser (Playwright) against the built frontend/dist",
+  "install: E2E tests that run Setup.bat / Build.bat / Start.bat (slow, network)",
+
   "contract: contract tests (port double-adapter parity)",
   # Platform / environment selectors
   "release: release packaging / strip verification",
@@ -504,6 +508,11 @@ markers = [
   "windows_only: only on Windows",
   "linux_only: only on Linux",
   "darwin_only: only on macOS / Darwin",
+  # E2E platform selectors: a test carrying one of these runs ONLY on that platform
+  # (enforced in tests/e2e/conftest.py). No marker = runs on every platform.
+  "win_arm64: E2E test valid only on Windows ARM64",
+  "win_x64: E2E test valid only on Windows x64",
+  "linux_arm64: E2E test valid only on Linux ARM64",
   "qairt: requires QAIRT toolchain (skipped without it)",
   "network: tests requiring real network (skipped by default)",
   "subprocess: spawns a real child process (best-effort, may be slow / OS-bound)",
