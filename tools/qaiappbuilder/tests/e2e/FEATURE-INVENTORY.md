@@ -100,7 +100,8 @@
 1. **登录一次**:用有头 Playwright(或 `launch_persistent_context` 指定固定用户目录)走一遍 SSO,
    保存 `storage_state`。这一步后端同时把 JWT 写进 keyring。
 2. **固定 cookie 签名密钥**:E2E 后端要与登录时用同一把 `auth_session_secret`。
-   办法是同一个数据目录,或显式设 `QAI_AUTH__SESSION_SECRET`(变量名由配置规则推出,**未验证**)。否则 cookie 会被判无效。
+   办法是同一个数据目录,或显式设 `QAI_AUTH__SESSION_SECRET`。**该变量名已实测生效**
+   (`Settings()` 加载后 `auth.session_secret` 取到了环境变量的值),否则 cookie 会被判无效。
 3. **JWT**:E2E 起的新后端进程从 keyring 读回。需要先实测:ARM64 Windows 上新进程读 keyring 偶尔失败(代码注释提到),
    以及换了数据目录后读取是否受影响。
 4. **时效陷阱**:session cookie 是滑动续期,JWT 是固定 8 小时。登录 8 小时后,界面看起来仍是已登录,但调用 QAI Service 会 401。
@@ -111,6 +112,19 @@
 
 自动化的边界:这个方案**依赖人工先登录**,所以不适合无人值守的 CI。需要无人值守时,另一条路是在本地起一个测试用的
 qai-service,自己设 `JWT_SECRET` 并自签 JWT(服务端只验签名和 `exp`),这样不消耗真实额度。这条路这次没有选,先记在这里。
+
+### 2.1.3 配置环境变量(已实测)
+
+用 `Settings()` 加载验证过,以下变量都能覆盖对应字段(`env_prefix=QAI_`,嵌套分隔符 `__`):
+
+| 变量 | 对应字段 | 实测结果 |
+|---|---|---|
+| `QAI_AUTH__SESSION_SECRET` | `auth.session_secret` | 生效 |
+| `QAI_AUTH__ENABLED` | `auth.enabled` | 生效(`false` 可关登录门) |
+| `QAI_DATA__DATA_DIR` | `data.data_dir` | 生效 |
+
+注意:只验证了配置对象能读到值,**没有**验证整个后端用这个数据目录能否正常启动并隔离所有数据
+(密钥文件、数据库、keyring 条目是否都落在该目录下,仍在 §6 第 2 项)。
 
 ### 2.2 端口与启动入口
 
@@ -362,7 +376,9 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 6. **CI**:`ci.yml` 对 `tools/**` 是 `paths-ignore`;E2E 要自动跑需另加 workflow,
    且 GitHub 托管机器无 NPU,L3 只能在自托管 Snapdragon 机器上跑。
 7. **平台 marker**:怎么在 pytest 里表达"适用平台"(见 §2.3)。
-8. **JWT 7 天免登录**:等该优化落地后再补用例(见 §2.1),现在不测。
+8. **JWT 7 天免登录**:不在当前项目里(负责人确认之前说的 7 天 JWT 不在这个仓库;我已查 `origin/main`
+   及全部远端分支,认证相关文件无差异)。**E2E 按当前代码的 8 小时 session / 8 小时 JWT 设计。**
+   等该优化真正落地再补用例(见 §2.1)。
 
 ## 7. 明确不自动化的内容
 
