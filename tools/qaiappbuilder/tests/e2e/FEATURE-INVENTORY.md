@@ -1,0 +1,234 @@
+# E2E 功能清单(草稿,待评审)
+
+> 状态:**草稿**。由代码梳理得出,**尚未与产品/开发确认**,优先级是建议值。
+> 来源:`interfaces/http/routes/**`、`frontend/src/router/routes.ts`、
+> `frontend/src/components/**` 的 `data-testid`、`factory/chat_features/**`、`QUICK-START.md`。
+> 本文档只列"要测什么",不含用例设计和代码。
+
+## 1. 分层与标记
+
+| 层 | 含义 | 运行环境 | pytest marker |
+|---|---|---|---|
+| **L1 API** | 拉起真实后端子进程,用 HTTP/SSE/WS 调用 | 任意 Windows/Linux,不要 NPU | `e2e` |
+| **L2 UI** | Playwright 驱动浏览器,打的是 `frontend/dist` 编译产物 | 需 Chromium | `e2e` + `ui` |
+| **L3 NPU** | 需要真实 NPU / `qai_appbuilder` / context bin | Snapdragon X 真机 | `e2e` + `npu` |
+| **L4 Install** | 跑 `Setup.bat`/`Build.bat`/`Start.bat` | 慢、依赖网络,建议夜间 | `e2e` + `install` |
+
+依赖标记:`NET` 需联网;`NPU` 需真实 NPU;`QAIRT` 需 QAIRT SDK + x64 转换 venv;
+`LLM` 需可用的模型服务/云端模型(账号、额度);`AUTH` 受 Okta 登录门影响。
+
+> **marker 注册**:`pyproject.toml` 里目前只有 `e2e`、`subprocess`、`qairt`、`network`、`slow`,
+> **没有** `ui`、`install`、`npu`。项目开了 `--strict-markers`,直接使用未注册的 marker 会报错。
+> (`tests/system/model_builder/conftest.py` 里的 `npu` 是该目录自己注册的,不是全局的。)
+> 落地时需要在 `pyproject.toml` 注册新增 marker。
+
+优先级:**P0** 核心主流程,必须有;**P1** 重要;**P2** 有则更好。
+
+## 2. 前提(开工前要先验证,见 §6)
+
+- 后端可用 `python -m apps.api --port N` 启动,配置可用 `QAI_` 前缀环境变量覆盖。
+- Windows 默认开启 Okta 登录门。E2E 必须能关掉(`settings.auth.enabled`),
+  具体变量名**待验证**。
+- 后端直接托管 `frontend/dist`(SPA catch-all);dist 缺失时返回 503 维护页。
+  因此 UI 测试打的是**编译后的产物**,不需要 vite dev server。
+- 需要独立端口和独立数据目录,避免污染本机已运行的实例(例如 8989)。**数据目录的覆盖方式待确认。**
+
+## 3. 功能清单
+
+### 3.1 系统与启动(后端 `/api/system/*`)
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| SYS-01 | 后端启动成功,`/api/system/health` 健康 | L1 | - | P0 |
+| SYS-02 | `build-info` / `edition` / `platform` / `python-info` 返回合理 | L1 | - | P1 |
+| SYS-03 | `features`、`config/summary` 反映实际启用的功能 | L1 | - | P2 |
+| SYS-04 | `qairt-versions` 列出已装 SDK;QAIRT 热切换(`/api/system` qairt-switch) | L1 | QAIRT | P2 |
+| SYS-05 | 启动写 `data/runtime/server.endpoint.json`,内容与实际端口一致 | L1 | - | P1 |
+| SYS-06 | SPA:`/` 返回 index.html,未知路径回落 SPA,`/assets/*` 正确 MIME | L1 | dist | P0 |
+| SYS-07 | `dist` 缺失时返回 503 维护页(不崩溃) | L1 | - | P2 |
+| SYS-08 | 退出码 75 触发 supervisor 重启 | L1 | - | P2 |
+| SYS-09 | Start.bat 在端口被占用时回退到备用端口(8989 → 28688) | L4 | - | P2 |
+
+### 3.2 登录与访问控制
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| AUTH-01 | 启用登录门时,未登录:浏览器请求 303 到 `/auth/login`,API 请求 401 | L1 | AUTH | P1 |
+| AUTH-02 | 公共路径(`/api/system/health`、build-info、edition、`/auth/*`、`/callback`、OpenAPI 文档、SPA 静态)免登录 | L1 | AUTH | P1 |
+| AUTH-03 | 关闭登录门后全部可访问 | L1 | - | P0 |
+| AUTH-04 | 真实 Okta 登录流程 | - | AUTH, NET | **不自动化**(需真实账号/SSO) |
+| SEC-01 | CSRF:缺少 cookie/头的写请求被拒,携带后通过 | L1 | - | P1 |
+
+### 3.3 聊天(`/chat`,`/api/chat/*`,`/v1/*`)
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| CHAT-01 | 创建/列出/重命名/删除会话(REST) | L1 | - | P0 |
+| CHAT-02 | 发消息并收到流式回复(SSE / WS) | L1 | LLM | P0 |
+| CHAT-03 | 多标签会话(`/chat/:tabId`)切换与深链 | L2 | - | P1 |
+| CHAT-04 | 会话搜索(conversations search) | L1 | - | P1 |
+| CHAT-05 | 中断生成(interrupt)、权限审批弹窗 | L1/L2 | LLM | P1 |
+| CHAT-06 | OpenAI 兼容接口 `/v1/*`(chat completions、models) | L1 | LLM | P1 |
+| CHAT-07 | 附件/图片上传(`/api/uploads`)并在消息中引用 | L1 | - | P1 |
+| CHAT-08 | MCP 配置(`/api/chat/mcp`)增删与列出 | L1 | - | P2 |
+| CHAT-09 | 聊天模式切换(chat mode)、工具模式(composer 工具栏) | L2 | - | P1 |
+| CHAT-10 | 无 LLM 可用时给出明确提示而不是挂起 | L1/L2 | - | P1 |
+
+> 说明:聊天核心功能依赖模型服务。无账号/额度的环境下,CHAT-02/05/06 应使用**可控的替身模型服务**,
+> 或标记为需要凭据的 opt-in 用例。**替身怎么接入尚未设计。**
+
+### 3.4 App Builder(模型运行/应用生成)
+
+内置 Pack:`whisper-base`(ASR)、`zipformer-zh`(ASR)、`melotts-zh`(TTS)、`real-esrgan-x4plus`(超分)。
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| AB-01 | 列出模型 `/models`,详情 `/models/{id}`,Pack manifest 合法 | L1 | - | P0 |
+| AB-02 | 依赖状态 `deps-status`、`deps-status/packs` | L1 | - | P1 |
+| AB-03 | 权重自动下载:缺权重时首次使用触发下载,失败返回 `WEIGHTS_NOT_INSTALLED` 而不崩溃 | L1 | NET | P1 |
+| AB-04 | 运行记录:创建 run、`/runs/{id}`、SSE `stream`、取消、历史 | L1 | NPU | P0 |
+| AB-05 | real-esrgan 推理(图片 → 超分图片,产物可下载) | L3 | NPU | P0 |
+| AB-06 | whisper / zipformer 语音识别(音频 → 文本) | L3 | NPU, 权重 | P0 |
+| AB-07 | melotts-zh 文本转语音(文本 → 音频) | L3 | NPU, 权重 | P1 |
+| AB-08 | 批量运行 `/batch` | L3 | NPU | P2 |
+| AB-09 | 语音偏好 `voice-preference` 读写;启动预热(默认 Zipformer) | L1 | - | P1 |
+| AB-10 | 驻留 worker 状态 `worker/status`、缓存 `cache/status`、清缓存 | L1 | - | P1 |
+| AB-11 | 应用(App)生成/运行/日志/打包:`/apps/*`、package 进度 | L1 | - | P1 |
+| AB-12 | 分享链接 `/share/{token}` | L1 | - | P2 |
+| AB-13 | 导入:`import/dry-run`、scan-bins、rollback | L1 | - | P1 |
+| AB-14 | 无 NPU 的机器上优雅降级(不崩溃,明确报错) | L1 | - | P1 |
+
+### 3.5 Model Builder(模型转换)
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| MB-01 | 工作区初始化、plan/REPORT 解析、精度归一化、任务分类 | 已有 system test | - | 已覆盖 |
+| MB-02 | `POST /api/app-builder/import/auto-export` 及 `/status` | 已有 system test(最小 app) | - | 已覆盖 |
+| MB-03 | auto-export 在**完整后端**上的行为(含 DB、DI 装配) | L1 | - | P1 |
+| MB-04 | ONNX → QNN 转换 → context binary 全流程 | L3 | QAIRT, NPU | P1(夜间) |
+| MB-05 | 量化(INT8/W8A16)、敏感度分析 | L3 | QAIRT | P2 |
+| MB-06 | CLI:`qai pack export/validate`、`qai build` | L1 | - | P1 |
+| MB-07 | 转换环境就绪检查:`qairt_env.json` 与 SDK、x64 venv 一致 | L1 | QAIRT | P1 |
+
+### 3.6 Model Hub / 模型目录 / 下载
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| MH-01 | 模型目录 `entries` 列表/详情 | L1 | - | P1 |
+| MH-02 | 下载任务:创建、`progress`、取消、校验(`verify`) | L1 | NET | P1 |
+| MH-03 | 云端模型/Provider 配置读写(`providers`、`cloud-models`) | L1 | - | P1 |
+| MH-04 | 下载页 `/downloads` 展示任务与进度 | L2 | 需先补 testid | P1 |
+| MH-05 | aria2c 管理(`/api/aria2c`) | L1 | - | P2 |
+
+### 3.7 本地模型服务(Service,`/api/service/*`、`/api/versions/*`)
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| SVC-01 | 服务状态/启动/停止/探测(`status`、`start`、`stop`、`probe`) | L3 | NPU, 服务二进制 | P1 |
+| SVC-02 | 服务日志(SSE)、清日志 | L1 | - | P1 |
+| SVC-03 | 服务配置读写 | L1 | - | P1 |
+| SVC-04 | 版本管理:列出/下载/安装/删除(`/api/versions`) | L1 | NET | P2 |
+| SVC-05 | 服务页 `/service` | L2 | 需先补 testid | P1 |
+
+### 3.8 安全与权限(`/api/security/*`,`/security`)
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| SECU-01 | 路径白名单/授权(paths、grants)增删 | L1 | - | P0 |
+| SECU-02 | 危险命令策略(dangerous commands)、自动审批(auto-approve) | L1 | - | P0 |
+| SECU-03 | 权限请求/审批流(permission) | L1/L2 | - | P0 |
+| SECU-04 | 运行时配置、Skills 安全设置 | L1 | - | P1 |
+| SECU-05 | 安全页 `/security` | L2 | - | P1 |
+
+### 3.9 通道、定时任务、技能、AI Coding、其他
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| CH-01 | 通道(微信/飞书等)配置读写;页面 `/channels` | L1/L2 | - | P2 |
+| CH-02 | 通道真实收发 | - | 外部账号 | **不自动化** |
+| TASK-01 | 定时任务 CRUD、`catalog`、执行记录 | L1 | - | P1 |
+| SKILL-01 | 技能列表/启用/禁用;页面 `/skills` | L1/L2 | UI 需先补 testid | P1 |
+| SKILL-02 | 内置技能可加载(browser-automation、weather、read-arxiv-paper 等) | L1 | 部分 NET | P2 |
+| CODE-01 | AI Coding(Claude Code / OpenCode)面板:配置、会话、权限弹窗 | L2 | 外部 CLI | P2 |
+| SET-01 | 设置页:读写偏好 `user_prefs`、语言切换(中/英) | L1/L2 | - | P0 |
+| SET-02 | 全局代理配置,下载走代理 | L1 | - | P1 |
+| SET-03 | TLS 校验开关热生效 | L1 | - | P2 |
+| SRCH-01 | 搜索引擎配置 `/api/search/engines`;浏览器引擎 | L1 | NET | P2 |
+| REM-01 | 远程部署(`/api/remote-deploy`) | L1 | 开发板 | P2(多半不做) |
+| GALL-01 | Gallery 提交 | L1 | NET | P2 |
+| EVT-01 | 事件流 `/events` | L1 | - | P1 |
+| GO-01 | GoMaster / MB-Pro 会话 | - | 内部服务 | **内部,不纳入** |
+
+### 3.10 安装、构建、启动脚本
+
+| ID | 功能 | 层 | 依赖 | 优先级 |
+|---|---|---|---|---|
+| INST-01 | `Setup.bat` 默认安装:创建 venv,装依赖,初始化 `data/` | L4 | NET | P1(夜间) |
+| INST-02 | `Setup.bat --builder` 创建 x64 3.10 venv(回归:ARM64 上不应找 aarch64) | L4 | NET | P1 |
+| INST-03 | `--builder` 步骤失败时中止并给出 `[ERROR]` | L4 | - | P1 |
+| INST-04 | `Setup.bat --help`、未知参数的处理 | L4 | - | P2 |
+| INST-05 | `Build.bat` 产出 `frontend/dist` | L4 | Node | P1 |
+| INST-06 | `Start.bat` 启动并写 endpoint 文件;`--port` 仅接受 8989/28688 | L4 | - | P1 |
+| INST-07 | `Uninstall.bat` 不删 `data/` | L4 | - | P2 |
+| INST-08 | `qai.bat --help` / `qai config provider list` | L1 | - | P1 |
+
+## 4. UI(L2)的范围与维护成本
+
+编译产物可直接测:后端托管 `frontend/dist`,Playwright 打的就是编译后的页面。
+但需要保证 dist 与源码同步(先 `Build.bat`)。
+
+**侧边栏共 7 个视图**:chat、channels、skills、downloads、service、security、settings。
+(App Builder / Model Builder / 代码 / 翻译 / PPT 不是独立页面,在聊天输入框的工具栏里。)
+
+**`data-testid` 现状**(静态扫描,未在运行页面上验证):
+
+| 区域 | 行数 |
+|---|---|
+| components/chat | 647 |
+| components/security | 68 |
+| components/channels | 66 |
+| components/ai-coding | 55 |
+| components/layout | 47 |
+| components/app-builder | 36 |
+| views/* | 27(Chat 5、ClaudeCode 10、OpenCode 8、Channels 4) |
+| components/downloads、service、common、pipeline | **0** |
+| **合计** | **947 行 / 105 个文件**(其中 182 行是动态 id) |
+
+观察:
+- 聊天、安全、通道、布局、AI Coding 已有较多标识,适合写 UI 用例。
+- `DownloadsView`、`ServiceView`、`SecurityView`、`SettingsView`、`SkillsView` 这 5 个视图文件本身都是 0 个 testid。
+  其中 Security 的子组件有 68 个;Settings 复用 `components/chat` 下的面板(如 `AgentSettingsPanel` 10 个、
+  `SearchSettingsPanel` 6 个,但 `ChatHooksSettings` 为 0);**Downloads(10 个组件)和 Service(6 个组件)整体为 0**。
+  要测 Downloads / Service / Skills,需要**先在前端补 `data-testid`**(会改前端代码)。
+- 动态 id(如 `coding-panel-${kind}`)的拼接规则要写进页面对象,变更时需同步。
+- 以上都是静态文本扫描:不代表这些元素在页面上真的可见、可点,也没确认 id 是否唯一。
+
+**WebUI 改动的影响**:按 `data-testid` 定位的用例对样式和文案改动不敏感,但改 testid 命名、
+删除/合并组件、改交互步骤仍需同步修改用例。建议:
+1. UI 层只保留 P0/P1 的主流程(冒烟级),业务细节放 L1。
+2. 用页面对象封装定位和步骤,界面变动只改封装层。
+3. 约定:改动带 `data-testid` 的元素时,PR 需说明或更新 E2E。
+
+## 5. 建议的首批范围(待评审)
+
+- **L1 先行**:SYS-01/05/06、AUTH-03、CHAT-01、AB-01/09/10/14、SECU-01/02、SET-01、TASK-01、MB-03/06。
+  这批不需要 NPU、不需要联网,价值/成本比最高。
+- **L2 小而精**:页面加载与 7 个视图可进入、聊天发消息(用替身模型)、安全页授权、设置页语言切换。
+- **L3**:real-esrgan 一条推理(AB-05)、zipformer 一条(AB-06),在本机 X Elite 上 opt-in。
+- **L4**:先做 INST-02/03(正好覆盖本次修复的回归),其余夜间。
+
+## 6. 开工前必须验证的不确定项
+
+1. **关登录门**:`QAI_AUTH__ENABLED=false` 是否生效(变量名由配置规则推得,未验证)。
+2. **端口**:`python -m apps.api --port N` 是否允许 8989/28688 以外的端口。
+3. **数据隔离**:怎么让 E2E 使用临时数据目录(`data_paths.root` 的来源未找到)。
+4. **启动预热**:启动时的语音预热会不会触发权重下载;测试中如何关闭。
+5. **替身 LLM**:聊天流式回复在没有账号时如何稳定测试。
+6. **dist 与源码同步**:UI 用例怎么确保测的是最新编译产物。
+7. **CI**:`ci.yml` 对 `tools/**` 是 `paths-ignore`;E2E 要自动跑需另加 workflow,
+   且 GitHub 托管机器无 NPU,L3 只能在自托管 Snapdragon 机器上跑。
+
+## 7. 明确不自动化的内容
+
+真实 Okta 登录、微信/飞书真实收发、内部 GoMaster/MB-Pro 服务、远程开发板部署、
+需要付费账号的云端模型调用。
