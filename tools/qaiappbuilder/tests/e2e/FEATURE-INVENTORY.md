@@ -36,7 +36,7 @@
   端口被占用就**直接报错退出**,不回退到备用端口。实现要点见 §2.2。
 - 后端直接托管 `frontend/dist`(SPA catch-all);dist 缺失时返回 503 维护页。
   因此 UI 测试打的是**编译后的产物**,不需要 vite dev server。
-- 数据目录:仍需独立或可清理的数据目录(见 §6 第 2 项)。
+- 数据目录:可用 `QAI_DATA__DATA_DIR` 隔离数据文件;keyring 不隔离(见 §2.1.4)。
 
 ### 2.1 登录/令牌现状(背景,只读代码得出)
 
@@ -102,8 +102,11 @@
 2. **固定 cookie 签名密钥**:E2E 后端要与登录时用同一把 `auth_session_secret`。
    办法是同一个数据目录,或显式设 `QAI_AUTH__SESSION_SECRET`。**该变量名已实测生效**
    (`Settings()` 加载后 `auth.session_secret` 取到了环境变量的值),否则 cookie 会被判无效。
-3. **JWT**:E2E 起的新后端进程从 keyring 读回。需要先实测:ARM64 Windows 上新进程读 keyring 偶尔失败(代码注释提到),
-   以及换了数据目录后读取是否受影响。
+3. **JWT**:E2E 起的新后端进程从 keyring 读回。**读不到就判测试失败**(负责人已定),不要 skip、不要静默降级。
+   实测(本机 ARM64 Windows,`WinVaultKeyring`):用全新进程 + 全新临时数据目录构造 `SecretStore`,
+   `get_service_jwt()` 读回了真实 JWT(长度 277),即**当前这台机器上能读到**。偶发的读取失败(代码注释提到 ARM64 上有过)没有复现。
+   注意"读到"是指"存在且未过期":JWT 已过期(8 小时)时同样读不到,所以 E2E 前先做一次"JWT 可读"的前置检查,
+   失败时报明确原因(无记录 / 已过期 / keyring 异常),而不是笼统的"测试失败"。
 4. **时效陷阱**:session cookie 是滑动续期,JWT 是固定 8 小时。登录 8 小时后,界面看起来仍是已登录,但调用 QAI Service 会 401。
    所以涉及 QAI Service 的用例前,先检查 JWT 是否还有足够剩余时间,不够就 **skip 并写明原因**,不要当成失败。
 5. **只有少数用例真用 JWT**(聊天走 QAI Service 模型、额度显示)。它们消耗真实账号额度,默认不跑,需显式开启。
@@ -126,18 +129,42 @@ qai-service,自己设 `JWT_SECRET` 并自签 JWT(服务端只验签名和 `exp`)
 注意:只验证了配置对象能读到值,**没有**验证整个后端用这个数据目录能否正常启动并隔离所有数据
 (密钥文件、数据库、keyring 条目是否都落在该目录下,仍在 §6 第 2 项)。
 
+### 2.1.4 数据目录隔离(已实测)
+
+用 `QAI_DATA__DATA_DIR=C:\Temp\qai-e2e-data`、端口 18989 真起了一次后端,并对比启动前后的文件快照
+(`%LOCALAPPDATA%\QAIModelBuilder`、`%TEMP%\QAIModelBuilder`、`~\.qai`、仓库 `data\`、仓库 `.qai\`,共约 3.8 万个文件):
+
+- **后端能用临时数据目录正常启动**:`/api/system/health` 返回 200,2 秒内就绪;开启登录门后未登录请求返回 401。
+- **文件隔离成立**:被监控的上述位置**0 个新增、0 个修改**。启动时写入临时目录的只有
+  `db\qai.db`、`runtime\server.endpoint.json`、`secrets\_master.key`,数据库迁移也在这个目录里完成。
+- **keyring 不隔离**:Windows 凭据管理器按 `service/key` 存取,不带数据目录。用全新临时数据目录构造的 `SecretStore`
+  仍然读到了你日常的真实 JWT(`qai.service.session/jwt`)。含义:
+  - E2E 能复用你的真实登录态(这正是已选方案要的),不需要重新登录;
+  - 但 E2E 里**写入或删除** keyring 的用例(登出、改密钥、改 API Key)会直接改到你的真实凭据,需要避免;
+  - 文件密钥(`_master.key`)和 keyring 条目的分裂:临时目录里新生成的主密钥解不开旧目录里用旧主密钥加密的文件密钥,
+    只有存 keyring 的条目才跨目录可见。
+- 没覆盖到的位置:`%LOCALAPPDATA%\QAIModelBuilder\envs`(虚拟环境,只读使用)、`%APPDATA%`、`~\.config`、浏览器缓存、
+  以及 AI Coding 相关的 `edit_trash` 等。这些路径在代码里是写死的(`LOCALAPPDATA` / `Path.home()`),本次启动没触发,
+  但跑到相应功能时可能写到数据目录之外。
+
+结论:**数据文件可以隔离**,keyring 不行。对"不能隔离也没关系"的前提,这个程度已足够,但要把 keyring 写操作列入禁区。
+
+启动后端时必须自己设 `PYTHONPATH=<repo>\src;<repo>`:这个 venv 里没有安装 `qai` 包,直接 `python -m apps.api` 会
+`ModuleNotFoundError: No module named 'qai'`。`Start.bat` 的启动路径不同,E2E 用直连入口时要补上这一项。
+
 ### 2.2 端口与启动入口
 
 | 入口 | 可指定端口 | 端口被占用时 |
 |---|---|---|
-| `python -m apps.api --port N` | 任意端口 | 由 uvicorn 绑定;失败时的具体报错**未实测** |
+| `python -m apps.api --port N` | 任意端口 | **已实测**:8989 被占用时进程自行退出,**退出码 1**,日志含 `[Errno 10048] error while attempting to bind on address ('127.0.0.1', 8989)`;用户实例不受影响。但退出前已完成大半启动流程(连库、跑迁移、装钩子),不是启动最早期就失败 |
 | `python -m apps.cli.serve --port N`(supervisor) | 任意端口 | 显式 `--port` 时只试这一个端口,**不回退**;被占用或落入 Windows 保留范围就抛 `RuntimeError`,提示后以退出码 **1** 结束 |
 | `Start.bat --port N` | **仅 8989 或 28688**,其它值直接报错 | 同 supervisor:显式端口不回退 |
 | `Start.bat`(不带 `--port`) | - | 从 `ports.json` 的 `fallbacks` `[8989, 28688]` 依次试,**会回退** |
 
 对 E2E 的含义:
 - 用 `--port 8989` 启动即可满足"被占用就报错退出"。supervisor 路径(`apps.cli.serve` 或 `Start.bat --port 8989`)
-  行为已从代码确认;`python -m apps.api` 直连路径的占用报错没有读到明确处理,**需实测**。
+  行为已从代码确认;`python -m apps.api` 直连路径已实测(见上表),两条路径都是被占用即退出码 1。
+- 直连路径是在绑定端口**之前**就连库、跑迁移,所以被占用时已经对数据目录做过写入。想避免,用例应先检查 8989 是否空闲(见下)。
 - 用例前置检查建议:先确认 8989 空闲,否则直接 fail 并给出占用进程信息,避免误杀用户实例。
 - 本机当前确实有实例占着 8989(调研时看到 `python -m apps.api --port 8989`),
   跑 E2E 前必须先停掉。
@@ -363,13 +390,14 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 
 已解决/已定:
 - ~~关登录门~~:登录问题已解决,不再作为风险。
-- ~~端口~~:E2E 固定用 8989,被占用就报错退出(见 §2.2)。
+- ~~端口~~:E2E 固定用 8989,被占用就报错退出(见 §2.2)。直连入口的占用报错已实测:退出码 1。
+- ~~数据隔离~~:数据文件可隔离,keyring 不隔离(见 §2.1.4);"不能隔离也没关系"的前提下已满足。
+- ~~JWT 读不到~~:按负责人决定,读不到即判测试失败(见 §2.1.2 第 3 点)。
 
 仍待验证:
-1. **直连入口的占用报错**:`python -m apps.api --port 8989` 在 8989 被占用时的实际退出码和提示。
-   (supervisor 路径已从代码确认。)
-2. **数据隔离**:怎么让 E2E 使用临时或可清理的数据目录(`data_paths.root` 的来源未找到)。
-   备选:对临时目录跑 `scripts.init.install --apply`(Setup 的 Step 4f 就是这样建库)。
+1. **keyring 写操作的防护**:E2E 中哪些用例会写或删 keyring(登出、API Key、凭据管理),如何避免动到真实凭据。
+2. **数据目录之外的写入**:AI Coding 的 `edit_trash`、浏览器缓存、`~\.config` 等写死路径(见 §2.1.4),
+   跑到相应功能时是否会写出数据目录,需在对应用例上实测。
 3. **启动预热**:启动时的语音预热会不会触发权重下载;测试中如何关闭。
 4. **替身 LLM**:聊天流式回复在没有账号时如何稳定测试。
 5. **dist 与源码同步**:UI 用例怎么确保测的是最新编译产物。
