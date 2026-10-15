@@ -1262,6 +1262,7 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     llama_speculative::DraftModelConfig draft_config;
     int configured_n_batch = 0;
     int configured_n_ubatch = 0;
+    std::vector<std::string> configured_extra_args;
     try
     {
         const std::string &config_path = model_config_.i_model_config_.get_config_path();
@@ -1281,6 +1282,16 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
                 if (llama_block.contains("n_ubatch") && llama_block["n_ubatch"].is_number_integer())
                 {
                     configured_n_ubatch = llama_block["n_ubatch"].get<int>();
+                }
+                if (llama_block.contains("extra_args") && llama_block["extra_args"].is_array())
+                {
+                    for (const auto &arg: llama_block["extra_args"])
+                    {
+                        if (arg.is_string())
+                        {
+                            configured_extra_args.push_back(arg.get<std::string>());
+                        }
+                    }
                 }
             }
         }
@@ -1493,6 +1504,10 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             "--no-repack",
             "--no-host",
         });
+    }
+    if (device != "cpu")
+    {
+        arg_strings.insert(arg_strings.end(), configured_extra_args.begin(), configured_extra_args.end());
     }
     // 投机解码分支（非 CPU）不显式传 -ngl：llama-completion.exe 实测确认，一旦显式给出 -ngl（含
     // 99），fork 的 common/fit.cpp 会直接放弃显存拟合、强行按请求值全量分配，而本机 OpenCL 设备
