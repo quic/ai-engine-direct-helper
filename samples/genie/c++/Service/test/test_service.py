@@ -137,6 +137,23 @@ def parse_gguf_devices(value):
     return tuple(specs)
 
 
+def evaluate_gguf_device_result(requested_list, actual_device, actual_effective):
+    if requested_list == ["gpu"]:
+        return actual_device in ("gpu", "cpu"), False, ("；GPU 加载 fallback 到 CPU" if actual_device == "cpu" else "")
+    if requested_list == ["cpu"]:
+        return actual_device == "cpu", False, ""
+    allowed_effective = set(requested_list) | {"gpu", "cpu"}
+    device_ok = (actual_device in ("gpu", "cpu") and bool(actual_effective)
+                 and set(actual_effective) <= allowed_effective)
+    npu_degraded = "npu" in requested_list and "npu" not in actual_effective
+    fallback_note = ""
+    if npu_degraded:
+        fallback_note += "；npu 降级（HTP0 不可用，已去掉 npu）"
+    if actual_device == "cpu" and "cpu" not in requested_list:
+        fallback_note += "；GPU 加载 fallback 到 CPU"
+    return device_ok, npu_degraded, fallback_note
+
+
 # 纯文本 chat 请求的 3 种 content 格式，按轮次轮流使用，让回归覆盖到服务端支持的全部输入方式，
 # 而不是只测最常见的一种。对应关系（详见 examples/GenieAPIClient/GenieAPIClient.cpp 与
 # ModelInputBuilder::ProcessArray/ProcessObject）：
@@ -7460,23 +7477,8 @@ def run_gguf_explicit_load_regressions(args, models, all_results, all_crash_even
                             response_text = f"JSON 解析失败: {e}"
 
                     backend_ok = actual_backend == "GGUF"
-                    npu_degraded = False
-                    if device == "gpu":
-                        device_ok = actual_device in ("gpu", "cpu")
-                        fallback_note = "；GPU 加载 fallback 到 CPU" if actual_device == "cpu" else ""
-                    elif device == "cpu":
-                        device_ok = actual_device == "cpu"
-                        fallback_note = ""
-                    else:
-                        allowed_effective = set(requested_list) | {"gpu"}
-                        device_ok = (actual_device in ("gpu", "cpu") and bool(actual_effective)
-                                     and set(actual_effective) <= allowed_effective)
-                        npu_degraded = "npu" in requested_list and "npu" not in actual_effective
-                        fallback_note = ""
-                        if npu_degraded:
-                            fallback_note += "；npu 降级（HTP0 不可用，已去掉 npu）"
-                        if actual_device == "cpu" and "cpu" not in requested_list:
-                            fallback_note += "；GPU 加载 fallback 到 CPU"
+                    device_ok, npu_degraded, fallback_note = evaluate_gguf_device_result(
+                        requested_list, actual_device, actual_effective)
                     passed = models_resp.status_code == 200 and chat_resp.status_code == 200 and backend_ok and device_ok and chat_ok
                     detail = (
                         f"requested_device={device}, actual_backend={actual_backend}, actual_device={actual_device}, "
