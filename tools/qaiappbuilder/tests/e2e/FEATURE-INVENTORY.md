@@ -330,7 +330,7 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 |---|---|---|---|---|
 | CH-01 | 通道(微信/飞书)配置读写;页面 `/channels` | - | 外部账号 | **不自动化**(负责人已定):注册会把凭据写进 keyring,而 HTTP 路由里没找到删除通道实例的接口,做不到"自建自删" |
 | CH-02 | 通道真实收发 | - | 外部账号 | **不自动化** |
-| TASK-01 | 定时任务 CRUD、`catalog`、执行记录 | L1 | - | P1 |
+| TASK-01 | 定时任务 列表/详情/编辑/暂停/恢复/立即运行/删除、`catalog`、运行历史、通知中心 | L1 | - | P1 ✅ 已实现(`test_scheduled_tasks.py`);**创建路径未覆盖**:HTTP 无创建接口(只能由智能体 `scheduled_task` 工具创建,需 LLM),用例直接往临时库插行 |
 | SKILL-01 | 技能列表/启用/禁用;页面 `/skills` | L1/L2 | UI 需先补 testid | P1 |
 | SKILL-02 | 内置技能可加载(browser-automation、weather、read-arxiv-paper 等) | L1 | 部分 NET | P2 |
 | CODE-01 | AI Coding(Claude Code / OpenCode)面板:配置、会话、权限弹窗 | L2 | 外部 CLI | P2 |
