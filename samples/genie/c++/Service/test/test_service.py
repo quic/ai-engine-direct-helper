@@ -117,6 +117,26 @@ def infer_backend(model_name):
     return "qnn", "npu"
 
 
+_GGUF_DEVICE_NAMES = ("npu", "gpu", "cpu")
+
+
+def parse_gguf_devices(value):
+    """解析 --gguf_devices：逗号分隔的设备组合，每个组合用 '+' 连接多个设备（如 npu+gpu），
+    取值仅 npu/gpu/cpu；'both' 等价于 gpu,cpu。返回去重后保持顺序的组合元组。"""
+    if value.strip().lower() == "both":
+        return ("gpu", "cpu")
+    specs = []
+    for item in value.split(","):
+        names = [n.strip().lower() for n in item.split("+")]
+        if not item.strip() or any(n not in _GGUF_DEVICE_NAMES for n in names) or len(set(names)) != len(names):
+            raise argparse.ArgumentTypeError(
+                f"非法的 --gguf_devices 取值 '{item}'：设备仅限 {'/'.join(_GGUF_DEVICE_NAMES)}，多设备用 '+' 连接（如 npu+gpu），多个组合用 ',' 分隔")
+        spec = "+".join(names)
+        if spec not in specs:
+            specs.append(spec)
+    return tuple(specs)
+
+
 # 纯文本 chat 请求的 3 种 content 格式，按轮次轮流使用，让回归覆盖到服务端支持的全部输入方式，
 # 而不是只测最常见的一种。对应关系（详见 examples/GenieAPIClient/GenieAPIClient.cpp 与
 # ModelInputBuilder::ProcessArray/ProcessObject）：
@@ -7312,12 +7332,12 @@ def run_numresponse_stateless_mode_regressions(args, models, all_results, all_cr
 
 def run_gguf_explicit_load_regressions(args, models, all_results, all_crash_events, all_perf_samples):
     """阶段 4：对全部已发现的 GGUF 模型（或 --gguf_model 限定的单个模型），分别用
-    GGUF device=gpu / device=cpu 启动服务并验证 /models + chat。"""
+    GGUF device=gpu / device=cpu（旧字段）及 devices 列表（npu、npu+gpu 等）启动服务并验证 /models + chat。"""
     print(f"\n{'='*60}")
-    print("阶段 4: GGUF GPU/CPU 显式加载回归")
+    print("阶段 4: GGUF GPU/CPU/NPU 显式加载回归")
     print(f"{'='*60}")
 
-    devices = ("gpu", "cpu") if args.gguf_devices == "both" else (args.gguf_devices,)
+    devices = args.gguf_devices
     placeholder_model = args.gguf_model or "gpt-oss-20b-GGUF"
     if args.remote:
         for device in devices:
@@ -7370,7 +7390,14 @@ def run_gguf_explicit_load_regressions(args, models, all_results, all_crash_even
                 except json.JSONDecodeError:
                     model_config = {}
                 model_config["backend"] = "GGUF"
-                model_config["device"] = device
+                requested_list = device.split("+")
+                legacy_device = device in ("gpu", "cpu")
+                if legacy_device:
+                    model_config["device"] = device
+                    model_config.pop("devices", None)
+                else:
+                    model_config["device"] = "cpu" if requested_list == ["cpu"] else "gpu"
+                    model_config["devices"] = requested_list
                 gguf_config_path.write_text(json.dumps(model_config, ensure_ascii=False, indent=2), encoding="utf-8")
 
                 svc = ServiceManager(args.exe_dir, args.host, args.port)
@@ -7395,12 +7422,18 @@ def run_gguf_explicit_load_regressions(args, models, all_results, all_crash_even
                     models_resp = requests.get(f"http://{args.host}:{args.port}/models", timeout=30)
                     actual_backend = ""
                     actual_device = ""
+                    actual_effective = []
                     if models_resp.status_code == 200:
                         entries = models_resp.json().get("data", [])
                         loaded_entries = [m for m in entries if m.get("is_loaded") and m.get("id") == service_model_name]
                         if loaded_entries:
                             actual_backend = loaded_entries[0].get("backend", "")
                             actual_device = loaded_entries[0].get("device", "")
+                            raw_effective = loaded_entries[0].get("devices_effective", "")
+                            if isinstance(raw_effective, list):
+                                actual_effective = [str(x).lower() for x in raw_effective]
+                            elif raw_effective:
+                                actual_effective = str(raw_effective).lower().split("+")
 
                     chat_body = {
                         "model": service_model_name,
@@ -7427,15 +7460,27 @@ def run_gguf_explicit_load_regressions(args, models, all_results, all_crash_even
                             response_text = f"JSON 解析失败: {e}"
 
                     backend_ok = actual_backend == "GGUF"
+                    npu_degraded = False
                     if device == "gpu":
                         device_ok = actual_device in ("gpu", "cpu")
                         fallback_note = "；GPU 加载 fallback 到 CPU" if actual_device == "cpu" else ""
-                    else:
+                    elif device == "cpu":
                         device_ok = actual_device == "cpu"
                         fallback_note = ""
+                    else:
+                        allowed_effective = set(requested_list) | {"gpu"}
+                        device_ok = (actual_device in ("gpu", "cpu") and bool(actual_effective)
+                                     and set(actual_effective) <= allowed_effective)
+                        npu_degraded = "npu" in requested_list and "npu" not in actual_effective
+                        fallback_note = ""
+                        if npu_degraded:
+                            fallback_note += "；npu 降级（HTP0 不可用，已去掉 npu）"
+                        if actual_device == "cpu" and "cpu" not in requested_list:
+                            fallback_note += "；GPU 加载 fallback 到 CPU"
                     passed = models_resp.status_code == 200 and chat_resp.status_code == 200 and backend_ok and device_ok and chat_ok
                     detail = (
-                        f"requested_device={device}, actual_backend={actual_backend}, actual_device={actual_device}"
+                        f"requested_device={device}, actual_backend={actual_backend}, actual_device={actual_device}, "
+                        f"devices_effective={'+'.join(actual_effective) or '-'}"
                         f"{fallback_note}, /models={models_resp.status_code}, chat={chat_resp.status_code}, "
                         f"chat_latency_ms={chat_latency:.1f}, response_len={len(response_text)}"
                     )
@@ -7448,6 +7493,8 @@ def run_gguf_explicit_load_regressions(args, models, all_results, all_crash_even
                             "requested_device": device,
                             "actual_backend": actual_backend,
                             "actual_device": actual_device,
+                            "devices_effective": "+".join(actual_effective),
+                            "npu_degraded": npu_degraded,
                             "models_status": models_resp.status_code,
                             "chat_status": chat_resp.status_code,
                         }
@@ -12488,6 +12535,7 @@ def main():
     # 按套件精确运行:
     python test_service.py --exe_dir ./GenieService_v2.3.7 --models ./models --suite sampleapp
     python test_service.py --exe_dir ./GenieService_v2.3.7 --models ./models --suite gguf --gguf_devices gpu
+    python test_service.py --exe_dir ./GenieService_v2.3.7 --models ./models --suite gguf --gguf_devices gpu,cpu,npu,npu+gpu
     python test_service.py --exe_dir ./GenieService_v2.3.7 --models ./models --suite mnn
     python test_service.py --exe_dir ./GenieService_v2.3.7 --models ./models --suite qnn
         """
@@ -12517,7 +12565,9 @@ def main():
                              "<data_dir>/bin/<name> 以触发 Builder 官方自愈式安装发现），默认复用 --exe_dir。"
                              "供 skill_capacity 的 builder 模式使用")
     parser.add_argument("--gguf_model", default=None, help="GGUF 显式加载回归限定的单个模型目录名（默认留空，测试全部已发现的 GGUF 模型）")
-    parser.add_argument("--gguf_devices", choices=("both", "gpu", "cpu"), default="both", help="GGUF 显式加载回归的设备筛选：both/gpu/cpu（默认 both）")
+    parser.add_argument("--gguf_devices", type=parse_gguf_devices, default=parse_gguf_devices("both"),
+                        help="GGUF 显式加载回归的设备组合，逗号分隔，多设备用 + 连接：gpu,cpu,npu,npu+gpu（both 等价于 gpu,cpu，默认 both）；"
+                             "gpu/cpu 走旧 device 字段，含 npu 的组合走 devices 列表，构建无 Hexagon 或 HTP0 未注册时 npu 降级仍判通过并在 detail 标注")
     parser.add_argument("--skill_capacity_models", default=None,
                         help="--suite skill_capacity 限定测试的目标模型简写，逗号分隔（qwen3-8b/qwen2.5_omini），"
                              "留空则两个目标模型都测（各自缺失时精确跳过，不影响另一个）")
