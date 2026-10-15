@@ -202,6 +202,22 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 
 ## 3. 功能清单
 
+> **如何运行 E2E(win-arm64)**
+>
+> ```powershell
+> # 1) 一个装有 pytest / pytest-asyncio / httpx / psutil / keyring 的 Python 作为"测试端"
+> #    (与后端的 venv 是两回事;后端 venv 里没有 pytest)
+> $env:QAI_E2E_PYTHON = "$env:LOCALAPPDATA\QAIModelBuilder\envs\.venv_arm64_313\Scripts\python.exe"   # 后端用
+> <测试端 python> -m pytest tests/e2e
+> ```
+>
+> - `QAI_E2E_PYTHON` 指定**后端**使用的解释器;不设就用跑 pytest 的那个,而它通常装不全后端依赖,起不来。
+> - 8989 必须空闲,被占用时整个会话直接中止(不会去杀占用者)。
+> - 测试端环境曾因 Microsoft Store 版 Python 被卸载而失效(venv 的 `pyvenv.cfg` 指向已不存在的解释器)。
+>   当前使用 `%TEMP%\qai-e2e-venv`(基于 `Programs\Python\Python312-arm64`),依赖版本固定为
+>   pytest 9.1.1、pytest-asyncio 1.4.0、httpx 0.28.1、psutil 7.2.2、keyring 25.7.0。
+> - 用例对产品代码做过变异检查;判定"被抓住"必须以 pytest 退出码 1 为准,退出码非 0/1 是环境故障,不是结论。
+
 ### 3.1 系统与启动(后端 `/api/system/*`)
 
 | ID | 功能 | 层 | 依赖 | 优先级 |
@@ -302,8 +318,8 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 
 | ID | 功能 | 层 | 依赖 | 优先级 |
 |---|---|---|---|---|
-| SECU-01 | 路径白名单/授权(paths、grants)增删 | L1 | - | P0 |
-| SECU-02 | 危险命令策略(dangerous commands)、自动审批(auto-approve) | L1 | - | P0 |
+| SECU-01 | 路径白名单/授权:`path-grants` 增删查、`path_patterns` 读写、`permission/check` 决策、审计 `audit/recent` | L1 | - | P0 ✅ 已实现(`test_secu_paths.py`) |
+| SECU-02 | 危险命令策略(内置 9 条不可移除的底线 + 只增不减的 extra)、自动审批(`auto_approve` 两套) | L1 | - | P0 ✅ 已实现(`test_secu_commands.py`);仅覆盖配置面,未验证运行时拦截 |
 | SECU-03 | 权限请求/审批流(permission) | L1/L2 | - | P0 |
 | SECU-04 | 运行时配置、Skills 安全设置 | L1 | - | P1 |
 | SECU-05 | 安全页 `/security` | L2 | - | P1 |
