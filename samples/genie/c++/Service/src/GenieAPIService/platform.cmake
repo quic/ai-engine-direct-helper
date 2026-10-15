@@ -364,7 +364,7 @@ if (MSVC)
         set(LLAMACPP_SRC_DIR ${CMAKE_BINARY_DIR}/llama-cpp-src)
         ExternalProject_Add(Libllama.cpp
                 GIT_REPOSITORY https://github.com/qualcomm/llama.cpp.git
-                GIT_TAG c77fc5b052840687ec8eb9832c77155249fcf05d
+                GIT_TAG 7c371551f00b766f1262d716f72c18b4f3a9ecf4
                 GIT_SHALLOW ON
                 SOURCE_DIR ${LLAMACPP_SRC_DIR}
                 BINARY_DIR ${CMAKE_BINARY_DIR}/llama-cpp-build
