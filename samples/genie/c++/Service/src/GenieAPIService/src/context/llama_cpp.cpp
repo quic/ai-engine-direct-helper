@@ -1400,9 +1400,26 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         {
             arg_strings.insert(arg_strings.end(), {"-ngld", std::to_string(draft_n_gpu_layers)});
         }
-        if (draft_config.fit_target_mib >= 0)
+        int fit_target_mib = draft_config.fit_target_mib;
+        if (fit_target_mib < 0 && device != "cpu" && draft_n_gpu_layers != 0)
         {
-            arg_strings.insert(arg_strings.end(), {"-fitt", std::to_string(draft_config.fit_target_mib)});
+            std::error_code size_ec;
+            const auto draft_bytes = fs::file_size(draft_path, size_ec);
+            if (!size_ec && draft_bytes > 0)
+            {
+                constexpr uint64_t kBytesPerMib = 1ULL << 20;
+                constexpr int kLlamaFitTargetDefaultMib = 1024;
+                const int draft_weight_mib =
+                    static_cast<int>((draft_bytes + kBytesPerMib - 1) / kBytesPerMib);
+                fit_target_mib = kLlamaFitTargetDefaultMib + draft_weight_mib;
+                My_Log{My_Log::Level::kWarning}
+                    << "[LLAMACppBuilder] -fitt auto: " << kLlamaFitTargetDefaultMib << " + draft weights "
+                    << draft_weight_mib << " MiB = " << fit_target_mib << std::endl;
+            }
+        }
+        if (fit_target_mib >= 0)
+        {
+            arg_strings.insert(arg_strings.end(), {"-fitt", std::to_string(fit_target_mib)});
         }
         if (!draft_config.samplers.empty())
         {
