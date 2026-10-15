@@ -206,12 +206,12 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 
 | ID | 功能 | 层 | 依赖 | 优先级 |
 |---|---|---|---|---|
-| SYS-01 | 后端启动成功,`/api/system/health` 健康 | L1 | - | P0 |
-| SYS-02 | `build-info` / `edition` / `platform` / `python-info` 返回合理 | L1 | - | P1 |
+| SYS-01 | 后端启动成功,`/api/system/health` 健康 | L1 | - | P0 ✅ 已实现(`test_sys_basic.py`) |
+| SYS-02 | `build-info` / `edition` / `platform` / `python-info` 返回合理 | L1 | - | P1 ✅ 已实现(`test_sys_basic.py`) |
 | SYS-03 | `features`、`config/summary` 反映实际启用的功能 | L1 | - | P2 |
 | SYS-04 | `qairt-versions` 列出已装 SDK;QAIRT 热切换(`/api/system` qairt-switch) | L1 | QAIRT | P2 |
-| SYS-05 | 启动写 `data/runtime/server.endpoint.json`,内容与实际端口一致 | L1 | - | P1 |
-| SYS-06 | SPA:`/` 返回 index.html,未知路径回落 SPA,`/assets/*` 正确 MIME | L1 | dist | P0 |
+| SYS-05 | 启动写 `data/runtime/server.endpoint.json`,内容与实际端口一致 | L1 | - | P1 ✅ 已实现(`test_sys_spa_endpoint.py`) |
+| SYS-06 | SPA:`/` 返回 index.html,未知路径回落 SPA,`/assets/*` 正确 MIME | L1 | dist | P0 ✅ 已实现(`test_sys_spa_endpoint.py`) |
 | SYS-07 | `dist` 缺失时返回 503 维护页(不崩溃) | L1 | - | P2 |
 | SYS-08 | 退出码 75 触发 supervisor 重启 | L1 | - | P2 |
 | SYS-09 | Start.bat 在端口被占用时回退到备用端口(8989 → 28688) | L4 | - | P2 |
@@ -220,18 +220,18 @@ E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只�
 
 | ID | 功能 | 层 | 依赖 | 优先级 |
 |---|---|---|---|---|
-| AUTH-01 | 启用登录门时,未登录:浏览器请求 303 到 `/auth/login`,API 请求 401 | L1 | AUTH | P1 |
-| AUTH-02 | 公共路径(`/api/system/health`、build-info、edition、`/auth/*`、`/callback`、OpenAPI 文档、SPA 静态)免登录 | L1 | AUTH | P1 |
-| AUTH-03 | 登录门关闭或已有有效会话时,受保护接口可访问(登录门的处理方式见 §2) | L1 | - | P0 |
+| AUTH-01 | 启用登录门时,未登录:**API/JSON 请求返回 401 信封**(`code=auth.required`,带 `login_url`);**浏览器 HTML 导航不重定向**,放行让 SPA 先渲染再弹登录提示(2026-07-17 UX 约定);伪造/过期/错签 cookie 被拒 | L1 | AUTH | P1 ✅ 已实现(`test_auth_gate_on.py`) |
+| AUTH-02 | 公共路径(`/api/system/health`、build-info、edition、`/api/auth/me`、`/auth/*`、OpenAPI 文档、SPA 静态)免登录;`/v1/` 不受 session 门禁影响;其余私有路径被挡 | L1 | AUTH | P1 ✅ 已实现(`test_auth_gate_on.py`) |
+| AUTH-03 | 登录门关闭或已有有效会话时,受保护接口可访问(登录门的处理方式见 §2) | L1 | - | P0 ✅ 已实现(`test_auth_gate_off_csrf.py`) |
 | AUTH-04 | 真实 Okta 登录流程 | - | AUTH, NET | **不自动化**(需真实账号/SSO) |
 | AUTH-05 | **(后续优化,当前代码没有)** JWT 7 天有效期内免登录;过期回到登录 | L1 | AUTH | 待优化落地后再定(见 §2.1) |
-| SEC-01 | CSRF:缺少 cookie/头的写请求被拒,携带后通过 | L1 | - | P1 |
+| SEC-01 | CSRF:缺少 cookie/头、两者不一致的写请求被拒(403 `security.csrf.missing`),携带匹配的 cookie+头后通过;GET/HEAD/OPTIONS 不需要 | L1 | - | P1 ✅ 已实现(`test_auth_gate_off_csrf.py`) |
 
 ### 3.3 聊天(`/chat`,`/api/chat/*`,`/v1/*`)
 
 | ID | 功能 | 层 | 依赖 | 优先级 |
 |---|---|---|---|---|
-| CHAT-01 | 创建/列出/重命名/删除会话(REST) | L1 | - | P0 |
+| CHAT-01 | 创建/列出/重命名/删除会话(REST);另含分页、搜索、pin/favorite 过滤、输入校验(400)、不存在 404 | L1 | - | P0 ✅ 已实现(`test_chat_conversations.py`) |
 | CHAT-02 | 发消息并收到流式回复(SSE / WS) | L1 | LLM | P0 |
 | CHAT-03 | 多标签会话(`/chat/:tabId`)切换与深链 | L2 | - | P1 |
 | CHAT-04 | 会话搜索(conversations search) | L1 | - | P1 |

@@ -247,6 +247,13 @@ def _stop(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _start_backend(*, auth_enabled: bool) -> Iterator[Backend]:
+    """Spawn one backend on 8989, yield it, always stop it and clean up.
+
+    Only ONE backend may exist at a time (they share port 8989). Use this from
+    a MODULE-scoped fixture so it is torn down before the next module's backend
+    starts; never mix it with a session-scoped backend (the session one would
+    still be alive and hold the port).
+    """
     if not _port_is_free(E2E_HOST, E2E_PORT):
         # Fail the session; NEVER try to stop the occupant - it is not ours.
         pytest.exit(
@@ -284,16 +291,38 @@ def _start_backend(*, auth_enabled: bool) -> Iterator[Backend]:
         shutil.rmtree(work, ignore_errors=True)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def backend() -> Iterator[Backend]:
-    """Backend with the login gate OFF (the default for functional tests)."""
+    """Backend with the login gate OFF (the default for functional tests).
+
+    Module-scoped, NOT session-scoped: the login-gate-ON suite needs a backend
+    with different settings on the same port, so each module gets its own and the
+    previous one is stopped first. Cost: one ~5-10s startup per module.
+    """
     yield from _start_backend(auth_enabled=False)
+
+
+@pytest.fixture(scope="module")
+def auth_backend() -> Iterator[Backend]:
+    """Backend with the Okta login gate ON (``QAI_AUTH__ENABLED=true``).
+
+    Use only in modules that do NOT also request ``backend`` (two backends cannot
+    share port 8989).
+    """
+    yield from _start_backend(auth_enabled=True)
 
 
 @pytest.fixture
 def http(backend: Backend) -> Iterator[httpx.Client]:
-    """A plain HTTP client bound to the E2E backend."""
+    """A plain HTTP client bound to the login-gate-OFF backend."""
     with httpx.Client(base_url=backend.base_url, timeout=15.0) as client:
+        yield client
+
+
+@pytest.fixture
+def auth_http(auth_backend: Backend) -> Iterator[httpx.Client]:
+    """A plain HTTP client bound to the login-gate-ON backend."""
+    with httpx.Client(base_url=auth_backend.base_url, timeout=15.0) as client:
         yield client
 
 
