@@ -12,7 +12,9 @@
 | **L1 API** | 拉起真实后端子进程,用 HTTP/SSE/WS 调用 | 任意 Windows/Linux,不要 NPU | `e2e` |
 | **L2 UI** | Playwright 驱动浏览器,打的是 `frontend/dist` 编译产物 | 需 Chromium | `e2e` + `ui` |
 | **L3 NPU** | 需要真实 NPU / `qai_appbuilder` / context bin | Snapdragon X 真机 | `e2e` + `npu` |
-| **L4 Install** | 跑 `Setup.bat`/`Build.bat`/`Start.bat` | 慢、依赖网络,建议夜间 | `e2e` + `install` |
+| **L4 Install** | 跑 `Setup.bat`/`Build.bat`/`Start.bat`(Linux 为 `setup.sh`/`start.sh`) | 慢、依赖网络,建议夜间 | `e2e` + `install` |
+
+每个用例还要标注**适用平台**:`win-arm64`(首批)、`win-x64`、`linux-arm64`,见 §2.3 和 §5.1。
 
 依赖标记:`NET` 需联网;`NPU` 需真实 NPU;`QAIRT` 需 QAIRT SDK + x64 转换 venv;
 `LLM` 需可用的模型服务/云端模型(账号、额度);`AUTH` 受 Okta 登录门影响。
@@ -24,14 +26,73 @@
 
 优先级:**P0** 核心主流程,必须有;**P1** 重要;**P2** 有则更好。
 
-## 2. 前提(开工前要先验证,见 §6)
+## 2. 前提
 
-- 后端可用 `python -m apps.api --port N` 启动,配置可用 `QAI_` 前缀环境变量覆盖。
-- Windows 默认开启 Okta 登录门。E2E 必须能关掉(`settings.auth.enabled`),
-  具体变量名**待验证**。
+- 后端用 `python -m apps.api --port N` 启动(`N` 可为任意端口),配置可用 `QAI_` 前缀环境变量覆盖。
+- **登录门**:已由负责人确认"登录问题已解决",E2E 不再把它当风险。
+  具体怎么在测试里处理(关闭,或使用已有会话)在设计用例时按实际方案定。
+  登录相关的现状见 §2.1,仅作背景。
+- **端口**:E2E 约定**测试时本机没有其它 AppBuilder 在运行**,直接用 **8989**。
+  端口被占用就**直接报错退出**,不回退到备用端口。实现要点见 §2.2。
 - 后端直接托管 `frontend/dist`(SPA catch-all);dist 缺失时返回 503 维护页。
   因此 UI 测试打的是**编译后的产物**,不需要 vite dev server。
-- 需要独立端口和独立数据目录,避免污染本机已运行的实例(例如 8989)。**数据目录的覆盖方式待确认。**
+- 数据目录:仍需独立或可清理的数据目录(见 §6 第 2 项)。
+
+### 2.1 登录/令牌现状(背景,只读代码得出)
+
+代码里有**三套互不相同的令牌**,不要混淆:
+
+| 令牌 | 作用 | 有效期 | 谁产生 |
+|---|---|---|---|
+| Okta `id_token` | 只在 `/callback` 验签一次,验完即丢弃 | Okta 决定 | Okta SSO |
+| 本地 session cookie(`qai_session`,HMAC 签名) | 网页门禁的唯一依据 | `session_ttl_seconds` 默认 **8 小时**(每次请求会顺延) | 后端,在 SSO 成功或 device-flow 引导后签发 |
+| QAI Service JWT | 调用 QAI Service(LLM 中转)的 bearer | 约 **8 小时**(`expires_in`,默认 28800 秒,并提前几十秒作废) | QAI Service,用 `id_token` 换取 |
+
+结论(针对"JWT 7 天免登录"的优化设想):
+- **目前 JWT 不能让用户跳过 SSO**。QAI Service JWT 只能在 `/callback` 里,凭刚验证过的 `id_token`
+  换取;代码里没有"JWT 仍有效就跳过登录"的路径。网页门禁认的是 session cookie,不是这个 JWT。
+- JWT 会写入系统 keyring,后端**重启后仍可读回**(到期则丢弃)。这只让重启后"不丢令牌",
+  不等于免登录。
+- 现有唯一不经浏览器的登录路径是 **device-flow**(RFC 8628):`qai auth device-login` 把
+  Okta `refresh_token` 存进 SecretStore,之后无 cookie 的请求会用它静默换出 session。
+  该开关 `device_flow_enabled` **默认关闭**。
+- 因此"7 天内免登录"需要新增逻辑(例如把有效期改成 7 天,并允许凭它直接签发 session),
+  这会改动认证行为。**这是设想中的后续优化,当前代码里没有。**
+  实现后应补充用例:有效期内免登录、过期后回到登录、登出后令牌清除。
+
+### 2.2 端口与启动入口
+
+| 入口 | 可指定端口 | 端口被占用时 |
+|---|---|---|
+| `python -m apps.api --port N` | 任意端口 | 由 uvicorn 绑定;失败时的具体报错**未实测** |
+| `python -m apps.cli.serve --port N`(supervisor) | 任意端口 | 显式 `--port` 时只试这一个端口,**不回退**;被占用或落入 Windows 保留范围就抛 `RuntimeError`,提示后以退出码 **1** 结束 |
+| `Start.bat --port N` | **仅 8989 或 28688**,其它值直接报错 | 同 supervisor:显式端口不回退 |
+| `Start.bat`(不带 `--port`) | - | 从 `ports.json` 的 `fallbacks` `[8989, 28688]` 依次试,**会回退** |
+
+对 E2E 的含义:
+- 用 `--port 8989` 启动即可满足"被占用就报错退出"。supervisor 路径(`apps.cli.serve` 或 `Start.bat --port 8989`)
+  行为已从代码确认;`python -m apps.api` 直连路径的占用报错没有读到明确处理,**需实测**。
+- 用例前置检查建议:先确认 8989 空闲,否则直接 fail 并给出占用进程信息,避免误杀用户实例。
+- 本机当前确实有实例占着 8989(调研时看到 `python -m apps.api --port 8989`),
+  跑 E2E 前必须先停掉。
+
+### 2.3 测试平台
+
+E2E 需要区分三个平台,每个用例都要标明适用平台。**首批只做 Windows ARM64。**
+
+| 平台 | 代号 | 运行时 venv | 登录门默认 | 推理后端 | 转换器环境 | 备注 |
+|---|---|---|---|---|---|---|
+| Windows ARM64 | `win-arm64` | `.venv_arm64_313`(Python 3.13) | 开 | NPU(HTP),`onnxruntime-qnn` | x64 Python 3.10 的 `.venv_x64_310`(模拟运行) | **首批目标**;本机即此平台(X Elite) |
+| Windows x64 | `win-x64` | x64 Python 3.13 | 开 | 无本机 NPU,CPU:标准 `onnxruntime`、x64 `qai-appbuilder` | 同一环境 | 无 NPU,L3 用例不适用 |
+| Linux ARM64 | `linux-arm64` | `envs/venv`(Python 3.12),由 `setup.sh` 创建 | 有桌面会话(`DISPLAY`/`WAYLAND_DISPLAY`)才开,无头服务器关 | 需 FastRPC(`libcdsprpc.so`) | 同一 venv(无单独的 x64 转换 venv) | 入口是 `setup.sh`/`start.sh`,不是 `.bat` |
+
+要点:
+- L4 安装类用例的入口按平台不同:Windows 用 `Setup.bat`/`Start.bat`,Linux 用 `setup.sh`/`start.sh`。
+- `INST-02`(x64 3.10 转换 venv)只适用 Windows ARM64;x64 与 Linux 没有这一步。
+- L3 NPU 用例只适用 `win-arm64`(以及有 FastRPC 的 `linux-arm64`,是否可行**未验证**)。
+- 目前测试里没有任何平台 marker(`pyproject.toml` 里有 `windows_only`、`linux_only`,没有 ARM64/x64 区分)。
+  落地时需要一个平台 marker 或选择器,例如按 `platform.system()` 与 `platform.machine()` 判断。
+- 以上平台差异来自读代码,`win-x64` 与 `linux-arm64` 我没有实机核对。
 
 ## 3. 功能清单
 
@@ -55,8 +116,9 @@
 |---|---|---|---|---|
 | AUTH-01 | 启用登录门时,未登录:浏览器请求 303 到 `/auth/login`,API 请求 401 | L1 | AUTH | P1 |
 | AUTH-02 | 公共路径(`/api/system/health`、build-info、edition、`/auth/*`、`/callback`、OpenAPI 文档、SPA 静态)免登录 | L1 | AUTH | P1 |
-| AUTH-03 | 关闭登录门后全部可访问 | L1 | - | P0 |
+| AUTH-03 | 登录门关闭或已有有效会话时,受保护接口可访问(登录门的处理方式见 §2) | L1 | - | P0 |
 | AUTH-04 | 真实 Okta 登录流程 | - | AUTH, NET | **不自动化**(需真实账号/SSO) |
+| AUTH-05 | **(后续优化,当前代码没有)** JWT 7 天有效期内免登录;过期回到登录;登出清除令牌 | L1 | AUTH | 待优化落地后再定(见 §2.1) |
 | SEC-01 | CSRF:缺少 cookie/头的写请求被拒,携带后通过 | L1 | - | P1 |
 
 ### 3.3 聊天(`/chat`,`/api/chat/*`,`/v1/*`)
@@ -211,22 +273,44 @@
 
 ## 5. 建议的首批范围(待评审)
 
+**平台:仅 Windows ARM64(`win-arm64`)。** `win-x64`、`linux-arm64` 后续再扩展,
+清单里的用例先按平台标注,实现时再决定是否复用。下面的"平台"列见 §5.1。
+
 - **L1 先行**:SYS-01/05/06、AUTH-03、CHAT-01、AB-01/09/10/14、SECU-01/02、SET-01、TASK-01、MB-03/06。
   这批不需要 NPU、不需要联网,价值/成本比最高。
 - **L2 小而精**:页面加载与 7 个视图可进入、聊天发消息(用替身模型)、安全页授权、设置页语言切换。
 - **L3**:real-esrgan 一条推理(AB-05)、zipformer 一条(AB-06),在本机 X Elite 上 opt-in。
 - **L4**:先做 INST-02/03(正好覆盖本次修复的回归),其余夜间。
 
+### 5.1 各类用例的平台适用性(初判,未在 win-x64 / linux-arm64 上核对)
+
+| 类别 | win-arm64 | win-x64 | linux-arm64 |
+|---|---|---|---|
+| L1 API(不依赖 NPU/联网) | ✅ 首批 | 预计可复用 | 预计可复用 |
+| L2 UI(Playwright) | ✅ 首批 | 预计可复用 | 需桌面或 headless 浏览器,未核对 |
+| L3 NPU(AB-05/06/07、SVC-01) | ✅ 首批 | ❌ 无 NPU | 需 FastRPC,未核对 |
+| L4 `Setup.bat`/`Start.bat` | ✅ 首批 | 入口相同,INST-02 不适用 | 入口是 `setup.sh`/`start.sh`,需另写 |
+| INST-02/03(x64 3.10 转换 venv) | ✅ | ❌ 不适用 | ❌ 不适用 |
+| AUTH 登录门默认状态 | 开 | 开 | 随 `DISPLAY`/`WAYLAND_DISPLAY` |
+
 ## 6. 开工前必须验证的不确定项
 
-1. **关登录门**:`QAI_AUTH__ENABLED=false` 是否生效(变量名由配置规则推得,未验证)。
-2. **端口**:`python -m apps.api --port N` 是否允许 8989/28688 以外的端口。
-3. **数据隔离**:怎么让 E2E 使用临时数据目录(`data_paths.root` 的来源未找到)。
-4. **启动预热**:启动时的语音预热会不会触发权重下载;测试中如何关闭。
-5. **替身 LLM**:聊天流式回复在没有账号时如何稳定测试。
-6. **dist 与源码同步**:UI 用例怎么确保测的是最新编译产物。
-7. **CI**:`ci.yml` 对 `tools/**` 是 `paths-ignore`;E2E 要自动跑需另加 workflow,
+已解决/已定:
+- ~~关登录门~~:登录问题已解决,不再作为风险。
+- ~~端口~~:E2E 固定用 8989,被占用就报错退出(见 §2.2)。
+
+仍待验证:
+1. **直连入口的占用报错**:`python -m apps.api --port 8989` 在 8989 被占用时的实际退出码和提示。
+   (supervisor 路径已从代码确认。)
+2. **数据隔离**:怎么让 E2E 使用临时或可清理的数据目录(`data_paths.root` 的来源未找到)。
+   备选:对临时目录跑 `scripts.init.install --apply`(Setup 的 Step 4f 就是这样建库)。
+3. **启动预热**:启动时的语音预热会不会触发权重下载;测试中如何关闭。
+4. **替身 LLM**:聊天流式回复在没有账号时如何稳定测试。
+5. **dist 与源码同步**:UI 用例怎么确保测的是最新编译产物。
+6. **CI**:`ci.yml` 对 `tools/**` 是 `paths-ignore`;E2E 要自动跑需另加 workflow,
    且 GitHub 托管机器无 NPU,L3 只能在自托管 Snapdragon 机器上跑。
+7. **平台 marker**:怎么在 pytest 里表达"适用平台"(见 §2.3)。
+8. **JWT 7 天免登录**:等该优化落地后再补用例(见 §2.1),现在不测。
 
 ## 7. 明确不自动化的内容
 
