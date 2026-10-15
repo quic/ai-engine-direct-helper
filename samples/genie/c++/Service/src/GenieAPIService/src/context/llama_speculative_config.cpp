@@ -178,6 +178,16 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.fit_target_mib = block["fit_target_mib"].get<int>();
     }
 
+    if (block.contains("n_threads") && block["n_threads"].is_number_integer())
+    {
+        result.n_threads = block["n_threads"].get<int>();
+    }
+
+    if (block.contains("n_threads_batch") && block["n_threads_batch"].is_number_integer())
+    {
+        result.n_threads_batch = block["n_threads_batch"].get<int>();
+    }
+
     // required 默认 true：drafter 加载失败则整个模型加载失败，不静默降级为纯 target 解码。
     if (block.contains("required") && block["required"].is_boolean())
     {

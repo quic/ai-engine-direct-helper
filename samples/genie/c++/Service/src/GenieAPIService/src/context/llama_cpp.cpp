@@ -1557,7 +1557,13 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // 用满核心数是稳妥的默认策略）。
     const auto hw_threads = static_cast<int32_t>(std::thread::hardware_concurrency());
     params.cpuparams.n_threads = hw_threads > 0 ? hw_threads : 4;
-    params.cpuparams_batch.n_threads = params.cpuparams.n_threads;
+    if (speculative_requested && draft_config.n_threads > 0)
+    {
+        params.cpuparams.n_threads = draft_config.n_threads;
+    }
+    params.cpuparams_batch.n_threads = (speculative_requested && draft_config.n_threads_batch > 0)
+                                           ? draft_config.n_threads_batch
+                                           : params.cpuparams.n_threads;
 
     // 生成配置：不设固定上限，交由 SetParams("size", ...) 驱动的 max_length_ 来控制输出长度上限。
     params.n_predict = -1;

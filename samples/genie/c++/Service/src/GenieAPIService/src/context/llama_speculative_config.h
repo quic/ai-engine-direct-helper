@@ -46,6 +46,8 @@ struct DraftModelConfig
     bool ngram_mod = true;             // true = 自动给 spec_type 追加 ",ngram-mod"（已含时不重复追加）
     int n_gpu_layers = 99;             // 对应 -ngld；0 = drafter 权重全部留在 CPU；<0 = 不拼进 argv
     int fit_target_mib = -1;           // 对应 -fitt（每设备显存预留）；<0 = 未配置，不拼进 argv
+    int n_threads = -1;                // 对应 -t（decode 线程数）；<=0 = 未配置，保持 hardware_concurrency()
+    int n_threads_batch = -1;          // 对应 -tb（prefill 线程数）；<=0 = 未配置，跟随 n_threads 的最终值
 
     // 从模型 config.json 解析出的 json 对象中提取 draft_model 字段块。
     // 不含该字段块、字段类型不匹配、或传入的 json 本身为空/非 object 时，均返回 present=false
