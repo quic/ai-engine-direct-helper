@@ -26,6 +26,7 @@ struct LoadedModel
     std::shared_ptr<ContextBase> context;
     std::string backend;  // "GGUF", "mnn", "qnn"
     std::string device;   // "cpu", "gpu", "npu"
+    std::string devices_effective;
     bool is_loaded{false};
 };
 

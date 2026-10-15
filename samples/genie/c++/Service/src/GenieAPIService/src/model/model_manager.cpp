@@ -151,6 +151,61 @@ static void ParseBackendDeviceFromConfigJson(const std::string &config_json_path
                                              std::string &out_backend,
                                              std::string &out_device);
 
+static std::string JoinDevices(const std::vector<std::string> &devices)
+{
+    std::string joined;
+    for (const auto &name: devices)
+    {
+        joined += joined.empty() ? name : "+" + name;
+    }
+    return joined;
+}
+
+static bool ResolveGgufDevices(const json &j, const std::string &legacy_device,
+                               std::vector<std::string> &out, std::string &error)
+{
+    out.clear();
+    if (j.is_object() && j.contains("devices"))
+    {
+        const json &field = j["devices"];
+        if (!field.is_array() || field.empty())
+        {
+            error = "\"devices\" must be a non-empty array of \"npu\"/\"gpu\"/\"cpu\"";
+            return false;
+        }
+        for (const auto &item: field)
+        {
+            if (!item.is_string())
+            {
+                error = "\"devices\" entries must be strings (allowed: npu, gpu, cpu)";
+                return false;
+            }
+            std::string name = item.get<std::string>();
+            std::transform(name.begin(), name.end(), name.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (name != "npu" && name != "gpu" && name != "cpu")
+            {
+                error = "unsupported device '" + name + "' in \"devices\" (allowed: npu, gpu, cpu)";
+                return false;
+            }
+            if (std::find(out.begin(), out.end(), name) == out.end())
+            {
+                out.push_back(name);
+            }
+        }
+        return true;
+    }
+    if (legacy_device == "cpu")
+    {
+        out = {"cpu"};
+    }
+    else
+    {
+        out = {"gpu", "cpu"};
+    }
+    return true;
+}
+
 class ModelManager::QNNImpl
 {
     struct EmbeddingVerifier
@@ -576,17 +631,21 @@ struct ModelManager::ModeVerifier
 
         std::shared_ptr<ContextBase> CreateIfVerifiedImpl() override
         {
-            auto load_with_device = [this](const std::string &device, bool draft_on_cpu = false,
+            auto load_with_device = [this](const std::string &device, const std::vector<std::string> &devs,
+                                           bool draft_on_cpu = false,
                                            bool reduced_ubatch = false) -> std::shared_ptr<ContextBase>
             {
                 My_Log{} << "[GGUFVerify] load attempt: device=" << device
+                          << ", devices=" << JoinDevices(devs)
                           << ", draft_device=" << (draft_on_cpu ? std::string("cpu") : device)
                           << ", reduced_ubatch=" << (reduced_ubatch ? 1 : 0) << std::endl;
                 config_->set_device(device);
+                config_->set_devices(devs);
                 config_->set_speculative_draft_forced_cpu(draft_on_cpu);
                 config_->set_speculative_reduced_ubatch(reduced_ubatch);
                 config_->i_model_config_ = *self_;
                 config_->i_model_config_.genieModelHandle = self_->genieModelHandle = std::make_shared<LLAMACppBuilder>(*config_);
+                config_->set_devices_effective(devs);
                 return self_->genieModelHandle;
             };
 
@@ -642,6 +701,40 @@ struct ModelManager::ModeVerifier
                         << std::endl;
             }
 
+            std::vector<std::string> devices;
+            std::string devices_error;
+            if (!ResolveGgufDevices(j, requested_device, devices, devices_error))
+            {
+                My_Log{My_Log::Level::kError} << "[GGUFVerify] invalid devices config: " << devices_error
+                                              << std::endl;
+                self_->SetLastLoadFailureReason(ModelManager::LoadFailureReason::kOther, devices_error);
+                return nullptr;
+            }
+            auto has_device = [&devices](const char *name)
+            {
+                return std::find(devices.begin(), devices.end(), name) != devices.end();
+            };
+            if (has_device("npu") && !LlamaCppHasHtpDevice())
+            {
+                My_Log{My_Log::Level::kWarning}
+                        << "[GGUFVerify] npu 不可用，已去掉 (HTP0 device not found)" << std::endl;
+                devices.erase(std::remove(devices.begin(), devices.end(), std::string("npu")), devices.end());
+                if (!has_device("gpu"))
+                {
+                    devices.insert(devices.begin(), "gpu");
+                }
+            }
+            requested_device = (has_device("gpu") || has_device("npu")) ? "gpu" : "cpu";
+            const std::vector<std::string> cpu_devices{"cpu"};
+            std::vector<std::string> gpu_devices = devices;
+            gpu_devices.erase(std::remove(gpu_devices.begin(), gpu_devices.end(), std::string("npu")),
+                              gpu_devices.end());
+            if (requested_device == "gpu" &&
+                std::find(gpu_devices.begin(), gpu_devices.end(), std::string("gpu")) == gpu_devices.end())
+            {
+                gpu_devices.insert(gpu_devices.begin(), "gpu");
+            }
+
             // draft_model 字段块存在即触发投机解码路径的硬件门槛检查（Step 3）：不含该字段的
             // 模型（现有全部 GGUF 模型）完全不触发下面这段新增逻辑，零行为变化。
             llama_speculative::DraftModelConfig draft_config = llama_speculative::DraftModelConfig::ParseFrom(j);
@@ -677,13 +770,35 @@ struct ModelManager::ModeVerifier
 
             if (requested_device == "cpu")
             {
-                return load_with_device("cpu");
+                return load_with_device("cpu", cpu_devices);
+            }
+
+            if (has_device("npu"))
+            {
+                try
+                {
+                    return load_with_device("gpu", devices);
+                }
+                catch (const std::exception &e)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] load with devices=" << JoinDevices(devices)
+                            << " failed, dropping npu and falling back to " << JoinDevices(gpu_devices)
+                            << ": " << e.what() << std::endl;
+                }
+                catch (...)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] load with devices=" << JoinDevices(devices)
+                            << " failed with unknown error, dropping npu and falling back to "
+                            << JoinDevices(gpu_devices) << std::endl;
+                }
             }
 
             bool target_weights_too_large = false;
             try
             {
-                return load_with_device("gpu");
+                return load_with_device("gpu", gpu_devices);
             }
             catch (const TargetWeightsLoadError &e)
             {
@@ -707,7 +822,7 @@ struct ModelManager::ModeVerifier
             {
                 try
                 {
-                    return load_with_device("gpu", true);
+                    return load_with_device("gpu", gpu_devices, true);
                 }
                 catch (const std::exception &e)
                 {
@@ -724,7 +839,7 @@ struct ModelManager::ModeVerifier
 
                 try
                 {
-                    return load_with_device("gpu", true, true);
+                    return load_with_device("gpu", gpu_devices, true, true);
                 }
                 catch (const std::exception &e)
                 {
@@ -742,7 +857,7 @@ struct ModelManager::ModeVerifier
 
             try
             {
-                return load_with_device("cpu");
+                return load_with_device("cpu", cpu_devices);
             }
             catch (const std::exception &e)
             {
@@ -2305,21 +2420,11 @@ bool ModelManager::LoadSingleModel()
         {
             // GGUF 模型通过 llama.cpp 后端运行，优先 GPU，可 fallback CPU。
             config->set_backend("GGUF");
-            std::string gguf_device = config->get_device();
-            std::transform(gguf_device.begin(), gguf_device.end(), gguf_device.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (gguf_device == "cpu" || gguf_device == "gpu")
-            {
-                config->set_device(gguf_device);
-            }
-            else
-            {
-                config->set_device("gpu");
-            }
         }
         My_Log{} << "LoadSingleModel: model_format=" << const_cast<ModelFormat &>(fmt).to_string()
                  << ", backend=" << config->get_backend()
-                 << ", device=" << config->get_device() << std::endl;
+                 << ", device=" << config->get_device()
+                 << ", devices_effective=" << JoinDevices(config->get_devices_effective()) << std::endl;
     }
 
     // Also register this as the currently active single model
@@ -2330,6 +2435,7 @@ bool ModelManager::LoadSingleModel()
         loaded_model->context = genieModelHandle;
         loaded_model->backend = config->get_backend();
         loaded_model->device = config->get_device();
+        loaded_model->devices_effective = JoinDevices(config->get_devices_effective());
         loaded_model->is_loaded = true;
 
         current_model_ = loaded_model;

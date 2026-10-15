@@ -26,9 +26,98 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <mutex>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
+
+static void PrepareHexagonEnvironment()
+{
+#if defined(_WIN32)
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        HMODULE module = GetModuleHandleW(L"ggml-hexagon.dll");
+        if (!module)
+        {
+            return;
+        }
+        std::wstring buffer(MAX_PATH * 2, L'\0');
+        DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0 || length >= buffer.size())
+        {
+            return;
+        }
+        buffer.resize(length);
+        const std::wstring dir = fs::path(buffer).parent_path().wstring();
+        std::wstring value = dir;
+        const wchar_t *existing = _wgetenv(L"ADSP_LIBRARY_PATH");
+        if (existing && *existing)
+        {
+            const std::wstring current(existing);
+            if (current.find(dir) != std::wstring::npos)
+            {
+                return;
+            }
+            value = dir + L";" + current;
+        }
+        _wputenv_s(L"ADSP_LIBRARY_PATH", value.c_str());
+        My_Log{} << "[Hexagon] ADSP_LIBRARY_PATH=" << fs::path(value).string() << "\n";
+    });
+#endif
+}
+
+bool LlamaCppHasHtpDevice()
+{
+    PrepareHexagonEnvironment();
+    return ggml_backend_dev_by_name("HTP0") != nullptr;
+}
+
+static std::vector<std::string> BuildAcceleratorDeviceArgs(const std::vector<std::string> &devices,
+                                                           const std::string &device, bool speculative)
+{
+    auto contains = [&devices](const char *name)
+    {
+        return std::find(devices.begin(), devices.end(), name) != devices.end();
+    };
+    const bool want_npu = contains("npu");
+    const bool want_gpu = devices.empty() ? device != "cpu" : contains("gpu");
+
+    std::string device_list;
+    if (want_npu)
+    {
+        device_list = "HTP0";
+    }
+    if (want_gpu)
+    {
+        device_list += device_list.empty() ? "GPUOpenCL" : ",GPUOpenCL";
+    }
+    if (device_list.empty())
+    {
+        device_list = "GPUOpenCL";
+    }
+
+    if (!speculative)
+    {
+        return {"--device", device_list, "-ngl", "99", "--no-mmap", "--no-repack", "--no-host"};
+    }
+    if (want_npu)
+    {
+        return {"--device", device_list, "-devd", want_gpu ? "GPUOpenCL" : "none"};
+    }
+    if (LlamaCppHasHtpDevice())
+    {
+        return {"--device", "GPUOpenCL", "-devd", "GPUOpenCL"};
+    }
+    return {};
+}
 
 static std::atomic<bool> g_llama_prefix_cache_enabled{true};
 
@@ -1299,6 +1388,7 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // 变量在这台机器上实际未生效，-ngl 99 下无论是否设置该变量都稳定复现 "q6_K set_tensor: temp
     // upload buffer alloc failed" 崩溃，且与 n_ctx 大小无关——这是驱动/ggml-opencl 后端层面的独立
     // 问题，不属于本次改动范围，细节见同名 llama_cpp.cpp.notes.md，此处维持无条件设置不变。
+    PrepareHexagonEnvironment();
 #if defined(_WIN32)
     _putenv_s("GGML_OPENCL_ADRENO_USE_LARGE_BUFFER", "1");
 #else
@@ -1483,16 +1573,11 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         // CPU 路径：保持 mmap/repack/no-host 的 llama.cpp 官方默认值（已实测验证比强制关闭更快）。
         arg_strings.insert(arg_strings.end(), {"-ngl", "0"});
     }
-    else if (!speculative_requested)
+    else
     {
-        // 非投机（现有全部单模型 GGUF）路径：保持历史 A/B 实测出的最快组合，本轮不改动。
-        arg_strings.insert(arg_strings.end(), {
-            "--device", "GPUOpenCL",
-            "-ngl", "99",
-            "--no-mmap",
-            "--no-repack",
-            "--no-host",
-        });
+        const std::vector<std::string> device_args =
+            BuildAcceleratorDeviceArgs(model_config_.get_devices(), device, speculative_requested);
+        arg_strings.insert(arg_strings.end(), device_args.begin(), device_args.end());
     }
     // 投机解码分支（非 CPU）不显式传 -ngl：llama-completion.exe 实测确认，一旦显式给出 -ngl（含
     // 99），fork 的 common/fit.cpp 会直接放弃显存拟合、强行按请求值全量分配，而本机 OpenCL 设备

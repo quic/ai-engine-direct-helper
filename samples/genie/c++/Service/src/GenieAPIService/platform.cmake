@@ -362,6 +362,35 @@ if (MSVC)
         # 承载该 fork 新增的投机解码(speculative decoding)API；与 Libmbedtls 一致，把源码 clone 到
         # 独立的 <name>-src 目录，不再复用静态 vendor 的 ${G_EXTERNAL_DIR}/llama.cpp。
         set(LLAMACPP_SRC_DIR ${CMAKE_BINARY_DIR}/llama-cpp-src)
+        set(LLAMACPP_HEXAGON_ARGS "")
+        set(LLAMACPP_HEXAGON_TARGETS "")
+        set(LLAMACPP_HEXAGON_ENABLED OFF)
+        if (NOT HEXAGON_SDK_ROOT AND DEFINED ENV{HEXAGON_SDK_ROOT})
+            set(HEXAGON_SDK_ROOT "$ENV{HEXAGON_SDK_ROOT}")
+        endif ()
+        if (HEXAGON_SDK_ROOT)
+            if (NOT GGML_HEXAGON_HTP_CERT AND DEFINED ENV{HEXAGON_HTP_CERT})
+                set(GGML_HEXAGON_HTP_CERT "$ENV{HEXAGON_HTP_CERT}")
+            endif ()
+            if (NOT GGML_HEXAGON_HTP_CERT)
+                message(FATAL_ERROR "HEXAGON_SDK_ROOT is set but no HTP signing certificate was found. "
+                        "Set HEXAGON_HTP_CERT (or -DGGML_HEXAGON_HTP_CERT=<pfx>), or unset HEXAGON_SDK_ROOT to build without NPU support.")
+            endif ()
+            file(TO_CMAKE_PATH "${HEXAGON_SDK_ROOT}" HEXAGON_SDK_ROOT_CMAKE)
+            file(TO_CMAKE_PATH "${GGML_HEXAGON_HTP_CERT}" GGML_HEXAGON_HTP_CERT_CMAKE)
+            set(LLAMACPP_HEXAGON_ENABLED ON)
+            set(LLAMACPP_HEXAGON_ARGS
+                    -DGGML_HEXAGON=ON
+                    -DHEXAGON_SDK_ROOT=${HEXAGON_SDK_ROOT_CMAKE}
+                    -DGGML_HEXAGON_HTP_CERT=${GGML_HEXAGON_HTP_CERT_CMAKE}
+            )
+            set(LLAMACPP_HEXAGON_TARGETS
+                    --target ggml-hexagon
+                    --target htp-v73 --target htp-v75 --target htp-v79 --target htp-v81
+                    --target libggml-htp-cat
+            )
+            message(STATUS "llama.cpp Hexagon (NPU) backend enabled, HEXAGON_SDK_ROOT=${HEXAGON_SDK_ROOT_CMAKE}")
+        endif ()
         ExternalProject_Add(Libllama.cpp
                 GIT_REPOSITORY https://github.com/qualcomm/llama.cpp.git
                 GIT_TAG c77fc5b052840687ec8eb9832c77155249fcf05d
@@ -395,8 +424,9 @@ if (MSVC)
                 -DLLAMA_BUILD_TESTS=OFF
                 -DLLAMA_BUILD_TOOLS=ON
                 -DLLAMA_BUILD_EXAMPLES=OFF
+                ${LLAMACPP_HEXAGON_ARGS}
                 # --target llama-completion：诊断/性能对比工具，用途详见 playbook 3.3.5
-                BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target ggml-base --target ggml --target ggml-cpu --target ggml-opencl --target llama --target llama-common --target mtmd --target llama-completion
+                BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target ggml-base --target ggml --target ggml-cpu --target ggml-opencl --target llama --target llama-common --target mtmd --target llama-completion ${LLAMACPP_HEXAGON_TARGETS}
                 BUILD_IN_SOURCE OFF
                 INSTALL_COMMAND ""
         )
@@ -426,6 +456,19 @@ if (MSVC)
                 ${CMAKE_BINARY_DIR}/llama-cpp-build/bin/llama-completion.exe
                 ${CMAKE_BINARY_DIR}/llama-cpp-build/bin/llama-completion-impl.dll
         )
+        if (LLAMACPP_HEXAGON_ENABLED)
+            list(APPEND EXTERNAL_LIB_PATH ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon)
+            list(APPEND EXTERNAL_LIBS ggml-hexagon)
+            list(APPEND EXTERNAL_BIN
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/bin/ggml-hexagon.dll
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon/libggml-htp-v73.so
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon/libggml-htp-v75.so
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon/libggml-htp-v79.so
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon/libggml-htp-v81.so
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon/libggml-htp.cat
+                    ${CMAKE_BINARY_DIR}/llama-cpp-build/ggml/src/ggml-hexagon/libggml-htp.inf
+            )
+        endif ()
         # ggml-cpu.dll 依赖 LLVM OpenMP 运行时(libomp140.aarch64.dll)，随 VS ARM64 LLVM 工具链
         # 分发但不在 PATH 中；多 MSVC 工具集版本共存时的选取踩坑详见 playbook 3.3.5。
         # 依次在 VS_VC_SEARCH_PATHS(Community 优先、Build Tools 兜底)下逐一 GLOB 搜索，

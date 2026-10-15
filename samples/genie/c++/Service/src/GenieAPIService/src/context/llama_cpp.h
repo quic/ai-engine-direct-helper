@@ -17,6 +17,8 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+bool LlamaCppHasHtpDevice();
+
 class LLAMACppBuilder : public ContextBase
 {
 public:
