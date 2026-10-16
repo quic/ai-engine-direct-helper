@@ -42,6 +42,8 @@ public:
 
     static void SetPrefixCacheEnabled(bool enabled);
 
+    static void SetPrefixHeadCheckpoints(int n);
+
     bool UsesCrossRequestPrefixCache() const override;
 
 private:

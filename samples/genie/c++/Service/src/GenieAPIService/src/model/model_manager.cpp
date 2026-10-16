@@ -1166,12 +1166,16 @@ bool ModelManager::InitializeConfig()
 #ifdef USE_GGUF
                 {
                     bool prefix_cache_enabled = true;
+                    int head_checkpoints = 2;
                     if (pe_json.contains("llama_prefix_cache") && pe_json["llama_prefix_cache"].is_object())
                     {
                         prefix_cache_enabled = pe_json["llama_prefix_cache"].value("enabled", true);
+                        head_checkpoints = pe_json["llama_prefix_cache"].value("head_checkpoints", 2);
                     }
                     LLAMACppBuilder::SetPrefixCacheEnabled(prefix_cache_enabled);
-                    My_Log{} << "[Config] llama_prefix_cache.enabled=" << prefix_cache_enabled << std::endl;
+                    LLAMACppBuilder::SetPrefixHeadCheckpoints(head_checkpoints);
+                    My_Log{} << "[Config] llama_prefix_cache.enabled=" << prefix_cache_enabled
+                             << " head_checkpoints=" << head_checkpoints << std::endl;
                 }
 #endif
 

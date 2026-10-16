@@ -31,6 +31,7 @@
 namespace fs = std::filesystem;
 
 static std::atomic<bool> g_llama_prefix_cache_enabled{true};
+static std::atomic<int> g_llama_prefix_head_checkpoints{2};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 返回自 epoch 以来的毫秒数（用于 prefill/生成速率等性能日志的时间戳计算）
@@ -418,6 +419,7 @@ public:
         // 命中率证据（对齐本次交付测试方案要求的“接受计数 > 0”验收标准）；单模型路径下恒为 0。
         int64_t n_draft_proposed_total = 0;
         int64_t n_draft_accepted_total = 0;
+        std::vector<int64_t> draft_accept_hist;
 
         // Prefill 阶段心跳计时：记录上次发送心跳的时间点
         // 每隔 kPrefillHeartbeatIntervalMs 毫秒向客户端发送一次保活消息，
@@ -452,6 +454,8 @@ public:
         }
         if (n_reuse == 0)
         {
+            prefix_ckpts_.clear();
+            prefix_cache_tokens_.clear();
             llama_memory_clear(mem, false);
             if (ctx_dft)
             {
@@ -466,12 +470,25 @@ public:
             }
             n_past = n_reuse;
             n_consumed = n_reuse;
+            prefix_cache_valid_ = true;
         }
         int ckpt_target = FindCheckpointPos(effective_prompt_len, n_reuse);
+        std::vector<int> ckpt_points = prefix_cache_on
+                ? FindHeadCheckpointPos(effective_prompt_len, n_reuse, ckpt_target) : std::vector<int>{};
+        if (ckpt_target > 0)
+        {
+            ckpt_points.push_back(ckpt_target);
+        }
+        std::string head_str;
+        for (size_t i = 0; i + 1 < ckpt_points.size(); ++i)
+        {
+            head_str += (i ? "," : "") + std::to_string(ckpt_points[i]);
+        }
         My_Log{} << "[LLAMACpp] " << query_type
                  << " Prefix cache: enabled=" << prefix_cache_on
                  << " | reused_tokens=" << n_reuse
                  << " | checkpoint_at=" << ckpt_target
+                 << " | head_checkpoints=" << head_str
                  << " | prompt_tokens=" << embd_inp.size() << "\n";
 
         bool think_in_progress = false;
@@ -609,9 +626,10 @@ public:
                 n_past += (int) embd.size();
                 total_decode_batches++;
 
-                if (prefix_cache_on && !prefill_done && ckpt_target > 0 && n_past == ckpt_target)
+                if (prefix_cache_on && !prefill_done &&
+                    std::find(ckpt_points.begin(), ckpt_points.end(), n_past) != ckpt_points.end())
                 {
-                    SavePrefixCheckpoint(ctx, ctx_dft, ckpt_target);
+                    SavePrefixCheckpoint(ctx, ctx_dft, n_past);
                 }
 
                 if (!prefill_done)
@@ -698,7 +716,8 @@ public:
                     embd.push_back(embd_inp[n_consumed]);
                     common_sampler_accept(smpl, embd_inp[n_consumed], false);
                     ++n_consumed;
-                    if ((int) embd.size() == params_.n_batch || n_consumed == ckpt_target)
+                    if ((int) embd.size() == params_.n_batch ||
+                        std::find(ckpt_points.begin(), ckpt_points.end(), n_consumed) != ckpt_points.end())
                     {
                         break;
                     }
@@ -840,6 +859,11 @@ public:
                 auto ids = common_sampler_sample_and_accept_n(smpl, ctx, draft);
                 common_speculative_accept(spec_.get(), kSpecSeqId, (uint16_t) (ids.size() - 1));
                 n_draft_accepted_total += (int64_t) ids.size() - 1;
+                if (draft_accept_hist.size() < ids.size())
+                {
+                    draft_accept_hist.resize(ids.size(), 0);
+                }
+                draft_accept_hist[ids.size() - 1]++;
                 n_past += (int) ids.size() - 1;
 
                 bool stop_now = false;
@@ -974,6 +998,7 @@ public:
                 metrics["draft_accepted"] = n_draft_accepted_total;
                 metrics["draft_acceptance_rate"] = (n_draft_proposed_total > 0) ?
                     ((double) n_draft_accepted_total / (double) n_draft_proposed_total) : 0.0;
+                metrics["draft_accept_hist"] = draft_accept_hist;
             }
             else
             {
@@ -1069,11 +1094,17 @@ public:
     int64_t aux_ms_accum_ = 0;
     int64_t aux_calls_accum_ = 0;
 
+    struct PrefixCheckpoint
+    {
+        int pos = 0;
+        std::vector<uint8_t> tgt;
+        std::vector<uint8_t> dft;
+        std::vector<uint8_t> spec;
+    };
+
     bool prefix_cache_valid_ = false;
     std::vector<llama_token> prefix_cache_tokens_;
-    std::vector<uint8_t> prefix_ckpt_tgt_;
-    std::vector<uint8_t> prefix_ckpt_dft_;
-    std::vector<uint8_t> prefix_ckpt_spec_;
+    std::vector<PrefixCheckpoint> prefix_ckpts_;
 
     json GetLastQueryTraceMetrics() const
     {
@@ -1135,23 +1166,66 @@ public:
         return pos > n_reuse ? pos : -1;
     }
 
+    std::vector<int> FindHeadCheckpointPos(int effective_prompt_len, int n_reuse, int tail_pos) const
+    {
+        std::vector<int> out;
+        const int n_head = g_llama_prefix_head_checkpoints.load();
+        if (n_head <= 0 || tail_pos <= 0)
+        {
+            return out;
+        }
+        const llama_token bos = llama_vocab_bos(vocab);
+        llama_token msg_start = LLAMA_TOKEN_NULL;
+        int first = -1;
+        for (int i = 0; i < effective_prompt_len; ++i)
+        {
+            if (embd_inp[i] != bos && llama_vocab_is_control(vocab, embd_inp[i]))
+            {
+                msg_start = embd_inp[i];
+                first = i;
+                break;
+            }
+        }
+        if (msg_start == LLAMA_TOKEN_NULL)
+        {
+            return out;
+        }
+        int seen = 0;
+        for (int i = first + 1; i < tail_pos && seen < n_head; ++i)
+        {
+            if (embd_inp[i] == msg_start)
+            {
+                ++seen;
+                if (i > n_reuse)
+                {
+                    out.push_back(i);
+                }
+            }
+        }
+        return out;
+    }
+
     void SavePrefixCheckpoint(llama_context *c, llama_context *c_dft, int pos)
     {
-        bool ok = !NeedsPartialState(c) || SaveSeqState(c, prefix_ckpt_tgt_);
+        PrefixCheckpoint ck;
+        ck.pos = pos;
+        bool ok = !NeedsPartialState(c) || SaveSeqState(c, ck.tgt);
         if (ok && c_dft)
         {
-            ok = !NeedsPartialState(c_dft) || SaveSeqState(c_dft, prefix_ckpt_dft_);
+            ok = !NeedsPartialState(c_dft) || SaveSeqState(c_dft, ck.dft);
         }
         if (!ok)
         {
             My_Log{My_Log::Level::kWarning} << "[LLAMACpp] Prefix checkpoint save failed at pos=" << pos << "\n";
             return;
         }
-        prefix_ckpt_spec_.clear();
-        if (spec_ && !common_speculative_get_state(spec_.get(), 0, prefix_ckpt_spec_))
+        if (spec_ && !common_speculative_get_state(spec_.get(), 0, ck.spec))
         {
-            prefix_ckpt_spec_.clear();
+            ck.spec.clear();
         }
+        My_Log{} << "[LLAMACpp] Prefix checkpoint saved: pos=" << pos
+                 << " | tgt_bytes=" << ck.tgt.size() << " | dft_bytes=" << ck.dft.size() << "\n";
+        prefix_ckpts_.push_back(std::move(ck));
         prefix_cache_tokens_.assign(embd_inp.begin(), embd_inp.begin() + pos);
         prefix_cache_valid_ = true;
     }
@@ -1162,12 +1236,18 @@ public:
         const bool partial_dft = c_dft && NeedsPartialState(c_dft);
         const int n_cached = (int) prefix_cache_tokens_.size();
         int n = 0;
+        const PrefixCheckpoint *hit = nullptr;
         if (partial_tgt || partial_dft)
         {
-            if (n_cached > 0 && n_cached <= limit &&
-                std::equal(prefix_cache_tokens_.begin(), prefix_cache_tokens_.end(), embd_inp.begin()))
+            for (auto it = prefix_ckpts_.rbegin(); it != prefix_ckpts_.rend(); ++it)
             {
-                n = n_cached;
+                if (it->pos > 0 && it->pos <= limit && it->pos <= n_cached &&
+                    std::equal(prefix_cache_tokens_.begin(), prefix_cache_tokens_.begin() + it->pos, embd_inp.begin()))
+                {
+                    n = it->pos;
+                    hit = &*it;
+                    break;
+                }
             }
         }
         else
@@ -1193,11 +1273,11 @@ public:
                 << ", common_prefix=" << common << "\n";
             return 0;
         }
-        bool ok = !partial_tgt || RestoreSeqState(c, prefix_ckpt_tgt_);
+        bool ok = !partial_tgt || RestoreSeqState(c, hit->tgt);
         ok = ok && llama_memory_seq_rm(llama_get_memory(c), 0, n, -1);
         if (ok && c_dft)
         {
-            ok = !partial_dft || RestoreSeqState(c_dft, prefix_ckpt_dft_);
+            ok = !partial_dft || RestoreSeqState(c_dft, hit->dft);
             ok = ok && llama_memory_seq_rm(llama_get_memory(c_dft), 0, n, -1);
         }
         if (!ok)
@@ -1205,10 +1285,23 @@ public:
             My_Log{My_Log::Level::kWarning} << "[LLAMACpp] Prefix cache restore failed, full prefill\n";
             return 0;
         }
-        if (spec_ && !prefix_ckpt_spec_.empty())
+        if (spec_ && hit && !hit->spec.empty())
         {
-            common_speculative_set_state(spec_.get(), 0, prefix_ckpt_spec_);
+            common_speculative_set_state(spec_.get(), 0, hit->spec);
         }
+        if (n < n_cached)
+        {
+            My_Log{} << "[LLAMACpp] Prefix cache fallback hit: pos=" << n << " (latest=" << n_cached << ")\n";
+        }
+        prefix_ckpts_.erase(std::remove_if(prefix_ckpts_.begin(), prefix_ckpts_.end(),
+                                           [n](const PrefixCheckpoint &ck) { return ck.pos > n; }),
+                            prefix_ckpts_.end());
+        const size_t n_keep_head = (size_t) std::max(0, g_llama_prefix_head_checkpoints.load());
+        if (prefix_ckpts_.size() > n_keep_head + 1)
+        {
+            prefix_ckpts_.erase(prefix_ckpts_.begin() + (long long) n_keep_head, prefix_ckpts_.end() - 1);
+        }
+        prefix_cache_tokens_.resize(n);
         return n;
     }
 
@@ -1710,6 +1803,11 @@ LLAMACppBuilder::~LLAMACppBuilder()
 void LLAMACppBuilder::SetPrefixCacheEnabled(bool enabled)
 {
     g_llama_prefix_cache_enabled.store(enabled);
+}
+
+void LLAMACppBuilder::SetPrefixHeadCheckpoints(int n)
+{
+    g_llama_prefix_head_checkpoints.store(n);
 }
 
 bool LLAMACppBuilder::UsesCrossRequestPrefixCache() const
