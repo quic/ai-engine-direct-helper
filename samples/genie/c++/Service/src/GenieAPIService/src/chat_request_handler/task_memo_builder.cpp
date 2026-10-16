@@ -524,7 +524,21 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
     double prev_confidence = has_prev ? prev->value("confidence", 0.0) : 0.0;
     size_t prev_refresh = has_prev ? prev->value("refresh_count", (size_t)0) : 0;
 
-    json entry = BuildRuleLayer(has_prev ? *prev : json::object(), dropped_messages);
+    size_t already_folded = has_prev ? prev->value("_folded_count", (size_t)0) : 0;
+    if (already_folded > dropped_messages.size())
+        already_folded = 0;
+    if (has_prev && already_folded == dropped_messages.size()) {
+        res.active = true;
+        res.confidence = prev_confidence;
+        res.refresh_count = prev_refresh;
+        res.pages_total = (prev->contains("pages") && (*prev)["pages"].is_array()) ? (*prev)["pages"].size() : 0;
+        res.compact_render = RenderCompact(*prev);
+        return res;
+    }
+    const std::vector<GenieChatMessage> new_dropped(dropped_messages.begin() + (long long) already_folded,
+                                                    dropped_messages.end());
+
+    json entry = BuildRuleLayer(has_prev ? *prev : json::object(), new_dropped);
 
     // 原始目标锚点：只在尚未捕获过时抓取一次；一旦捕获，后续轮次通过 entry/prev 透传，
     // 永不被规则层或模型层的后续更新覆盖（BuildRuleLayer 已经把 prev 的既有字段原样
@@ -538,7 +552,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         entry["original_goal_confidence"] = anchor.second ? std::string("high") : std::string("low");
     }
 
-    if (ShouldTriggerModelLayer(dropped_messages, has_prev, prev_confidence)
+    if (ShouldTriggerModelLayer(new_dropped, has_prev, prev_confidence)
             && (!is_alive_fn_ || is_alive_fn_())) {
         std::string prompt = BuildModelPrompt(has_prev ? *prev : json::object(), entry);
         std::string raw_output = infer_fn_(prompt);

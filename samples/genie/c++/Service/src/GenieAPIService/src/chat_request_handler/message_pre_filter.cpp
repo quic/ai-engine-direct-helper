@@ -24,7 +24,7 @@ using json = nlohmann::ordered_json;
 
 namespace {
 
-constexpr float kEvictionLowWaterRatio = 0.65f;
+constexpr float kEvictionLowWaterRatio = 0.5f;
 constexpr float kEvictionHighWaterRatio = 0.95f;
 constexpr size_t kMaxEvictionStates = 64;
 constexpr float kToolEntryCapRatio = 0.3f;
@@ -310,8 +310,8 @@ void ApplyRepeatResultStubs(json& msg, const std::string& key, const void* model
 }
 
 constexpr size_t kGrowthWindow = 4;
-constexpr float kGrowthReserveRounds = 2.0f;
-constexpr float kEvictionLowWaterFloorRatio = 0.5f;
+constexpr float kGrowthReserveRounds = 3.0f;
+constexpr float kEvictionLowWaterFloorRatio = 0.4f;
 
 struct GrowthState {
     const void* model = nullptr;

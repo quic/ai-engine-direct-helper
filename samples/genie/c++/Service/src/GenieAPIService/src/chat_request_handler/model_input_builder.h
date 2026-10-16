@@ -489,14 +489,23 @@ private:
             contextSize,
             "Optimization"
         );
+        if (!optimized.messages.empty()) {
+            std::string memo_body = BuildTaskMemoBody();
+            if (!memo_body.empty()) {
+                size_t memo_idx = 0;
+                while (memo_idx + 1 < optimized.messages.size() && optimized.messages[memo_idx].role == "system")
+                    ++memo_idx;
+                optimized.messages[memo_idx].content = memo_body.substr(2) + "\n\n" + optimized.messages[memo_idx].content;
+            }
+        }
         for (const auto& opt_msg : optimized.messages) {
             chat_history_.AddMessage(opt_msg.role, opt_msg.content);
         }
 
         if (!chat_history_.IsEmpty()) {
-            std::string memo_section = BuildTaskMemoSection();
-            if (!memo_section.empty()) {
-                chat_history_.PrependToLastMessage(memo_section);
+            std::string memo_notes = BuildTaskMemoNotes();
+            if (!memo_notes.empty()) {
+                chat_history_.PrependToLastMessage(memo_notes);
             }
         }
 
@@ -1814,6 +1823,35 @@ private:
             }
         }
         return "\n\n" + rendered + consecutive_failure_note;
+    }
+
+    std::string BuildTaskMemoBody() const
+    {
+        if (!request_data_.is_object() || !request_data_.contains("messages") || !request_data_["messages"].is_array())
+            return "";
+        auto memo_entry = task_memo_builder_.Lookup(request_data_["messages"]);
+        if (!memo_entry)
+            return "";
+        std::string rendered = TaskMemoBuilder::Render(*memo_entry);
+        if (rendered.empty())
+            return "";
+        const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
+        double ratio = po_cfg.task_memo.token_budget_ratio;
+        if (ratio > 0.0) {
+            double bytes_per_token = EstimateCjkAwareBytesPerToken(
+                rendered, po_cfg.fidelity.cjk_bytes_per_token, po_cfg.fidelity.ascii_bytes_per_token);
+            size_t budget_bytes = static_cast<size_t>(
+                instance_config_->get_context_size() * ratio * bytes_per_token);
+            if (budget_bytes > 0 && rendered.size() > budget_bytes) {
+                rendered = TaskMemoBuilder::Render(*memo_entry, budget_bytes);
+            }
+        }
+        return "\n\n" + rendered;
+    }
+
+    std::string BuildTaskMemoNotes() const
+    {
+        return BuildStandaloneRedundantToolCallNote() + BuildConsecutiveToolFailureNote();
     }
 
     // ========== 辅助函数：调用 FitMessagesToContext 并统一处理错误和日志 ==========

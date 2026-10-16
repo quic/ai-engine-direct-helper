@@ -420,6 +420,10 @@ public:
         int64_t n_draft_proposed_total = 0;
         int64_t n_draft_accepted_total = 0;
         std::vector<int64_t> draft_accept_hist;
+        int64_t spec_draft_ms = 0;
+        int64_t spec_verify_ms = 0;
+        int64_t spec_post_ms = 0;
+        int64_t spec_rounds = 0;
 
         // Prefill 阶段心跳计时：记录上次发送心跳的时间点
         // 每隔 kPrefillHeartbeatIntervalMs 毫秒向客户端发送一次保活消息，
@@ -826,7 +830,9 @@ public:
                             /*.prompt   =*/ &spec_prompt,
                             /*.result   =*/ &draft,
                     };
+                    const int64_t t_draft0 = now_ms();
                     common_speculative_draft(spec_.get());
+                    spec_draft_ms += now_ms() - t_draft0;
                     n_draft_proposed_total += (int64_t) draft.size();
 
                     // 对齐官方参考实现 examples/speculative-simple/speculative-simple.cpp:206-213——
@@ -852,6 +858,7 @@ public:
                     common_batch_add(batch_tgt, draft[i], n_past + (int) i, {kSpecSeqId}, true);
                 }
 
+                const int64_t t_verify0 = now_ms();
                 if (llama_decode(ctx, batch_tgt))
                 {
                     My_Log{My_Log::Level::kError}
@@ -859,10 +866,14 @@ public:
                     decode_failed = true;
                     break;
                 }
+                const int64_t t_verify1 = now_ms();
+                spec_verify_ms += t_verify1 - t_verify0;
+                ++spec_rounds;
 
                 common_speculative_process(spec_.get(), batch_tgt);
 
                 auto ids = common_sampler_sample_and_accept_n(smpl, ctx, draft);
+                spec_post_ms += now_ms() - t_verify1;
                 common_speculative_accept(spec_.get(), kSpecSeqId, (uint16_t) (ids.size() - 1));
                 n_draft_accepted_total += (int64_t) ids.size() - 1;
                 if (draft_accept_hist.size() < ids.size())
@@ -961,7 +972,11 @@ public:
                  << " | gen_rate=" << std::fixed << std::setprecision(1) << gen_rate << " tok/s"
                  << " | " << llama_perf_oss.str()
                  << (spec_ ? (" | draft_proposed=" + std::to_string(n_draft_proposed_total) +
-                              " | draft_accepted=" + std::to_string(n_draft_accepted_total)) : std::string())
+                              " | draft_accepted=" + std::to_string(n_draft_accepted_total) +
+                              " | spec_rounds=" + std::to_string(spec_rounds) +
+                              " | draft_ms=" + std::to_string(spec_draft_ms) +
+                              " | verify_ms=" + std::to_string(spec_verify_ms) +
+                              " | post_ms=" + std::to_string(spec_post_ms)) : std::string())
                  << "\n";
 
         if (is_aux_inference && !generated_text_buf.empty()) {
@@ -1005,6 +1020,10 @@ public:
                 metrics["draft_acceptance_rate"] = (n_draft_proposed_total > 0) ?
                     ((double) n_draft_accepted_total / (double) n_draft_proposed_total) : 0.0;
                 metrics["draft_accept_hist"] = draft_accept_hist;
+                metrics["spec_rounds"] = spec_rounds;
+                metrics["spec_draft_ms"] = spec_draft_ms;
+                metrics["spec_verify_ms"] = spec_verify_ms;
+                metrics["spec_post_ms"] = spec_post_ms;
             }
             else
             {
