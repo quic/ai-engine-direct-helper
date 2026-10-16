@@ -28,10 +28,14 @@ set(VS_VC_SEARCH_PATHS ${VS_VC_PATH} ${VS_VC_BUILD_TOOL_PATH})
 if (MSVC)
     set(MSVC_CLANG_COMPILER "")
     set(MSVC_CLANG_LINKER "")
+    set(MSVC_CLANG_LIBOMP_LIBRARY "")
     foreach (_vs_vc_candidate ${VS_VC_SEARCH_PATHS})
         if (NOT MSVC_CLANG_COMPILER AND EXISTS "${_vs_vc_candidate}/Tools/Llvm/ARM64/bin/clang.exe")
             set(MSVC_CLANG_COMPILER ${_vs_vc_candidate}/Tools/Llvm/ARM64/bin/clang.exe)
             set(MSVC_CLANG_LINKER ${_vs_vc_candidate}/Tools/Llvm/ARM64/bin/lld.exe)
+        endif ()
+        if (NOT MSVC_CLANG_LIBOMP_LIBRARY AND EXISTS "${_vs_vc_candidate}/Tools/Llvm/ARM64/lib/libomp.lib")
+            set(MSVC_CLANG_LIBOMP_LIBRARY ${_vs_vc_candidate}/Tools/Llvm/ARM64/lib/libomp.lib)
         endif ()
     endforeach ()
     if (NOT MSVC_CLANG_COMPILER)
@@ -39,6 +43,9 @@ if (MSVC)
         # 构建阶段针对该路径给出的报错更直观、可定位。
         set(MSVC_CLANG_COMPILER ${VS_VC_PATH}/Tools/Llvm/ARM64/bin/clang.exe)
         set(MSVC_CLANG_LINKER ${VS_VC_PATH}/Tools/Llvm/ARM64/bin/lld.exe)
+    endif ()
+    if (NOT MSVC_CLANG_LIBOMP_LIBRARY)
+        set(MSVC_CLANG_LIBOMP_LIBRARY ${VS_VC_PATH}/Tools/Llvm/ARM64/lib/libomp.lib)
     endif ()
 endif ()
 
@@ -382,6 +389,7 @@ if (MSVC)
                 # ARM64 向量化/快速数学编译选项，用于加速 ggml CPU 侧计算(Ninja + Clang 工具链)
                 "-DCMAKE_C_FLAGS=-march=armv8.7-a -fvectorize -ffp-model=fast -fno-finite-math-only"
                 "-DCMAKE_CXX_FLAGS=-march=armv8.7-a -fvectorize -ffp-model=fast -fno-finite-math-only"
+                -DOpenMP_libomp_LIBRARY=${MSVC_CLANG_LIBOMP_LIBRARY}
                 -DGGML_OPENCL=ON
                 # 预编译 Adreno OpenCL kernel 支持，详见 playbook 3.3.5
                 -DGGML_OPENCL_USE_ADRENO_BIN_KERNELS=ON
