@@ -2476,6 +2476,8 @@ print(f"模型要求的输入数据类型: {input_dtypes}")
 print(f"模型要求的输入形状: {input_shapes}")
 
 # 3. 创建数据类型映射
+# 注意：'ufp16'/'sfp16' 等是 QNN 量化（定点）类型，Native 模式下缓冲区里是原始量化整数，
+#       应映射为同宽度的整数类型；'fp16' 才是 float16。
 dtype_map = {
     'float16': np.float16,
     'fp16': np.float16,
@@ -2488,7 +2490,15 @@ dtype_map = {
     'uint16': np.uint16,
     'int32': np.int32,
     'uint32': np.uint32,
-    'bool': np.bool_
+    'bool': np.bool_,
+    'bool_': np.bool_,
+    # 量化（定点）类型
+    'ufp8': np.uint8,
+    'sfp8': np.int8,
+    'ufp16': np.uint16,
+    'sfp16': np.int16,
+    'ufp32': np.uint32,
+    'sfp32': np.int32,
 }
 
 # 4. 根据模型要求准备数据
@@ -2498,6 +2508,8 @@ input_dtype = dtype_map.get(input_dtype_str, np.float32)
 print(f"使用数据类型: {input_dtype}")
 
 # 5. 创建正确类型的输入数据
+# 量化输入需先按模型的 scale/offset 量化，而不是直接 astype：
+#   q = clip(round(x / scale) - offset, 类型最小值, 类型最大值).astype(input_dtype)
 input_data = np.random.randn(*input_shapes[0]).astype(input_dtype)
 
 print(f"输入数据类型: {input_data.dtype}")
@@ -2508,7 +2520,15 @@ output = model.Inference([input_data])
 
 print(f"输出数据类型: {output[0].dtype}")
 print(f"输出数据形状: {output[0].shape}")
+
+# 7. 量化输出反量化（需要真实数值时）：x = (q.astype(np.float32) + offset) * scale
+#    argmax 等只依赖大小顺序的操作可直接在量化整数上进行（scale > 0 时顺序不变）。
 ```
+
+**说明**：
+
+- Native 模式下，输出数组的 dtype 与 `getOutputDataType()` 一致：`ufp16` → `uint16`，`sfp16` → `int16`，`ufp8` → `uint8`，`sfp8` → `int8`。旧版本会把所有 2 字节输出标成 `float16`，若代码中用 `.view(np.uint16)` / `.view(np.int16)` 还原，在新版本中依然有效。
+- Native 模式下，输入数组的字节数必须与模型输入张量一致（元素数 × 类型字节数），否则抛出 `ValueError`；字节数一致但 dtype 不一致（例如用 `float16` 数组承载 `ufp16` 数据）时会给出 `RuntimeWarning`，数据按原始字节传入。请直接传入与模型类型一致的数组（如 `uint16`）。
 
 ### 7.5 C++ 链接错误
 

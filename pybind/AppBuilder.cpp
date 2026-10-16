@@ -36,6 +36,7 @@ QNNContext::QNNContext(const std::string& model_name, const std::string& proc_na
     m_model_name = model_name;
     m_proc_name = proc_name;
 
+    dropNativeInputMeta_P(model_name, proc_name);  // a re-created model/proc pair may have new metadata
     g_LibAppBuilder.ModelInitialize(model_name, proc_name, model_path, backend_lib_path, system_lib_path, async, input_data_type, output_data_type, deviceID, coreIdsStr);
 }
 
@@ -121,8 +122,10 @@ uint64_t QNNContext::getProfilingEvent(uint32_t eventType){
 QNNContext::~QNNContext() {
     if (m_proc_name.empty())
         g_LibAppBuilder.ModelDestroy(m_model_name);
-    else
+    else {
+        dropNativeInputMeta_P(m_model_name, m_proc_name);
         g_LibAppBuilder.ModelDestroy(m_model_name, m_proc_name);
+    }
 }
 
 
@@ -145,6 +148,12 @@ QNNContext::InferenceAsync(const ShareMemory& share_memory, const std::vector<py
     std::vector<py::array> keepAlive;
     const bool floatMode = isFloat32Request(input_data_type);
 
+    // NATIVE mode: model input metadata (cached per model/proc) to validate input dtype/size.
+    NativeInputMeta inMeta;
+    if (!floatMode) {
+        inMeta = getNativeInputMeta_P(m_model_name, m_proc_name);
+    }
+
     for (auto i = 0; i < (int)input.size(); i++) {
         if (floatMode) {
             py::array_t<float, py::array::c_style | py::array::forcecast> farr(input[i]);
@@ -155,6 +164,7 @@ QNNContext::InferenceAsync(const ShareMemory& share_memory, const std::vector<py
         } else {
             py::array carr = py::array::ensure(input[i], py::array::c_style);
             if (!carr) throw std::runtime_error("Failed to ensure contiguous input array");
+            validateNativeInput(m_model_name, static_cast<size_t>(i), carr, inMeta.dtypes, inMeta.shapes);
             py::buffer_info buf = carr.request();
             keepAlive.push_back(carr);
             inputBuffers.push_back(reinterpret_cast<uint8_t*>(buf.ptr));
@@ -200,7 +210,7 @@ QNNContext::InferenceWait(const std::string& request_id, const ShareMemory& shar
     for (size_t i = 0; i < outputBuffers.size(); i++) {
         std::string dtypeStr = (i < outDtypes.size()) ? outDtypes[i] : std::string("uint8");
         const std::vector<size_t> shape = (i < outShapes.size()) ? outShapes[i] : std::vector<size_t>{};
-        py::dtype dt = inferOutputNumpyDtype((i < outputSize.size()) ? outputSize[i] : 0, shape, dtypeStr);
+        py::dtype dt = inferOutputNumpyDtype((i < outputSize.size()) ? outputSize[i] : 0, shape, dtypeStr, floatOutMode);
 
         size_t elemCount = 0;
         if (!shape.empty()) {
