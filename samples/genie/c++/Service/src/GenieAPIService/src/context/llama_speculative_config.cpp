@@ -10,7 +10,9 @@
 
 #include <filesystem>
 
+#ifdef USE_GGUF
 #include "gguf.h"
+#endif
 #include "utils.h"
 
 #ifdef _WIN32
@@ -33,6 +35,7 @@ namespace
 // 与 ctx/内存门槛无关，见 llama_cpp.cpp.notes.md，故无法在该机器上直接实测 GPU 路径峰值）。
 constexpr uint64_t kSpeculativeMemoryEstimateMarginBytes = 2ULL * 1024 * 1024 * 1024;
 
+#ifdef USE_GGUF
 struct GgufModelShape
 {
     bool ok = false;
@@ -93,6 +96,7 @@ uint64_t EstimateKvCacheBytes(const GgufModelShape &shape, uint64_t context_size
     }
     return 2ULL * shape.n_layer * context_size * shape.n_head_kv * shape.key_length * 2ULL;
 }
+#endif // USE_GGUF
 
 } // namespace
 
@@ -216,8 +220,10 @@ uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
         total += File::get_file_size(draft_gguf_path, std::ios::binary);
     }
 
+#ifdef USE_GGUF
     total += EstimateKvCacheBytes(ReadGgufModelShape(main_gguf_path), context_size);
     total += EstimateKvCacheBytes(ReadGgufModelShape(draft_gguf_path), context_size);
+#endif
     total += kSpeculativeMemoryEstimateMarginBytes;
     return total;
 }
