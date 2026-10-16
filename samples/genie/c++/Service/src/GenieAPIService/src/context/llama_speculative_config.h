@@ -43,6 +43,7 @@ struct DraftModelConfig
     int top_k = 1;                     // 对应 --top-k；默认 1（greedy）；<0 = 不拼进 argv
     float top_p = -1.0f;               // 对应 --top-p；<0 = 未配置，不拼进 argv
     int ngram_mod_n_min = -1;          // 对应 --spec-ngram-mod-n-min；<0 = 未配置，不拼进 argv
+    int ngram_mod_n_match = -1;        // 对应 --spec-ngram-mod-n-match；<0 = 未配置，不拼进 argv
     bool ngram_mod = true;             // true = 自动给 spec_type 追加 ",ngram-mod"（已含时不重复追加）
     int n_gpu_layers = 99;             // 对应 -ngld；0 = drafter 权重全部留在 CPU；<0 = 不拼进 argv
     int fit_target_mib = -1;           // 对应 -fitt（每设备显存预留）；<0 = 未配置，不拼进 argv

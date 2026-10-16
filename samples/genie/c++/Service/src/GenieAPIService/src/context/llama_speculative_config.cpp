@@ -167,6 +167,11 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.ngram_mod_n_min = block["ngram_mod_n_min"].get<int>();
     }
 
+    if (block.contains("ngram_mod_n_match") && block["ngram_mod_n_match"].is_number_integer())
+    {
+        result.ngram_mod_n_match = block["ngram_mod_n_match"].get<int>();
+    }
+
     if (block.contains("ngram_mod") && block["ngram_mod"].is_boolean())
     {
         result.ngram_mod = block["ngram_mod"].get<bool>();

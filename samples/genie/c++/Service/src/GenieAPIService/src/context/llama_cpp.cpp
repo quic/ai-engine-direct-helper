@@ -1581,6 +1581,11 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             arg_strings.insert(arg_strings.end(),
                                 {"--spec-ngram-mod-n-min", std::to_string(draft_config.ngram_mod_n_min)});
         }
+        if (draft_config.ngram_mod_n_match >= 0)
+        {
+            arg_strings.insert(arg_strings.end(),
+                                {"--spec-ngram-mod-n-match", std::to_string(draft_config.ngram_mod_n_match)});
+        }
     }
 
     constexpr int kDefaultBatch = 2048;
