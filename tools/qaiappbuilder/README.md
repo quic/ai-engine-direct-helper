@@ -25,6 +25,7 @@
   - [Multi-Variant Packs](#multi-variant-packs-fp16--int8--w8a16)
   - [Promote Your Own Pack from Model Builder](#promote-your-own-pack-from-model-builder)
 - [🌟 Highlight: Model Builder Skill](#-highlight-model-builder-skill)
+- [☁️ AI Hub Device — Cloud Compile & Profile](#️-ai-hub-device--cloud-compile--profile)
 - [💬 Chat — Multi-Agent Streaming](#-chat--multi-agent-streaming)
   - [Built-in Tools](#built-in-tools)
   - [Try These](#try-these)
@@ -45,6 +46,7 @@
 |--------|-------------|
 | 🧩 **App Builder** | **[HIGHLIGHT]** A built-in workbench that runs ready-to-use **Model Packs** on the local NPU with one click. Self-contained Pack format (`manifest.json` + `runner.py` + optional `SKILL.md`), multi-variant precision switching, a **Sticky Worker** for sub-second repeat inference, history / compare / benchmark / share, and an optional **LLM Agent Pipeline** that lets a cloud LLM orchestrate multiple Packs via `appbuilder_run` tool calls. |
 | 🚀 **Model Builder Skill** | **[HIGHLIGHT]** AI-driven model conversion & optimization — convert PyTorch/ONNX models to QNN format at multiple precisions (FP16/FP32/W8A16/W8A8/W4A16/W4A8…), run inference, and validate results on the Snapdragon NPU — all via natural-language chat. **Best for small-to-medium models under ~2 GB; LLM conversion is NOT supported.** |
+| ☁️ **AI Hub Device** | Compile models and profile performance on Qualcomm AI Hub hosted devices without owning the target hardware. The five-panel workbench covers credentials, device/model discovery, compilation, and profiling with live job output. |
 | 💬 **Multi-Agent Streaming Chat** | Real-time **WebSocket** streaming (with automatic **SSE** fallback), full Markdown + syntax highlighting, plus a **Discussion mode** where multiple named agent personas debate a topic and converge on an implementation plan. |
 | 🔥 **Snapdragon NPU Inference** | Run LLMs locally and offline on the Snapdragon X Elite / X Plus NPU via the GenieAPIService daemon (managed start / stop / status / model-load / live logs). |
 | 🤖 **Multi-Model Support** | Seamlessly switch between local NPU models and cloud models (OpenAI-compatible providers). |
@@ -187,6 +189,46 @@ Once you've converted a model with [`model-builder`](#-highlight-model-builder-s
 1. Finish a Model Builder run (the converted `.bin` files land under the workspace `output/` folder).
 2. In the Model Builder UI a **Promote to App Builder** card scans the output, detects each precision (`fp16` / `fp32` / `int8`→`w8a8` / `w8a16` / `w4a16` / `int4`→`w4a8` / `w8a8b8`), and lets you check the variants to ship and pick a default.
 3. The importer (`FileSystemAppImportAdapter`, `src/qai/app_builder/infrastructure/app_import_adapter.py`) runs a `scan-bins → dry-run → commit → rollback`-safe cycle — `dry-run` validates the runner, weight checksums, and schema and smoke-tests the default variant on the NPU; `commit` atomically copies the Pack into `factory/chat_features/app-builder/models/<id>/` and exposes it in App Builder.
+
+---
+
+## ☁️ AI Hub Device — Cloud Compile & Profile
+
+Use **AI Hub Device** to compile a model or measure its performance on a Qualcomm AI Hub hosted target without having that device locally. Open the mode picker in the chat input toolbar and select **AI Hub Device**.
+
+AI Hub Device supports two independent sites:
+
+| Selector option | AI Hub site | Workbench |
+|-----------------|-------------|-----------|
+| **Global AI Hub** (default) | <https://aihub.qualcomm.com> | <https://workbench.aihub.qualcomm.com> |
+| **China AI Hub** | <https://aihub.qualcomm.cn> | <https://workbench.aihub.qualcomm.cn> |
+
+The site selector is always visible at the top of the AI Hub Device frame. Select the site where your account, token, models, devices, and cloud jobs reside before loading data or starting a job. Switching sites clears the current selections, results, and other job state, then loads the selected site's configuration; it does not start a job. The selector is disabled while a job is running.
+
+### Setup
+
+1. Create an account and API token at the Global or China AI Hub link above.
+2. Ensure the Python environment running QAI AppBuilder includes the `qai-hub` package. It is a declared application dependency and is installed by the normal project setup; source environments created by other means must install the project dependencies before using this mode.
+3. Configure each site you use with either its server-process environment variable or the **Configure** panel:
+
+   | Site | Environment variable | Persisted configuration |
+   |------|----------------------|-------------------------|
+   | Global | `AIHUB_API_TOKEN` | `data/config/aihub_config.json` |
+   | China | `AIHUB_CHINA_API_TOKEN` | `data/config/aihub_config_china.json` |
+
+For each site, its environment variable takes precedence over its persisted token. Tokens, SDK endpoint, loaded site data, and cloud-job state are kept independent between Global and China; selecting one site never falls back to the other site's credentials. CLI calls receive the selected site's settings through an isolated temporary configuration, which is removed after the call. The Configure panel and configuration API return only masked/presence information and never refill the token input or store a token in browser storage. Do not put tokens in chat prompts, command arguments, screenshots, logs, or files committed to source control.
+
+### Five-panel workflow
+
+| Panel | Use |
+|-------|-----|
+| **Configure** | Save a new API token for the selected site or confirm that its token is configured. |
+| **Devices** | Load the selected site's hosted target-device list and select the device for a job. |
+| **Models** | Load models available to your account on the selected site and select a model ID. |
+| **Compile** | Enter or reuse the model ID, choose a device, submit the compile job, and follow its live output or site-specific AI Hub Workbench link. |
+| **Profile** | Enter or reuse the model ID, choose a device, submit the profile job, and follow the streamed performance results. |
+
+Device and model listings, compilation, and profiling require network access and a valid token for the selected site. Compile and profile jobs run in that site's AI Hub service; they do not require the selected target device to be connected to this computer.
 
 ---
 

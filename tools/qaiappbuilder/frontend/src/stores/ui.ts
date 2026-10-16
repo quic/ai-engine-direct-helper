@@ -63,7 +63,8 @@ export type ToolMode =
   | "code"
   | "translate"
   | "pro"
-  | "gomaster";
+  | "gomaster"
+  | "aihub-device";
 
 interface UiState {
   theme: AppTheme;

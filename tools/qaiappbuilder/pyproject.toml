@@ -121,6 +121,11 @@ dependencies = [
   # missing wheel degrades to a coarse ``len//2`` estimate (never crashes chat).
   "tiktoken>=0.12.0,<1.0",
 
+  # Qualcomm AI Hub model compilation and profiling cloud service.
+  # China AI Hub currently rejects 0.56.x; keep the CLI/SDK on the newest
+  # server-supported release until that deployment accepts 0.56.x.
+  "qai-hub>=0.55.0,<0.56.0",
+
   # tools / process
   "psutil>=6.0,<8.0",
 

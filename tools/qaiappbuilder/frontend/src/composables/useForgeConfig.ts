@@ -145,6 +145,14 @@ export const DEFAULT_TOOLBAR_MODULES: ToolbarModulesMap = {
     i18n: "index.pptGen",
     icon: "slide",
   },
+  aihub_device: {
+    enabled: true,
+    order: 90,
+    mode: "aihub-device",
+    i18n: "index.aiHubDevice",
+    icon: "aihub_device",
+    hint: "index.aiHubDeviceHint",
+  },
 };
 
 // ─── Module-level singleton state ────────────────────────────────────────────

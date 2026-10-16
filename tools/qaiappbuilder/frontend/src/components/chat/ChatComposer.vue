@@ -90,6 +90,7 @@ import ModeFrameCoding from "./toolbar-modes/ModeFrameCoding.vue";
 import ModeFrameTranslate from "./toolbar-modes/ModeFrameTranslate.vue";
 import ModeFramePpt from "./toolbar-modes/ModeFramePpt.vue";
 import ModeFrameSsh from "./toolbar-modes/ModeFrameSsh.vue";
+import ModeFrameAiHubDevice from "./toolbar-modes/ModeFrameAiHubDevice.vue";
 // Internal-only sub-toolbars (MB Pro / GoMaster). Referenced lazily and ONLY
 // on the internal edition so the external open-source build tree-shakes the
 // dynamic import() away — the modules are physically absent from that bundle
@@ -1256,17 +1257,18 @@ onBeforeUnmount(() => {
 function setToolModeFromKey(modeStr: string): void {
   const tab = store.activeTab;
   if (tab === null) return;
-  const known: ReadonlySet<string> = new Set([
-    "model-build",
-    "model-hub",
-    "app-builder",
-    "code",
-    "translate",
-    "ppt",
-    "pro",
-    "gomaster",
-  ]);
-  if (known.has(modeStr)) {
+  const known: Record<string, true> = {
+    "model-build": true,
+    "model-hub": true,
+    "app-builder": true,
+    code: true,
+    translate: true,
+    ppt: true,
+    pro: true,
+    gomaster: true,
+    "aihub-device": true,
+  };
+  if (known[modeStr] === true) {
     setToolMode(modeStr as ToolModeKey);
     return;
   }
@@ -2017,6 +2019,10 @@ const {
           <component
             :is="ModeFrameGomaster"
             v-else-if="ModeFrameGomaster && effectiveMode === 'gomaster'"
+            @exit="exitMode"
+          />
+          <ModeFrameAiHubDevice
+            v-else-if="effectiveMode === 'aihub-device'"
             @exit="exitMode"
           />
 

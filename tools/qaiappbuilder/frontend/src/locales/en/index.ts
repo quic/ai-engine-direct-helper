@@ -19,6 +19,8 @@
 const index = {
   aiCodingAssistant: "AI Coding Assistant",
   anotherSessionGenerating: "Another session is generating",
+  aiHubDevice: "AI Hub Device",
+  aiHubDeviceHint: "Compile and profile models on AI Hub",
   appBuilder: "App Builder",
   appBuilderHint: "Try AI/QNN models on-device",
   assistantOnboardingBody: "These two buttons enable a \"coding assistant mode\" for the current chat — giving the AI project-level code understanding, file I/O, and terminal execution. Click to enable; once enabled, click ✕ at the top-right of the panel to exit.",

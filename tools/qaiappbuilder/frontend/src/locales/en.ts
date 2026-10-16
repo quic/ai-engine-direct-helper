@@ -16,6 +16,7 @@
 // =============================================================================
 
 import aiCoding from "./en/aiCoding";
+import aiHubDevice from "./en/aiHubDevice";
 import app from "./en/app";
 import appBuilder from "./en/appBuilder";
 import appConfig from "./en/appConfig";
@@ -84,6 +85,7 @@ import userMessageJump from "./en/userMessageJump";
 
 const en = {
   aiCoding,
+  aiHubDevice,
   app,
   appBuilder,
   appConfig,
