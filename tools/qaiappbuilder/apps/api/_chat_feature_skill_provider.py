@@ -98,6 +98,9 @@ TOOL_MODE_DIR_MAP: dict[str, str] = {
     # pre-built AI Hub packages + export to App Builder. Dir name == tool_mode.
     "model-hub":    "model-hub",
     "model_hub":    "model-hub",
+    # AI Hub Device — cloud compile/profile jobs on hosted target devices.
+    "aihub-device": "aihub-device",
+    "aihub_device": "aihub-device",
     # Other v1 features (registered for parity; will become useful
     # when batches E+ port them).
     "app-builder":  "app-builder",

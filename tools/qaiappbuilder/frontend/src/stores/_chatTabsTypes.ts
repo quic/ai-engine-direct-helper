@@ -42,7 +42,8 @@ export type ToolModeKey =
   | "translate"
   | "ppt"
   | "pro"
-  | "gomaster";
+  | "gomaster"
+  | "aihub-device";
 
 /** Per-mode tool parameters aggregated by ChatComposer and forwarded
  *  to the backend as `tool_params` (SSE query / WS envelope). Mirrors

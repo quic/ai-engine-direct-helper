@@ -17,6 +17,7 @@
 
 import type { MessageSchema } from "./schema";
 import aiCoding from "./zh-CN/aiCoding";
+import aiHubDevice from "./zh-CN/aiHubDevice";
 import app from "./zh-CN/app";
 import appBuilder from "./zh-CN/appBuilder";
 import appConfig from "./zh-CN/appConfig";
@@ -85,6 +86,7 @@ import userMessageJump from "./zh-CN/userMessageJump";
 
 const zh_CN: MessageSchema = {
   aiCoding,
+  aiHubDevice,
   app,
   appBuilder,
   appConfig,

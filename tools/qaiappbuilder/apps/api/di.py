@@ -59,6 +59,7 @@ from qai.platform.persistence.secrets import SecretStore, build_secret_store
 from qai.platform.process import prepend_bundled_paths_to_process
 from qai.platform.time import Clock, SystemClock
 
+from ._aihub_di import AiHubServices, build_aihub_services
 from ._ai_coding_di import AiCodingServices, build_ai_coding_services
 from ._app_builder_di import AppBuilderServices, build_app_builder_services
 from ._app_builder_model_builder_bridge import (
@@ -183,6 +184,7 @@ class Container:
     # AGENTS.md §3.1 permits tail-append.
     remote_deploy: RemoteDeployServices = field(init=False)
     model_runtime: ModelRuntimeServices = field(init=False)
+    aihub: AiHubServices = field(init=False)
     # Tail-appended (S9 close): ``model_builder`` context wires the
     # ModelBuilder -> AppBuilder Pack export pipeline; the
     # ``auto_export_bridge`` is the cross-context join consumed by
@@ -447,6 +449,7 @@ class Container:
         self.channels = build_channels_services(self)
         self.user_prefs = build_user_prefs_services(self)
         self.model_runtime = build_model_runtime_services(self)
+        self.aihub = build_aihub_services(self)
         # background_process platform module — wired last in phase 2 so it
         # sees the fully-built events bus (publishes update/delete envelopes)
         # and the canonical ``data_paths.root``.  Nothing in phase 2 depends

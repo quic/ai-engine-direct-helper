@@ -649,6 +649,8 @@ _FEATURE_DISPLAY_NAMES: dict[str, str] = {
     "ppt": "PPT 生成",
     "translate": "翻译",
     "gomaster": "GoMaster 模型优化",
+    "aihub-device": "AI Hub 设备编译",
+    "aihub_device": "AI Hub 设备编译",
 }
 
 _FEATURE_DISPLAY_NAMES_EN: dict[str, str] = {
@@ -664,6 +666,8 @@ _FEATURE_DISPLAY_NAMES_EN: dict[str, str] = {
     "ppt": "PPT Generation",
     "translate": "Translation",
     "gomaster": "GoMaster Model Optimization",
+    "aihub-device": "AI Hub Device Compilation",
+    "aihub_device": "AI Hub Device Compilation",
 }
 
 _FEATURE_DISPLAY_NAMES_ZH_TW: dict[str, str] = {
@@ -679,6 +683,8 @@ _FEATURE_DISPLAY_NAMES_ZH_TW: dict[str, str] = {
     "ppt": "PPT 生成",
     "translate": "翻譯",
     "gomaster": "GoMaster 模型最佳化",
+    "aihub-device": "AI Hub 裝置編譯",
+    "aihub_device": "AI Hub 裝置編譯",
 }
 
 
@@ -852,93 +858,125 @@ _MODEL_BUILD_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 # ---------------------------------------------------------------------------
-# AI-Hub routing patterns (2026-06; repurposed 2026-07)
+# AI Hub intent routing
 # ---------------------------------------------------------------------------
-#
-# Strong signal: if the user message mentions Qualcomm **AI Hub** (or its
-# pre-built-package terminology), the intent is "download a pre-exported
-# package from AI Hub and run it" — that is the ``model-hub`` skill's job (the
-# promoted former ``aihub-model-run``), NOT model-builder (which converts /
-# re-quantizes CUSTOM ONNX/PyTorch models). When ANY of these matches,
-# ``_auto_detect_tool_mode`` routes to ``"model-hub"`` (2026-07) so the toolbar
-# flips to the dedicated mode. Historically (before ``model-hub`` was a
-# first-class mode) this was a pure VETO that returned ``None``; it still vetoes
-# model-builder promotion — an AI-Hub request never resolves to ``model_build``.
-#
-# Matching tolerates hyphen / space / no-separator variants and is
-# case-insensitive (e.g. "AI Hub" / "AI-Hub" / "AIHub"; "pre-exported" /
-# "pre exported" / "preexported"). Chinese pre-built terms are included too.
-_AIHUB_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # "AI Hub" / "AI-Hub" / "AIHub" (case-insensitive; optional sep).
-    re.compile(r"(?<![A-Za-z0-9_])ai[\s\-]?hub", re.IGNORECASE),
-    # "qai_hub" / "qai-hub" / "qaihub" (the AI Hub python package / CLI).
-    re.compile(r"(?<![A-Za-z0-9_])qai[\s_\-]?hub", re.IGNORECASE),
-    # Pre-built-package terminology (EN): pre-exported / pre-compiled /
-    # pre-built — tolerate hyphen / space / no separator.
+# These routes deliberately share vocabulary, so evaluation order is part of
+# the contract: cloud compile/profile/upload, then pre-built download/run, then
+# an AI Hub mention veto, and only then local model conversion.
+_AIHUB_DEVICE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Natural noun order puts model qualifiers between the operation and
+    # "AI Hub" (for example, "compile an AI Hub model"). Keep the scan
+    # within one short clause so an unrelated later mention does not route it.
     re.compile(
-        r"(?<![A-Za-z0-9_])pre[\s\-]?(export|exported|compile|compiled|built|build)"
+        r"(?:compile|profile)\b[^.!?;\n]{0,60}?"
+        r"(?:qualcomm\s+)?ai[\s\-]?hub\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"upload\s+(?:my\s+)?(?:model\s+)?to\s+(?:qualcomm\s+)?ai[\s\-]?hub",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"ai[\s\-]?hub\s+(?:device|devices|compile|compilation|profile|profiling)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:list|show|which|get).{0,20}ai[\s\-]?hub.{0,12}devices?", re.IGNORECASE),
+    re.compile(r"without\s+(?:hardware|a\s+device|physical\s+devices?)", re.IGNORECASE),
+    re.compile(r"cloud\s+(?:device|profiling|compilation|compile|profile)", re.IGNORECASE),
+    re.compile(
+        r"(?:compile|profile)\s+(?:my\s+)?(?:model\s+)?(?:for|on)\s+"
+        r"(?:snapdragon|samsung\s+galaxy|qualcomm|pixel|sm\d+|qcs|qrb|device)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:上传|编译|分析|性能测试).{0,20}(?:AI[\s\-]?Hub|云端|云设备)", re.IGNORECASE),
+    re.compile(r"(?:AI[\s\-]?Hub|云端).{0,20}(?:上传|编译|分析|性能测试|设备列表)", re.IGNORECASE),
+)
+
+_AIHUB_DOWNLOAD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"download\s+[^.\n]{0,60}?pre[-\s]?(?:built|compiled)\s+package",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"download\s+[^.\n]{0,60}?(?:from|via)\s+(?:qualcomm\s+)?ai[\s\-]?hub",
+        re.IGNORECASE,
+    ),
+    re.compile(r"download\s+(?:a\s+)?pre[-\s]?(?:built|compiled)\s+package", re.IGNORECASE),
+    re.compile(r"pre[-\s]?(?:built|compiled)\s+package", re.IGNORECASE),
+    re.compile(r"(?:download|get|run)\s+(?:the\s+)?ai[\s\-]?hub\s+model", re.IGNORECASE),
+    re.compile(
+        r"从\s*(?:qualcomm\s*)?ai[\s\-]?hub\s*上?\s*下载"
+        r"|下载\s*(?:qualcomm\s*)?ai[\s\-]?hub",
+        re.IGNORECASE,
+    ),
+    re.compile(r"预\s?(?:编译|导出|构建)包|预打包"),
+    re.compile(r"(?<![A-Za-z0-9_])voice[\s_\-]?ai(?![A-Za-z0-9_])", re.IGNORECASE),
+)
+
+_AIHUB_MENTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?<![A-Za-z0-9_])ai[\s\-]?hub", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_])qai[\s_\-]?hub", re.IGNORECASE),
+    re.compile(
+        r"(?<![A-Za-z0-9_])pre[\s\-]?(?:export|exported|compile|compiled|built|build)"
         r"(?![A-Za-z0-9_])",
         re.IGNORECASE,
     ),
-    # AI Hub package format names. NOTE: only ``VOICE_AI`` is kept as a veto
-    # signal — model-builder never produces VOICE_AI, so it's AI-Hub-exclusive.
-    # ``QNN_CONTEXT_BINARY`` / "qnn context binary" is intentionally NOT a veto
-    # word: model-builder ALSO generates QNN context binaries, so "export my
-    # model to qnn context binary" is a legit model-builder request that must
-    # still be detected. AI-Hub packages that use that format are already
-    # caught by the "AI Hub" / "pre-exported" veto words alongside it.
     re.compile(r"(?<![A-Za-z0-9_])voice[\s_\-]?ai(?![A-Za-z0-9_])", re.IGNORECASE),
-    # Pre-built-package terminology (CN): 预编译 / 预导出 / 预构建 / 预打包 /
-    # 预编译包 etc. ("预" + build/export verb).
-    re.compile(r"预[\s]?(编译|导出|构建|打包)"),
-    # "端侧预导出" style phrasing seen in prompts.
-    re.compile(r"预导出包|预编译包|端侧预导出"),
+    re.compile(r"预\s?(?:编译|导出|构建|打包)"),
+)
+
+_LOCAL_COMPILE_SIGNALS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(signal, re.IGNORECASE)
+    for signal in (
+        r"(?:i\s+)?(?:have|got|own)\s+(?:the\s+)?(?:device|hardware)",
+        r"(?:compile|profile)\s+(?:locally|on\s+this\s+device|on\s+my\s+device)",
+        r"(?:compile|profile)\b[^.!?;\n]{0,40}\blocally\b",
+        r"for\s+(?:my\s+)?(?:local|this)\s+device",
+        r"on\s+my\s+local\s+device",
+        r"local\s+(?:device|compilation|profiling)",
+        r"(?:本地|本机|我的设备|手头的设备).{0,16}(?:编译|转换|分析|部署)",
+    )
 )
 
 
+def _has_local_compile_signal(user_message: str) -> bool:
+    return any(pattern.search(user_message) for pattern in _LOCAL_COMPILE_SIGNALS)
+
+
+def _is_aihub_device_request(user_message: str) -> bool:
+    """Return whether this is a hosted AI Hub device operation."""
+    return not _has_local_compile_signal(user_message) and any(
+        pattern.search(user_message) for pattern in _AIHUB_DEVICE_PATTERNS
+    )
+
+
 def _is_aihub_request(user_message: str) -> bool:
-    """True when the message clearly targets Qualcomm AI Hub pre-built packages.
+    """Return whether this requests an AI Hub pre-built package."""
+    return any(pattern.search(user_message) for pattern in _AIHUB_DOWNLOAD_PATTERNS)
 
-    Used to route model-build auto-detection: such requests belong to the
-    ``model-hub`` skill (promoted former ``aihub-model-run``), not
-    model-builder.
-    """
-    return any(p.search(user_message) for p in _AIHUB_VETO_PATTERNS)
 
+def _is_aihub_mention(user_message: str) -> bool:
+    return any(pattern.search(user_message) for pattern in _AIHUB_MENTION_PATTERNS)
 
 
 def _auto_detect_tool_mode(user_message: str) -> str | None:
-    """Return ``"model_build"`` when *user_message* matches a build pattern.
+    """Select the most specific model workflow implied by ``user_message``.
 
-    Mirrors V1 ``backend/chat_handler.py:_auto_detect_tool_mode``
-    (lines 122-155) by walking the same six-pattern table, but operates
-    on a single pre-extracted string instead of a ``messages`` list —
-    the caller (``streaming.py``) already lifts the latest user message
-    out of the multi-modal payload before invoking the builder.
-
-    The caller uses this to force-promote ``effective_tool_mode`` so the
-    frontend receives a ``tool_mode_changed`` SSE frame to flip the
-    toolbar — even when the user forgot to switch mode in the UI.
-
-    AI-Hub routing (2026-07): when the message clearly targets Qualcomm AI
-    Hub pre-built packages (see ``_AIHUB_VETO_PATTERNS``), this returns
-    ``"model-hub"`` — downloading a pre-exported package from AI Hub is the
-    job of the ``model-hub`` skill (the promoted ``aihub-model-run``), NOT
-    model-builder (which converts / re-quantizes CUSTOM ONNX/PyTorch
-    models). Previously this branch returned ``None`` (a pure veto) because
-    there was no dedicated AI-Hub tool mode; now that ``model-hub`` is a
-    first-class feature mode, we route to it so the toolbar flips to the
-    right mode. The build-pattern veto still holds: an AI-Hub request never
-    promotes to model-builder even if a build verb also matches.
-
-    Returns ``None`` when *user_message* is falsy or no pattern matches.
+    Hosted compile/profile/upload wins over overlapping package and conversion
+    terms. Explicit package downloads remain ``model-hub``. Other AI Hub
+    mentions veto accidental ``model_build`` promotion unless the user clearly
+    asks for local hardware work.
     """
     if not user_message:
         return None
-    # AI-Hub download/pre-built requests route to the dedicated ``model-hub``
-    # mode (never model-builder — they belong to the promoted aihub skill).
+    if _is_aihub_device_request(user_message):
+        return "aihub-device"
     if _is_aihub_request(user_message):
         return "model-hub"
+    if _is_aihub_mention(user_message) and not _has_local_compile_signal(user_message):
+        return None
+    if _has_local_compile_signal(user_message):
+        return "model_build"
     for pattern in _MODEL_BUILD_PATTERNS:
         if pattern.search(user_message):
             return "model_build"
@@ -1525,12 +1563,10 @@ class RichSystemPromptBuilder(SystemPromptBuilderPort):
         skill_text = self._resolve_str(extra, "skill_content", self.skill_content)
         tools_text = self._resolve_str(extra, "tools_xml", self.tools_xml)
 
-        # ── Auto-detected model-build intent: flip the toolbar but do NOT
-        # inject the full SKILL. Build the lightweight DEFAULT prompt (catalog
-        # summary + _MODEL_BUILD_FALLBACK text that points the model at the
-        # model-builder SKILL.md to read on demand), yet return the detected
-        # mode so the frontend still receives the tool_mode_changed SSE frame.
-        if auto_detected:
+        # Auto-detected model-build/model-hub intents retain the lightweight
+        # default prompt. AI Hub device detection instead falls through to the
+        # canonical feature branch so its cloud workflow skill is available.
+        if auto_detected and effective_mode != "aihub-device":
             prompt = self._build_default_prompt(
                 tools_text=tools_text,
                 extra=extra,

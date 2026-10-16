@@ -19,6 +19,8 @@
 const index = {
   aiCodingAssistant: "AI 编程助手",
   anotherSessionGenerating: "另一个会话正在推理中",
+  aiHubDevice: "AI Hub 设备",
+  aiHubDeviceHint: "在 AI Hub 上编译和分析模型",
   appBuilder: "应用构建器",
   appBuilderHint: "试用本机 AI/QNN 模型",
   assistantOnboardingBody: "这两个按钮可以为当前对话启用「编程助手模式」，让 AI 具备项目级代码理解、文件读写、终端执行等能力。点击即可启用，启用后可在面板右上角点击 ✕ 退出。",

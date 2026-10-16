@@ -47,6 +47,7 @@ from interfaces.http.middleware.auth import AuthMiddleware
 from interfaces.http.middleware.canonical_host import CanonicalHostMiddleware
 from interfaces.http.middleware.locale import LocaleMiddleware
 from interfaces.http.routes.ai_coding import build_router as build_ai_coding_router
+from interfaces.http.routes.aihub import build_router as build_aihub_router
 from interfaces.http.routes.app_builder import build_router as build_app_builder_router
 from interfaces.http.routes.background_process import (
     build_router as build_background_process_router,
@@ -295,6 +296,7 @@ def create_app(
     app.include_router(build_search_engines_router(container=container))
     app.include_router(build_chat_router(container=container))
     app.include_router(build_app_builder_router(container=container))
+    app.include_router(build_aihub_router(container=container))
     app.include_router(build_ai_coding_router(container=container))
     app.include_router(build_channels_router(container=container))
     app.include_router(build_user_prefs_router(container=container))
