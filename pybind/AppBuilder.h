@@ -41,43 +41,59 @@ LibAppBuilder g_LibAppBuilder;
 
 // -----------------------------------------------------------------------------
 // Helper: map dtype string (from getInputDataType/getOutputDataType) to numpy dtype
+// Returns false if the string is not a known/representable dtype ('out' unchanged).
+//
+// QNN quantized (fixed-point) types are exposed by dataTypeToString() as
+// "ufpN"/"sfpN". In NATIVE mode their buffers hold the raw quantized integers,
+// so they map to the unsigned/signed integer numpy dtype of the same width:
+//   ufp8 -> uint8, ufp16 -> uint16, ufp32 -> uint32
+//   sfp8 -> int8,  sfp16 -> int16,  sfp32 -> int32
+// NOTE: "fp16" is the float16 alias, "ufp16"/"sfp16" are fixed-point 16-bit.
+// 4-bit types (ufp4/sfp4) have no numpy equivalent and are reported as unknown.
 // -----------------------------------------------------------------------------
-static inline py::dtype dtypeFromString(const std::string& dtypeStr) {
+static inline bool tryDtypeFromString(const std::string& dtypeStr, py::dtype& out) {
     std::string t = dtypeStr;
     for (auto& c : t) c = static_cast<char>(::tolower(c));
 
-    if (t == "int8") {
-        return py::dtype::of<int8_t>();
-    } else if (t == "uint8") {
-        return py::dtype::of<uint8_t>();
-    } else if (t == "int16") {
-        return py::dtype::of<int16_t>();
-    } else if (t == "uint16") {
-        return py::dtype::of<uint16_t>();
-    } else if (t == "int32") {
-        return py::dtype::of<int32_t>();
-    } else if (t == "uint32") {
-        return py::dtype::of<uint32_t>();
+    if (t == "int8" || t == "sfp8") {
+        out = py::dtype::of<int8_t>();
+    } else if (t == "uint8" || t == "ufp8") {
+        out = py::dtype::of<uint8_t>();
+    } else if (t == "int16" || t == "sfp16") {
+        out = py::dtype::of<int16_t>();
+    } else if (t == "uint16" || t == "ufp16") {
+        out = py::dtype::of<uint16_t>();
+    } else if (t == "int32" || t == "sfp32") {
+        out = py::dtype::of<int32_t>();
+    } else if (t == "uint32" || t == "ufp32") {
+        out = py::dtype::of<uint32_t>();
     } else if (t == "int64") {
-        return py::dtype::of<int64_t>();
+        out = py::dtype::of<int64_t>();
     } else if (t == "uint64") {
-        return py::dtype::of<uint64_t>();
+        out = py::dtype::of<uint64_t>();
     } else if (t == "float16" || t == "fp16") {
         // NOTE:
         // Some pybind11 versions (including some builds with CPython 3.12) do NOT provide pybind11::half.
         // Use NumPy dtype string instead, which is stable across pybind11 versions.
         // This requires NumPy to be available at runtime (it already is for py::array usage).
-        return py::dtype("float16");
+        out = py::dtype("float16");
     } else if (t == "float32" || t == "fp32" || t == "float") {
-        return py::dtype::of<float>();
+        out = py::dtype::of<float>();
     } else if (t == "float64" || t == "fp64" || t == "double") {
-        return py::dtype::of<double>();
+        out = py::dtype::of<double>();
     } else if (t == "bool" || t == "bool_" || t == "bool8") {
-        return py::dtype::of<bool>();
+        out = py::dtype::of<bool>();
+    } else {
+        return false;
     }
+    return true;
+}
 
+static inline py::dtype dtypeFromString(const std::string& dtypeStr) {
     // Fallback: treat as raw bytes
-    return py::dtype::of<uint8_t>();
+    py::dtype dt = py::dtype::of<uint8_t>();
+    tryDtypeFromString(dtypeStr, dt);
+    return dt;
 }
 
 // ---------------------------------------------------------------------------------
@@ -121,16 +137,22 @@ static inline size_t productDims(const std::vector<size_t>& dims) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: infer actual numpy dtype from (outputSizeBytes, outputShape, modelReportedDtype)
-// - For output_data_type == float (FLOAT_ONLY), QnnSampleApp may convert outputs to float32 and
-//   report outputSize as floatBytes, while getOutputDataType() still returns model native dtype.
-// - We use bytesPerElem = outputSizeBytes / expectedElems to detect real buffer dtype.
+// Helper: infer actual numpy dtype from (outputSizeBytes, outputShape, modelReportedDtype, floatOutMode)
+// - For output_data_type == float (FLOAT_ONLY), QnnInferenceEngine converts non-float32 outputs to
+//   float32 and reports outputSize as floatBytes, while getOutputDataType() still returns the model
+//   native dtype.
+// - For output_data_type == native (NATIVE_ONLY), outputs are the raw tensor bytes, so the
+//   model-reported dtype is authoritative (e.g. ufp16 -> uint16, NOT float16).
+// - We use bytesPerElem = outputSizeBytes / expectedElems to detect the real buffer element width,
+//   and only trust the model-reported dtype when its itemsize matches that width.
 // ---------------------------------------------------------------------------
 static inline py::dtype inferOutputNumpyDtype(size_t outputSizeBytes,
                                              const std::vector<size_t>& outShape,
-                                             const std::string& modelReportedDtypeStr) {
+                                             const std::string& modelReportedDtypeStr,
+                                             bool floatOutMode) {
     // fallback to model-reported dtype
-    py::dtype fallback = dtypeFromString(modelReportedDtypeStr);
+    py::dtype fallback = py::dtype::of<uint8_t>();
+    const bool modelDtypeKnown = tryDtypeFromString(modelReportedDtypeStr, fallback);
 
     const size_t expectedElems = productDims(outShape);
     if (expectedElems == 0) {
@@ -146,35 +168,129 @@ static inline py::dtype inferOutputNumpyDtype(size_t outputSizeBytes,
 
     const size_t bytesPerElem = outputSizeBytes / expectedElems;
 
-    // Most important cases for float/native compatibility:
-    // - float32 buffers (FLOAT_ONLY conversion): 4 bytes/elem
-    // - float16 native buffers: 2 bytes/elem
-    if (bytesPerElem == 4) {
+    // FLOAT_ONLY: every output buffer is float32 (converted, or float32 natively).
+    if (floatOutMode && bytesPerElem == 4) {
         return py::dtype::of<float>();
     }
+
+    // Model-reported dtype matches the buffer element width: it is the real buffer dtype.
+    // This keeps float16 for float16 tensors and gives uint16/int16 for ufp16/uint16/sfp16/int16,
+    // int32/uint32 for int32/uint32/sfp32/ufp32, int8 for sfp8/int8, bool for bool_, etc.
+    if (modelDtypeKnown && static_cast<size_t>(fallback.itemsize()) == bytesPerElem) {
+        return fallback;
+    }
+
+    // Unknown or mismatching model dtype: expose the raw bits with a neutral dtype of the same width.
+    // NOTE: do NOT expose 2-byte buffers as float16 here; reinterpreting quantized integers as
+    // IEEE half produces NaN/inf/negative values (e.g. argmax over logits returns garbage).
+    if (bytesPerElem == 4) {
+        return py::dtype::of<float>();   // legacy behavior for 4-byte buffers
+    }
     if (bytesPerElem == 2) {
-        // if model says float16/fp16, keep float16; otherwise still safe to expose float16 raw
-        return py::dtype("float16");
+        return py::dtype::of<uint16_t>();
     }
     if (bytesPerElem == 1) {
-        // choose signedness based on model-reported type when possible
-        std::string t = modelReportedDtypeStr;
-        for (auto& c : t) c = static_cast<char>(::tolower(c));
-        if (t == "int8")  return py::dtype::of<int8_t>();
-        if (t == "bool" || t == "bool_" || t == "bool8") return py::dtype::of<bool>();
         return py::dtype::of<uint8_t>();
-    }
-    if (bytesPerElem == 8) {
-        // could be int64/uint64/double; follow model dtype if it matches, else expose uint8 fallback
-        std::string t = modelReportedDtypeStr;
-        for (auto& c : t) c = static_cast<char>(::tolower(c));
-        if (t == "float64" || t == "fp64" || t == "double") return py::dtype::of<double>();
-        if (t == "int64")  return py::dtype::of<int64_t>();
-        if (t == "uint64") return py::dtype::of<uint64_t>();
-        return fallback;
     }
     // otherwise fallback
     return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: validate one NATIVE-mode input array against the model input tensor metadata.
+// In NATIVE mode the input bytes are copied into the QNN tensor as-is (no conversion), and the copy
+// length is the tensor's own byte length (IOTensor::populateInputTensor). So:
+// - byte size mismatch -> std::invalid_argument (Python ValueError). Otherwise QNN would read past
+//   the end of a too-small array or silently ignore part of a too-large one (e.g. float32 data
+//   passed to a uint16 tensor).
+// - same byte size but different dtype (e.g. a float16 array for a 'ufp16' tensor) -> RuntimeWarning.
+//   The bytes are still passed through unchanged, for backward compatibility with existing code that
+//   carries raw quantized values via .view(np.float16).
+// Validation is skipped when metadata is unavailable/incomplete or the model dtype has no numpy
+// equivalent (e.g. 4-bit types); the engine then behaves exactly as before.
+// ---------------------------------------------------------------------------
+static inline void validateNativeInput(const std::string& model_name, size_t inputIdx,
+                                       const py::array& arr,
+                                       const std::vector<std::string>& expectedTypes,
+                                       const std::vector<std::vector<size_t>>& expectedShapes) {
+    if (inputIdx >= expectedTypes.size() || expectedTypes.size() != expectedShapes.size()) {
+        return;
+    }
+    py::dtype expected = py::dtype::of<uint8_t>();
+    if (!tryDtypeFromString(expectedTypes[inputIdx], expected)) {
+        return;
+    }
+    const size_t expectedElems = productDims(expectedShapes[inputIdx]);
+    if (expectedElems == 0) {
+        return;
+    }
+
+    const std::string actualDtypeStr   = py::str(arr.dtype()).cast<std::string>();
+    const std::string expectedDtypeStr = py::str(expected).cast<std::string>();
+    const size_t expectedBytes = expectedElems * static_cast<size_t>(expected.itemsize());
+    const size_t actualBytes   = static_cast<size_t>(arr.nbytes());
+
+    if (actualBytes != expectedBytes) {
+        throw std::invalid_argument(
+            "NATIVE input " + std::to_string(inputIdx) + " of model '" + model_name + "' has " +
+            std::to_string(actualBytes) + " bytes (dtype " + actualDtypeStr + ", " +
+            std::to_string(static_cast<size_t>(arr.size())) + " elements), but model tensor type '" +
+            expectedTypes[inputIdx] + "' with " + std::to_string(expectedElems) + " elements expects " +
+            std::to_string(expectedBytes) + " bytes (numpy dtype " + expectedDtypeStr + "). "
+            "In NATIVE mode inputs are passed to QNN as raw bytes; convert/quantize the data to the "
+            "model dtype first (see getInputDataType()/getInputShapes()).");
+    }
+
+    if (!arr.dtype().equal(expected)) {
+        const std::string msg =
+            "NATIVE input " + std::to_string(inputIdx) + " of model '" + model_name + "' has dtype " +
+            actualDtypeStr + ", but model tensor type is '" + expectedTypes[inputIdx] +
+            "' (numpy dtype " + expectedDtypeStr + "). The bytes are passed to QNN unchanged; make sure "
+            "the array holds raw " + expectedDtypeStr + " values, e.g. arr.view(np." + expectedDtypeStr +
+            ") for reinterpretation, not real-valued data.";
+        if (PyErr_WarnEx(PyExc_RuntimeWarning, msg.c_str(), 1) != 0) {
+            throw py::error_already_set();   // warnings configured as errors
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: NATIVE input metadata for the multi-process (proc) path.
+// getInputDataType/getInputShapes(model, proc) are IPC round-trips to the Svc process, so cache the
+// result per (model_name, proc_name). Static per-model metadata, safe to cache for the context
+// lifetime; an entry is dropped when that model/proc pair is destroyed (see destroy_P).
+// Called with the GIL held (same as the existing proc getters); the GIL serializes cache access.
+// Returned by value so callers never hold a reference into the map.
+// ---------------------------------------------------------------------------
+struct NativeInputMeta {
+    std::vector<std::string> dtypes;
+    std::vector<std::vector<size_t>> shapes;
+};
+
+static std::unordered_map<std::string, NativeInputMeta> g_nativeInputMetaCache;
+
+static inline std::string nativeInputMetaKey(const std::string& model_name, const std::string& proc_name) {
+    return model_name + '\x1f' + proc_name;
+}
+
+static inline NativeInputMeta getNativeInputMeta_P(const std::string& model_name, const std::string& proc_name) {
+    const std::string key = nativeInputMetaKey(model_name, proc_name);
+    auto it = g_nativeInputMetaCache.find(key);
+    if (it != g_nativeInputMetaCache.end()) {
+        return it->second;
+    }
+    NativeInputMeta meta;
+    meta.dtypes = g_LibAppBuilder.getInputDataType(model_name, proc_name);
+    meta.shapes = g_LibAppBuilder.getInputShapes(model_name, proc_name);
+    if (!meta.dtypes.empty() && meta.dtypes.size() == meta.shapes.size()) {
+        g_nativeInputMetaCache[key] = meta;
+    }
+    // Incomplete metadata is not cached; validateNativeInput() then skips validation.
+    return meta;
+}
+
+static inline void dropNativeInputMeta_P(const std::string& model_name, const std::string& proc_name) {
+    g_nativeInputMetaCache.erase(nativeInputMetaKey(model_name, proc_name));
 }
 
 ModelInfo_t getModelInfo_P(std::string model_name, std::string proc_name,
@@ -236,6 +352,7 @@ int destroy(std::string model_name) {
 }
 
 int destroy_P(std::string model_name, std::string proc_name) {
+    dropNativeInputMeta_P(model_name, proc_name);
     py::gil_scoped_release release;
     return g_LibAppBuilder.ModelDestroy(model_name, proc_name);
 }
@@ -254,6 +371,14 @@ std::vector<py::array> inference(std::string model_name, const std::vector<py::a
 
     //QNN_INF("inference input vector length: %d\n", input.size());
 
+    // NATIVE mode: fetch model input metadata (cached in QnnInferenceEngine) to validate input dtype/size.
+    std::vector<std::string> inDtypes;
+    std::vector<std::vector<size_t>> inShapes;
+    if (!floatMode) {
+        inDtypes = g_LibAppBuilder.getInputDataType(model_name, graphIndex);
+        inShapes = g_LibAppBuilder.getInputShapes(model_name, graphIndex);
+    }
+
     for (auto i = 0; i < input.size(); i++) {
         if (floatMode) {
             // Backward compatible: force-cast to float32 contiguous like old py::array_t<float>
@@ -267,6 +392,7 @@ std::vector<py::array> inference(std::string model_name, const std::vector<py::a
             if (!carr) {
                 throw std::runtime_error("Failed to ensure contiguous input array for model: " + model_name);
             }
+            validateNativeInput(model_name, static_cast<size_t>(i), carr, inDtypes, inShapes);
             py::buffer_info buf = carr.request();
             keepAlive.push_back(carr);
             inputBuffers.push_back(reinterpret_cast<uint8_t*>(buf.ptr));
@@ -301,7 +427,7 @@ std::vector<py::array> inference(std::string model_name, const std::vector<py::a
         const std::vector<size_t> shape = (i < outShapes.size()) ? outShapes[i] : std::vector<size_t>{};
 
         // infer real dtype from outputSize & outputShape to support FLOAT_ONLY outputs
-        py::dtype dt = inferOutputNumpyDtype((i < outputSize.size()) ? outputSize[i] : 0, shape, dtypeStr);
+        py::dtype dt = inferOutputNumpyDtype((i < outputSize.size()) ? outputSize[i] : 0, shape, dtypeStr, floatOutMode);
 
         // element count: prefer shape product (stable for both native & float)
         size_t elemCount = 0;
@@ -355,6 +481,12 @@ std::vector<py::array> inference_P(std::string model_name, std::string proc_name
     const bool floatMode = isFloat32Request(input_data_type);
     const bool floatOutMode = isFloat32Request(output_data_type);
 
+    // NATIVE mode: model input metadata (cached per model/proc) to validate input dtype/size.
+    NativeInputMeta inMeta;
+    if (!floatMode) {
+        inMeta = getNativeInputMeta_P(model_name, proc_name);
+    }
+
     for (auto i = 0; i < input.size(); i++) {
         if (floatMode) {
             py::array_t<float, py::array::c_style | py::array::forcecast> farr(input[i]);
@@ -369,6 +501,7 @@ std::vector<py::array> inference_P(std::string model_name, std::string proc_name
             if (!carr) {
                 throw std::runtime_error("Failed to ensure contiguous input array for model: " + model_name);
             }
+            validateNativeInput(model_name, static_cast<size_t>(i), carr, inMeta.dtypes, inMeta.shapes);
             py::buffer_info buf = carr.request();
             keepAlive.push_back(carr);
             inputBuffers.push_back(reinterpret_cast<uint8_t*>(buf.ptr));
@@ -403,7 +536,7 @@ std::vector<py::array> inference_P(std::string model_name, std::string proc_name
         std::string dtypeStr = (i < outDtypes.size()) ? outDtypes[i] : std::string("uint8");
         const std::vector<size_t> shape = (i < outShapes.size()) ? outShapes[i] : std::vector<size_t>{};
 
-        py::dtype dt = inferOutputNumpyDtype((i < outputSize.size()) ? outputSize[i] : 0, shape, dtypeStr);
+        py::dtype dt = inferOutputNumpyDtype((i < outputSize.size()) ? outputSize[i] : 0, shape, dtypeStr, floatOutMode);
 
         size_t elemCount = 0;
         if (!shape.empty()) {

@@ -17,9 +17,11 @@ script will NOT work on a fresh machine unless you also do:
 
 Key inference insight:
   - flow.bin and decoder.bin use uint16 quantization (from metadata.json)
-  - QNN reports dtype as 'ufp16' but the bits are actually uint16
-  - Input:  quantize float32 -> uint16, then .view(float16) to pass to QNN
-  - Output: receive float16 from QNN, .view(uint16) to get uint16, then dequantize
+  - QNN reports dtype as 'ufp16' (16-bit unsigned fixed point); in NATIVE mode
+    the buffers hold the raw uint16 quantized values
+  - Input:  quantize float32 -> uint16 and pass the uint16 array to QNN
+  - Output: QNN returns uint16 (older qai_appbuilder builds returned the same
+    bits labeled float16; .view(uint16) handles both), then dequantize
 
 Quantization parameters from metadata.json:
   quantize:   q = clip(round(x / scale) + zero_point, 0, 65535).astype(uint16)
@@ -146,13 +148,15 @@ DEC_OUT_QUANT = {
 }
 
 def quantize(x: np.ndarray, scale: float, zero_point: int) -> np.ndarray:
-    """float32 -> uint16 viewed as float16 (for QNN native dtype)"""
+    """float32 -> uint16 (QNN 'ufp16' native dtype)"""
     q = np.round(x.astype(np.float32) / scale) + zero_point
-    return np.clip(q, 0, 65535).astype(np.uint16).view(np.float16)
+    return np.clip(q, 0, 65535).astype(np.uint16)
 
-def dequantize(raw_f16: np.ndarray, scale: float, zero_point: int) -> np.ndarray:
-    """QNN native output (float16 bits containing uint16) -> float32"""
-    q = raw_f16.view(np.uint16)
+def dequantize(raw_u16: np.ndarray, scale: float, zero_point: int) -> np.ndarray:
+    """QNN native 'ufp16' output (uint16) -> float32.
+    .view(uint16) keeps this working with older qai_appbuilder builds that
+    exposed 16-bit quantized outputs as float16 (same bits)."""
+    q = raw_u16.view(np.uint16)
     return (q.astype(np.float32) - zero_point) * scale
 
 # ── 4. Constants ───────────────────────────────────────────────────────────────
