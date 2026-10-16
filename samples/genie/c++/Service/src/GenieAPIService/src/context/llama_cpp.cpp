@@ -479,6 +479,11 @@ public:
         {
             ckpt_points.push_back(ckpt_target);
         }
+        const int ckpt_end = prefix_cache_on ? FindCheckpointPos(effective_prompt_len, n_reuse, 1) : -1;
+        if (ckpt_end > ckpt_target)
+        {
+            ckpt_points.push_back(ckpt_end);
+        }
         std::string head_str;
         for (size_t i = 0; i + 1 < ckpt_points.size(); ++i)
         {
@@ -593,6 +598,7 @@ public:
                     llama_memory_seq_add(mem, 0, n_keep + n_discard, n_past, -n_discard);
                     n_past -= n_discard;
                     ckpt_target = -1;
+                    ckpt_points.clear();
                     prefix_cache_valid_ = false;
                     My_Log{My_Log::Level::kWarning}
                         << "[LLAMACpp] " << query_type
@@ -1134,7 +1140,7 @@ public:
                llama_state_seq_set_data_ext(c, buf.data(), buf.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) > 0;
     }
 
-    int FindCheckpointPos(int effective_prompt_len, int n_reuse) const
+    int FindCheckpointPos(int effective_prompt_len, int n_reuse, int nth = 2) const
     {
         const llama_token bos = llama_vocab_bos(vocab);
         llama_token msg_start = LLAMA_TOKEN_NULL;
@@ -1155,7 +1161,7 @@ public:
                 if (embd_inp[i] == msg_start)
                 {
                     ++found;
-                    if (found == 2)
+                    if (found == nth)
                     {
                         pos = i;
                         break;
@@ -1226,6 +1232,11 @@ public:
         My_Log{} << "[LLAMACpp] Prefix checkpoint saved: pos=" << pos
                  << " | tgt_bytes=" << ck.tgt.size() << " | dft_bytes=" << ck.dft.size() << "\n";
         prefix_ckpts_.push_back(std::move(ck));
+        const size_t n_keep_head = (size_t) std::max(0, g_llama_prefix_head_checkpoints.load());
+        if (prefix_ckpts_.size() > n_keep_head + 2)
+        {
+            prefix_ckpts_.erase(prefix_ckpts_.begin() + (long long) n_keep_head);
+        }
         prefix_cache_tokens_.assign(embd_inp.begin(), embd_inp.begin() + pos);
         prefix_cache_valid_ = true;
     }
