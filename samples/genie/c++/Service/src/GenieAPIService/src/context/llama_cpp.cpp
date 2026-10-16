@@ -423,6 +423,7 @@ public:
         int64_t spec_draft_ms = 0;
         int64_t spec_verify_ms = 0;
         int64_t spec_post_ms = 0;
+        int64_t spec_readback_ms = 0;
         int64_t spec_rounds = 0;
 
         // Prefill 阶段心跳计时：记录上次发送心跳的时间点
@@ -871,9 +872,11 @@ public:
                 ++spec_rounds;
 
                 common_speculative_process(spec_.get(), batch_tgt);
+                const int64_t t_readback1 = now_ms();
+                spec_readback_ms += t_readback1 - t_verify1;
 
                 auto ids = common_sampler_sample_and_accept_n(smpl, ctx, draft);
-                spec_post_ms += now_ms() - t_verify1;
+                spec_post_ms += now_ms() - t_readback1;
                 common_speculative_accept(spec_.get(), kSpecSeqId, (uint16_t) (ids.size() - 1));
                 n_draft_accepted_total += (int64_t) ids.size() - 1;
                 if (draft_accept_hist.size() < ids.size())
@@ -976,6 +979,7 @@ public:
                               " | spec_rounds=" + std::to_string(spec_rounds) +
                               " | draft_ms=" + std::to_string(spec_draft_ms) +
                               " | verify_ms=" + std::to_string(spec_verify_ms) +
+                              " | readback_ms=" + std::to_string(spec_readback_ms) +
                               " | post_ms=" + std::to_string(spec_post_ms)) : std::string())
                  << "\n";
 
@@ -1024,6 +1028,7 @@ public:
                 metrics["spec_draft_ms"] = spec_draft_ms;
                 metrics["spec_verify_ms"] = spec_verify_ms;
                 metrics["spec_post_ms"] = spec_post_ms;
+                metrics["spec_readback_ms"] = spec_readback_ms;
             }
             else
             {

@@ -71,7 +71,7 @@ void ApplyOutputSizeBudget(ContextBase &handle, ModelInstanceConfig &config,
 }
 void WriteRequestTrace(const std::string &request_id, const std::string &model_name, bool is_stream,
                        const ResponseDispatcher &dispatcher, const std::shared_ptr<ContextBase> &handle,
-                       const PromptLedger &ledger)
+                       const PromptLedger &ledger, const std::string &request_body)
 {
     auto &writer = RequestTraceWriter::GetInstance();
     if (!writer.IsEnabled())
@@ -98,6 +98,7 @@ void WriteRequestTrace(const std::string &request_id, const std::string &model_n
     }
     rec.backend_metrics = handle ? handle->GetLastQueryTraceMetrics() : json(nullptr);
     rec.prompt_ledger = ledger.ToJson();
+    rec.request_body = request_body;
     writer.WriteRecord(rec);
 }
 } // namespace
@@ -677,7 +678,7 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
                 {
                     trace_written = true;
                     WriteRequestTrace(request_id, trace_model_name, true, *dispatcher, handle,
-                                      input_builder->GetLedger());
+                                      input_builder->GetLedger(), req.body);
                 }
 
                 if (routing_enabled && gateway)
@@ -749,7 +750,7 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
                                 /*is_dll_mode=*/false, &data);
             dispatcher->SendResponse(0, nullptr, &res);
             WriteRequestTrace(request_id, trace_model_name, false, *dispatcher, handle,
-                          input_builder->GetLedger());
+                          input_builder->GetLedger(), req.body);
 
             if (handle && handle->was_stopped_by_output_limit()
                     && genieRoutingGateway_ && model_manager.GetRoutingConfig().enabled)

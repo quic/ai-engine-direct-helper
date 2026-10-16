@@ -67,6 +67,7 @@ public:
         std::string finish_reason;
         json backend_metrics = nullptr;
         json prompt_ledger = nullptr;
+        std::string request_body;
     };
 
     void WriteRecord(const Record &rec)
@@ -112,6 +113,13 @@ public:
         j["draft_proposed"] = field("draft_proposed");
         j["draft_accepted"] = field("draft_accepted");
         j["draft_acceptance_rate"] = field("draft_acceptance_rate");
+        j["draft_accept_hist"] = field("draft_accept_hist");
+        j["spec_rounds"] = field("spec_rounds");
+        j["spec_draft_ms"] = field("spec_draft_ms");
+        j["spec_verify_ms"] = field("spec_verify_ms");
+        j["spec_readback_ms"] = field("spec_readback_ms");
+        j["spec_post_ms"] = field("spec_post_ms");
+        j["request_body"] = json::parse(rec.request_body, nullptr, false);
 
         std::lock_guard<std::mutex> lk(mutex_);
         if (!ofs_.is_open())
