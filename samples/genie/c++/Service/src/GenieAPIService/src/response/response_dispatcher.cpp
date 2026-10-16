@@ -17,9 +17,25 @@
 #include <regex>
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 
 namespace
 {
+    struct ProfileTotals
+    {
+        std::mutex mtx;
+        uint64_t rounds{0};
+        uint64_t samples{0};
+        double pp_rate_sum{0.0};
+        double tg_rate_sum{0.0};
+    };
+
+    ProfileTotals &GetProfileTotals()
+    {
+        static ProfileTotals totals;
+        return totals;
+    }
+
     // 判断 convertToolCallJson() 的返回结果是否仍是 "unknow" 兜底（即 Layer0 正则修复链 +
     // Layer1 本地确定性提取均未能采纳出合法工具调用）。convertToolCallJson() 的返回值恒为
     // wrapJsonInToolCall() 包裹后的 "<tool_call>\n{...}\n</tool_call>" 形式（成功/失败两种
@@ -1221,7 +1237,14 @@ bool ResponseDispatcher::isConnectionAlive() const
 
 void ResponseDispatcher::PrintProfile()
 {
+    uint64_t round;
+    {
+        auto &totals = GetProfileTotals();
+        std::lock_guard<std::mutex> lk(totals.mtx);
+        round = ++totals.rounds;
+    }
     My_Log{} << "--- Token Summary Start ---" << std::endl;
+    My_Log{}.original() << "Round: " << round << std::endl;
     // 修复：使用 GetEffectiveHandle()（优先取每模型独立的 instance_config_ 句柄），而非
     // 全局 model_config_.get_genie_model_handle()——后者在多模型场景下会被 ModelManager::Clean()
     // 置空，此处原代码在未做任何空指针检查的情况下直接调用 ->HandleProfile()，是另一处会导致
@@ -1242,6 +1265,21 @@ void ResponseDispatcher::PrintProfile()
 
     try
     {
+        const double pp_rate = std::stod(json_str.at("prompt_processing_rate").get<std::string>());
+        const double tg_rate = std::stod(json_str.at("token_generation_rate").get<std::string>());
+        uint64_t samples;
+        double pp_avg;
+        double tg_avg;
+        {
+            auto &totals = GetProfileTotals();
+            std::lock_guard<std::mutex> lk(totals.mtx);
+            samples = ++totals.samples;
+            totals.pp_rate_sum += pp_rate;
+            totals.tg_rate_sum += tg_rate;
+            pp_avg = totals.pp_rate_sum / static_cast<double>(samples);
+            tg_avg = totals.tg_rate_sum / static_cast<double>(samples);
+        }
+
         My_Log{} << "Time to First Token: "
                  << std::fixed
                  << std::setprecision(2)
@@ -1264,6 +1302,10 @@ void ResponseDispatcher::PrintProfile()
                  << std::setprecision(2)
                  << json_str.at("prompt_processing_rate").get<std::string>()
                  << " toks/sec" << std::endl;
+        My_Log{}.original() << "Prompt Processing Rate (avg of " << samples << " rounds): "
+                             << std::fixed << std::setprecision(2) << pp_avg
+                             << " toks/sec" << std::endl;
+        My_Log{}.original() << "----------------------------------------" << std::endl;
 
         My_Log{} << "Num Generated Tokens: "
                  << json_str.at("num_generated_tokens")
@@ -1275,6 +1317,9 @@ void ResponseDispatcher::PrintProfile()
                  << std::setprecision(2)
                  << json_str.at("token_generation_rate").get<std::string>()
                  << " toks/sec" << std::endl;
+        My_Log{}.original() << "Token Generation Rate (avg of " << samples << " rounds): "
+                             << std::fixed << std::setprecision(2) << tg_avg
+                             << " toks/sec" << std::endl;
     }
     catch (std::exception &e)
     {
