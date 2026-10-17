@@ -252,4 +252,28 @@ uint64_t GetAvailablePhysicalMemoryBytes()
     return UINT64_MAX;
 }
 
+uint32_t ReadGgufBlockCount(const std::string &gguf_path)
+{
+#ifdef USE_GGUF
+    return ReadGgufModelShape(gguf_path).n_layer;
+#else
+    (void) gguf_path;
+    return 0;
+#endif
+}
+
+std::string BuildDflashFfnCpuOverride(uint32_t block_count)
+{
+    if (block_count != 65 && block_count != 66)
+    {
+        return {};
+    }
+    std::string layers;
+    for (uint32_t i = 35; i <= 64; ++i)
+    {
+        layers += (layers.empty() ? "" : "|") + std::to_string(i);
+    }
+    return "blk\\.(" + layers + ")\\.ffn_(up|gate|down)\\.weight=CPU";
+}
+
 } // namespace llama_speculative

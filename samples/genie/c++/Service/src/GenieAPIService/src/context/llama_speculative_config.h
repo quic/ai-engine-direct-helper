@@ -43,7 +43,7 @@ struct DraftModelConfig
     int top_k = 1;                     // 对应 --top-k；默认 1（greedy）；<0 = 不拼进 argv
     float top_p = -1.0f;               // 对应 --top-p；<0 = 未配置，不拼进 argv
     int ngram_mod_n_min = -1;          // 对应 --spec-ngram-mod-n-min；<0 = 未配置，不拼进 argv
-    int ngram_mod_n_match = -1;        // 对应 --spec-ngram-mod-n-match；<0 = 未配置，不拼进 argv
+    int ngram_mod_n_match = 16;        // 对应 --spec-ngram-mod-n-match；<0 = 不拼进 argv
     bool ngram_mod = true;             // true = 自动给 spec_type 追加 ",ngram-mod"（已含时不重复追加）
     int n_gpu_layers = 99;             // 对应 -ngld；0 = drafter 权重全部留在 CPU；<0 = 不拼进 argv
     int fit_target_mib = -1;           // 对应 -fitt（每设备显存预留）；<0 = 未配置，不拼进 argv
@@ -71,6 +71,12 @@ uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
 // 可用物理内存字节数（ullAvailPhys，与 MNNContext::GetAvailablePhysicalMemoryBytes 同一
 // GlobalMemoryStatusEx 模式）。用于投机解码（draft_model）模型加载前的动态内存门槛检查。
 uint64_t GetAvailablePhysicalMemoryBytes();
+
+// 主模型 GGUF 的 block_count；读不到返回 0。
+uint32_t ReadGgufBlockCount(const std::string &gguf_path);
+
+// DFlash 投机模型内置的 -ot 规则：后段 FFN 权重留 CPU，attention 上 GPU。block_count 为 0 时返回空串。
+std::string BuildDflashFfnCpuOverride(uint32_t block_count);
 
 } // namespace llama_speculative
 

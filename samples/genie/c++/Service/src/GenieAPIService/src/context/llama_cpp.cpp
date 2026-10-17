@@ -1670,6 +1670,17 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     }
     if (device != "cpu")
     {
+        const bool user_ot = std::any_of(configured_extra_args.begin(), configured_extra_args.end(),
+                                         [](const std::string &a) { return a == "-ot" || a == "--override-tensor"; });
+        if (speculative_requested && !user_ot && draft_config.spec_type.find("dflash") != std::string::npos)
+        {
+            const std::string ot = llama_speculative::BuildDflashFfnCpuOverride(
+                    llama_speculative::ReadGgufBlockCount(gguf_path));
+            if (!ot.empty())
+            {
+                arg_strings.insert(arg_strings.end(), {"-ot", ot});
+            }
+        }
         arg_strings.insert(arg_strings.end(), configured_extra_args.begin(), configured_extra_args.end());
     }
     // 投机解码分支（非 CPU）不显式传 -ngl：llama-completion.exe 实测确认，一旦显式给出 -ngl（含
