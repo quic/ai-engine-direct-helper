@@ -1079,6 +1079,20 @@ bool ModelManager::InitializeConfig()
                              << std::endl;
                 }
 
+                if (pe_json.contains("adaptive_thinking") && pe_json["adaptive_thinking"].is_object())
+                {
+                    const auto &at = pe_json["adaptive_thinking"];
+                    auto &at_cfg = adaptive_thinking_config_;
+                    at_cfg.enabled = at.value("enabled", at_cfg.enabled);
+                    at_cfg.time_budget_s = at.value("time_budget_s", at_cfg.time_budget_s);
+                    at_cfg.min_tokens = at.value("min_tokens", at_cfg.min_tokens);
+                    at_cfg.max_tokens = at.value("max_tokens", at_cfg.max_tokens);
+                    at_cfg.ctx_reserve_tokens = at.value("ctx_reserve_tokens", at_cfg.ctx_reserve_tokens);
+                    My_Log{} << "[Config] adaptive_thinking loaded: enabled=" << at_cfg.enabled
+                             << ", time_budget_s=" << at_cfg.time_budget_s
+                             << ", max_tokens=" << at_cfg.max_tokens << std::endl;
+                }
+
                 if (pe_json.contains("tool_call_repair") && pe_json["tool_call_repair"].is_object())
                 {
                     const auto &tcr = pe_json["tool_call_repair"];

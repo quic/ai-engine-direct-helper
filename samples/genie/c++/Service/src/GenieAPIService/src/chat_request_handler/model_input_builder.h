@@ -23,6 +23,7 @@
 #include "tool_call_circuit_breaker_store.h"
 #include "tool_call_repetition_store.h"
 #include <chrono>
+#include <regex>
 #include <unordered_set>
 
 
@@ -592,11 +593,23 @@ private:
         // 注意：关闭 thinking 时不再注入 FILL_THINK 预填空 think 块——真机实测确认该预填内容会导致
         // qwen3 系列模型在极短用户提问下退化（原样复述上一轮对话后立即结束），/no_think 单独即可正确抑制思考。
         bool force_empty_think_prefill = false;
+        bool force_open_think_prefill = false;
+        model_input_.think_time_budget_s_ = 0;
         if (instance_config_->is_thinking_model())
         {
             if (instance_config_->getenableThinking())
             {
                 systemDefaultPrompt += "/think";
+            }
+            else if (ShouldThinkThisTurn())
+            {
+                const auto &at_cfg = instance_config_->i_model_config_.GetAdaptiveThinkingConfig();
+                systemDefaultPrompt += "/no_think";
+                force_open_think_prefill = true;
+                model_input_.think_time_budget_s_ = at_cfg.time_budget_s;
+                model_input_.think_min_tokens_ = at_cfg.min_tokens;
+                model_input_.think_max_tokens_ = at_cfg.max_tokens;
+                model_input_.think_ctx_reserve_ = at_cfg.ctx_reserve_tokens;
             }
             else
             {
@@ -672,6 +685,10 @@ private:
         if (force_empty_think_prefill)
         {
             start_prompt_str += "<think>\n\n</think>\n\n";
+        }
+        else if (force_open_think_prefill)
+        {
+            start_prompt_str += "<think>\n";
         }
         std::string modelInputContent = chat_history_.GetUserMessage(
                                                           str_replace(j["system"], "string", systemDefaultPrompt),
@@ -1788,6 +1805,37 @@ private:
             << " came back empty or failed. Stop retrying the same approach with minor variations; "
                "use a different tool or a path/fact you already confirmed, or report the blocker instead.\n";
         return "\n\n## Task Memo\n" + oss.str();
+    }
+
+    bool ShouldThinkThisTurn() const
+    {
+        const auto &at_cfg = instance_config_->i_model_config_.GetAdaptiveThinkingConfig();
+        if (!at_cfg.enabled || at_cfg.time_budget_s <= 0)
+            return false;
+        if (!request_data_.is_object() || !request_data_.contains("messages") || !request_data_["messages"].is_array())
+            return false;
+        const auto &messages = request_data_["messages"];
+        if (messages.empty() || !messages.back().is_object() || messages.back().value("role", "") != "tool")
+            return false;
+        std::string reason;
+        const std::string content = get_json_value<std::string>(messages.back(), "content", "");
+        static const std::regex kExitCode(R"(exit code:\s*(-?\d+))", std::regex::icase);
+        std::smatch m;
+        if (std::regex_search(content, m, kExitCode) && m[1].str() != "0")
+            reason = "exit_code=" + m[1].str();
+        const auto &rg_cfg = instance_config_->i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
+        if (reason.empty() && rg_cfg.enabled)
+        {
+            const std::string key = ToolCallRepetitionStore::MakeKey(
+                TaskMemoBuilder::ComputeFirstMsgKey(messages), instance_config_->get_model_name());
+            const int count = ToolCallRepetitionStore::GetInstance().GetRepeatCount(key);
+            if (count >= rg_cfg.repeat_threshold)
+                reason = "repeat_count=" + std::to_string(count);
+        }
+        if (reason.empty())
+            return false;
+        My_Log{} << "[AdaptiveThinking] enabling /think for this turn: " << reason << std::endl;
+        return true;
     }
 
     std::string BuildTaskMemoSection() const

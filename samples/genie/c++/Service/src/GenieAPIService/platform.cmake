@@ -395,6 +395,7 @@ if (MSVC)
                 GIT_TAG 7c371551f00b766f1262d716f72c18b4f3a9ecf4
                 GIT_SHALLOW OFF
                 SOURCE_DIR ${LLAMACPP_SRC_DIR}
+                PATCH_COMMAND ${CMAKE_COMMAND} -DLLAMACPP_SRC_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_LIST_DIR}/llama_fit_user_overrides.cmake
                 BINARY_DIR ${CMAKE_BINARY_DIR}/llama-cpp-build
                 DEPENDS OpenCLICDLoader KleidiAISrc
                 CMAKE_GENERATOR Ninja

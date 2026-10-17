@@ -282,6 +282,14 @@ struct WindowsShellHintConfig {
         "dir /b or /s /b. wmic is gone; use cmdlets.";
 };
 
+struct AdaptiveThinkingConfig {
+    bool enabled = true;
+    int time_budget_s = 30;
+    int min_tokens = 128;
+    int max_tokens = 0;
+    int ctx_reserve_tokens = 2048;
+};
+
 // ============================================================
 // 云端模型配置结构（对应 service_config.json 中的 "cloud_model" 节）
 // ============================================================
@@ -915,6 +923,11 @@ public:
         return windows_shell_hint_config_;
     }
 
+    const AdaptiveThinkingConfig &GetAdaptiveThinkingConfig() const
+    {
+        return adaptive_thinking_config_;
+    }
+
     const PromptOptimizationConfig& GetPromptOptimizationConfig() const
     {
         return prompt_optimization_config_;
@@ -990,6 +1003,7 @@ public:
     LocalModelConfig local_model_config_;
     ToolCallRepairConfig tool_call_repair_config_;
     WindowsShellHintConfig windows_shell_hint_config_;
+    AdaptiveThinkingConfig adaptive_thinking_config_;
     
     // Prompt 优化配置
     PromptOptimizationConfig prompt_optimization_config_;

@@ -505,7 +505,28 @@ public:
         int think_token_start = -1;
         bool think_force_closing = false;
         std::vector<llama_token> think_force_tokens;
-        const int32_t think_budget_tokens = params_.sampling.reasoning_budget_tokens;
+        int32_t think_budget_tokens = params_.sampling.reasoning_budget_tokens;
+        if (!is_aux_inference && think_time_budget_s_ > 0)
+        {
+            const double tg_rate = last_decode_tok_s_ > 0.0 ? last_decode_tok_s_ : 10.0;
+            int64_t budget = (int64_t) (tg_rate * think_time_budget_s_);
+            const int64_t ctx_left = (int64_t) n_ctx - (int64_t) embd_inp.size() - think_ctx_reserve_;
+            budget = std::min(budget, ctx_left);
+            if (think_max_tokens_ > 0)
+            {
+                budget = std::min<int64_t>(budget, think_max_tokens_);
+            }
+            budget = std::max<int64_t>(budget, think_min_tokens_);
+            think_budget_tokens = (int32_t) budget;
+            think_in_progress = true;
+            think_token_start = 0;
+            static const std::string kOpenThink = "<think>\n";
+            generated_text_buf += kOpenThink;
+            token_utf8_processor.processStream(kOpenThink.data(), kOpenThink.size());
+            My_Log{} << "[LLAMACpp] " << query_type << " adaptive think budget=" << think_budget_tokens
+                     << " (tg_rate=" << tg_rate << ", time_budget_s=" << think_time_budget_s_
+                     << ", ctx_left=" << ctx_left << ")\n";
+        }
 
         // 共享的逐 token 输出管线：回调/停止序列检测/输出长度限制，单模型解码与投机
         // 解码验证轮次产出的 token 共用同一套逻辑（D5）。返回 false 表示应停止生成
@@ -1037,6 +1058,10 @@ public:
                 metrics["draft_acceptance_rate"] = nullptr;
             }
             last_trace_metrics_ = metrics;
+            if (gen_rate > 0.0 && n_generated >= 16)
+            {
+                last_decode_tok_s_ = gen_rate;
+            }
         }
 
         std::lock_guard<std::mutex> lk(m);
@@ -1121,6 +1146,11 @@ public:
     bool stopped_by_output_limit_ = false;
 
     json last_trace_metrics_ = nullptr;
+    double last_decode_tok_s_ = 0.0;
+    int think_time_budget_s_ = 0;
+    int think_min_tokens_ = 0;
+    int think_max_tokens_ = 0;
+    int think_ctx_reserve_ = 0;
     int64_t aux_ms_accum_ = 0;
     int64_t aux_calls_accum_ = 0;
 
@@ -1827,6 +1857,10 @@ bool LLAMACppBuilder::Query(const ModelInput &model_input, const Callback& callb
     }
 
     std::string query_type_bracketed = std::string("[") + query_type_label + "]";
+    impl_->think_time_budget_s_ = model_input.think_time_budget_s_;
+    impl_->think_min_tokens_ = model_input.think_min_tokens_;
+    impl_->think_max_tokens_ = model_input.think_max_tokens_;
+    impl_->think_ctx_reserve_ = model_input.think_ctx_reserve_;
     bool result = impl_->Query(prompt, callback, prefill_heartbeat,
                                 query_type_bracketed.c_str(), is_aux_inference);
     // Fix: 将 Impl 内部的 stopped_by_output_limit_ 状态传播到外部
