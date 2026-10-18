@@ -33,7 +33,8 @@ public:
     ~ChatHistory();
 
     std::string GetUserMessage(const std::string &prompt_system,
-                               const std::string &prompt_start);
+                               const std::string &prompt_start,
+                               const std::string &assistant_turn_prefix = "");
 
     void AddMessage(const std::string &role, const std::string &content);
 

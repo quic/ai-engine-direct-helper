@@ -25,7 +25,8 @@ public:
     { return history; }
 
     std::string GetUserMessage(const std::string &prompt_system,
-                               const std::string &prompt_start)
+                               const std::string &prompt_start,
+                               const std::string &assistant_turn_prefix)
     {
         std::vector<std::string> messages;
         const auto &j = prompt_template_;
@@ -62,6 +63,14 @@ public:
         // 原样拼接 history 中的全部消息；history 本身是否经过压缩/裁剪由调用方
         // （model_input_builder.h 的 PrepareFilteredMessages/PrepareHarmonyMessages）
         // 在写入 chat_history_ 之前统一决定，这里不重复做任何压缩或丢弃判断。
+        size_t last_user = 0;
+        for (size_t i = 0; i < count; i++)
+            if (history[i].role == "user")
+                last_user = i;
+        const std::string assistant_tmpl = j["assistant"].get<std::string>();
+        const size_t slot = assistant_tmpl.find("string");
+        const std::string assistant_tail = slot == std::string::npos ? "" : assistant_tmpl.substr(slot + 6);
+
         for (size_t i = 0; i < count; i++)
         {
             auto &msg = history[i];
@@ -76,6 +85,10 @@ public:
             else if (msg.role == "user")
             {
                 format_content = str_replace(j["user"], "string", content);
+            }
+            else if (msg.role == "assistant" && !assistant_turn_prefix.empty() && i > last_user && slot != std::string::npos)
+            {
+                format_content = assistant_turn_prefix + content + assistant_tail;
             }
             else if (msg.role == "assistant")
             {
@@ -211,5 +224,6 @@ void ChatHistory::Limit(size_t max_size)
 void ChatHistory::Clear()
 { impl_->history.clear(); }
 
-std::string ChatHistory::GetUserMessage(const std::string &prompt_system, const std::string &prompt_start)
-{ return impl_->GetUserMessage(prompt_system, prompt_start); }
+std::string ChatHistory::GetUserMessage(const std::string &prompt_system, const std::string &prompt_start,
+                                        const std::string &assistant_turn_prefix)
+{ return impl_->GetUserMessage(prompt_system, prompt_start, assistant_turn_prefix); }

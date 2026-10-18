@@ -937,6 +937,11 @@ public:
 
             llama_batch_free(batch_tgt);
 
+            if (!decode_failed && eog_hit && prefix_cache_on && !is_aux_inference && (int) spec_prompt.size() == n_past)
+            {
+                SavePrefixCheckpoint(ctx, ctx_dft, n_past, &spec_prompt);
+            }
+
             if (decode_failed)
             {
                 prefix_cache_valid_ = false;
@@ -1267,7 +1272,7 @@ public:
         return out;
     }
 
-    void SavePrefixCheckpoint(llama_context *c, llama_context *c_dft, int pos)
+    void SavePrefixCheckpoint(llama_context *c, llama_context *c_dft, int pos, const llama_tokens *tokens = nullptr)
     {
         PrefixCheckpoint ck;
         ck.pos = pos;
@@ -1293,7 +1298,10 @@ public:
         {
             prefix_ckpts_.erase(prefix_ckpts_.begin() + (long long) n_keep_head);
         }
-        prefix_cache_tokens_.assign(embd_inp.begin(), embd_inp.begin() + pos);
+        if (tokens)
+            prefix_cache_tokens_.assign(tokens->begin(), tokens->begin() + pos);
+        else
+            prefix_cache_tokens_.assign(embd_inp.begin(), embd_inp.begin() + pos);
         prefix_cache_valid_ = true;
     }
 

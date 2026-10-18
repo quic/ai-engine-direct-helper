@@ -708,7 +708,8 @@ private:
         }
         std::string modelInputContent = chat_history_.GetUserMessage(
                                                           str_replace(j["system"], "string", systemDefaultPrompt),
-                                                          start_prompt_str);
+                                                          start_prompt_str,
+                                                          force_empty_think_prefill ? start_prompt_str : std::string());
 
         // 计算最终提示词的真实 token 数
         // 修复：使用注入的 context_（多模型并发安全），而非 model_config_.get_genie_model_handle()
