@@ -1834,17 +1834,6 @@ private:
         if (messages.empty() || !messages.back().is_object() || messages.back().value("role", "") != "tool")
             return false;
         const std::string session_key = TaskMemoBuilder::ComputeFirstMsgKey(messages);
-        static std::mutex s_mu;
-        static std::unordered_map<std::string, std::pair<int, std::chrono::steady_clock::time_point>> s_counts;
-        const auto now = std::chrono::steady_clock::now();
-        if (at_cfg.max_per_session > 0)
-        {
-            std::lock_guard<std::mutex> lk(s_mu);
-            auto it = s_counts.find(session_key);
-            if (it != s_counts.end() && now - it->second.second < std::chrono::hours(2)
-                && it->second.first >= at_cfg.max_per_session)
-                return false;
-        }
         std::vector<std::string> recent_errors;
         for (size_t i = messages.size(); i-- > 0 && (int) recent_errors.size() <= at_cfg.error_repeat_window;)
         {
@@ -1857,8 +1846,10 @@ private:
                 recent_errors.push_back(FirstFailureLine(get_json_value<std::string>(messages[i], "content", "")));
         }
         std::string reason;
+        std::string signature;
         if (!recent_errors.empty() && !recent_errors[0].empty())
         {
+            signature = recent_errors[0];
             if (recent_errors.size() < 2 || recent_errors[1].empty())
                 reason = "new_failure";
             else
@@ -1878,24 +1869,56 @@ private:
         {
             const std::string key = ToolCallRepetitionStore::MakeKey(session_key, instance_config_->get_model_name());
             const int count = ToolCallRepetitionStore::GetInstance().GetRepeatCount(key);
-            if (count >= std::max(rg_cfg.repeat_threshold, 3))
+            if (count >= 2)
+            {
                 reason = "repeat_count=" + std::to_string(count);
+                signature = "repeat:" + key;
+            }
         }
+
+        struct SessionThinkState {
+            std::unordered_map<std::string, int> per_signature;
+            size_t last_think_msg_count = 0;
+            int think_turns = 0;
+            int tool_turns = 0;
+            std::chrono::steady_clock::time_point touched;
+        };
+        static std::mutex s_mu;
+        static std::unordered_map<std::string, SessionThinkState> s_state;
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lk(s_mu);
+        if (s_state.size() > 512)
+            s_state.clear();
+        auto &st = s_state[session_key];
+        if (now - st.touched >= std::chrono::hours(2))
+            st = SessionThinkState{};
+        st.touched = now;
+        ++st.tool_turns;
         if (reason.empty())
             return false;
-        int used = 1;
+
+        const bool new_signature = st.per_signature.find(signature) == st.per_signature.end();
+        int &sig_count = st.per_signature[signature];
+        std::string blocked;
+        if (at_cfg.max_per_signature > 0 && sig_count >= at_cfg.max_per_signature)
+            blocked = "signature_limit";
+        else if (!new_signature && st.last_think_msg_count > 0 && messages.size() <= st.last_think_msg_count + 2)
+            blocked = "cooldown";
+        else if (!new_signature && at_cfg.max_think_turn_share > 0.0 &&
+                 st.think_turns >= static_cast<int>(at_cfg.max_think_turn_share * st.tool_turns))
+            blocked = "turn_share";
+        if (!blocked.empty())
         {
-            std::lock_guard<std::mutex> lk(s_mu);
-            if (s_counts.size() > 512)
-                s_counts.clear();
-            auto &slot = s_counts[session_key];
-            if (now - slot.second >= std::chrono::hours(2))
-                slot.first = 0;
-            used = ++slot.first;
-            slot.second = now;
+            My_Log{} << "[AdaptiveThinking] skip: " << reason << " blocked_by=" << blocked
+                     << " (sig_count=" << sig_count << ")" << std::endl;
+            return false;
         }
+        ++sig_count;
+        ++st.think_turns;
+        st.last_think_msg_count = messages.size();
         My_Log{} << "[AdaptiveThinking] enabling /think for this turn: " << reason
-                 << " (session_count=" << used << ")" << std::endl;
+                 << " (sig_count=" << sig_count << ", think_turns=" << st.think_turns
+                 << "/" << st.tool_turns << ")" << std::endl;
         return true;
     }
 

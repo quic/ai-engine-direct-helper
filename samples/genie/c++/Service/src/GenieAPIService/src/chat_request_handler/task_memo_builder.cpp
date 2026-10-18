@@ -119,6 +119,35 @@ std::optional<json> TaskMemoBuilder::Lookup(const json& raw_messages) const
 
 namespace {
     constexpr size_t kMaxItemsPerField = 20;
+    constexpr size_t kMaxHardRules = 12;
+    constexpr size_t kMaxHardRulesPerFile = 6;
+    constexpr size_t kMaxHardRuleChars = 220;
+
+    bool IsHardRuleLine(const std::string& line) {
+        static const char* kMarkers[] = {"NEVER", "MUST", "MANDATORY", "Do NOT", "DO NOT",
+                                         "必须", "禁止", "不得", "严禁"};
+        for (const char* k : kMarkers)
+            if (line.find(k) != std::string::npos) return true;
+        return false;
+    }
+
+    std::vector<std::string> ExtractHardRules(const std::string& content) {
+        std::vector<std::string> out;
+        size_t pos = 0;
+        while (pos < content.size() && out.size() < kMaxHardRulesPerFile) {
+            size_t nl = content.find('\n', pos);
+            if (nl == std::string::npos) nl = content.size();
+            std::string line = content.substr(pos, nl - pos);
+            pos = nl + 1;
+            const size_t b = line.find_first_not_of(" \t\r>-*#|");
+            if (b == std::string::npos) continue;
+            line = line.substr(b);
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (line.size() < 8 || !IsHardRuleLine(line)) continue;
+            out.push_back(safe_utf8_truncate(line, kMaxHardRuleChars, "..."));
+        }
+        return out;
+    }
 
     void AppendCapped(json& field, const std::string& item, size_t cap) {
         if (!field.is_array())
@@ -466,6 +495,21 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
                 if (!read_path.empty()) {
                     entry["read_files"][read_path] = preview;
                     CapObjectSize(entry["read_files"], kMaxItemsPerField);
+                    if (!entry.contains("hard_rules") || !entry["hard_rules"].is_array())
+                        entry["hard_rules"] = json::array();
+                    if (!entry.contains("_hard_rule_files") || !entry["_hard_rule_files"].is_object())
+                        entry["_hard_rule_files"] = json::object();
+                    if (!entry["_hard_rule_files"].contains(read_path)) {
+                        entry["_hard_rule_files"][read_path] = true;
+                        for (const auto& rule : ExtractHardRules(m.content)) {
+                            if (entry["hard_rules"].size() >= kMaxHardRules) break;
+                            const std::string item = ReplaceInvalidUtf8(rule);
+                            bool dup = false;
+                            for (const auto& r : entry["hard_rules"])
+                                if (r.is_string() && r.get<std::string>() == item) { dup = true; break; }
+                            if (!dup) entry["hard_rules"].push_back(item);
+                        }
+                    }
                 }
             }
         }
@@ -808,8 +852,8 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     std::string read_files_block;
     if (entry.contains("read_files") && entry["read_files"].is_object() && !entry["read_files"].empty()) {
         std::ostringstream oss;
-        oss << "Files already read, content evicted from context (re-reading the same call "
-               "returns the full content again; summary below is for reference only):\n";
+        oss << "Files already read whose content has left the context (summary only; re-read a "
+               "file only if you need details not in its summary, preferably a specific line range):\n";
         for (auto it = entry["read_files"].begin(); it != entry["read_files"].end(); ++it) {
             oss << "- " << it.key() << ": "
                 << (it.value().is_string() ? it.value().get<std::string>() : it.value().dump()) << "\n";
@@ -835,6 +879,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
 
     // 由高到低优先级排列；预算不足时跳过放不下的块，不做块内截断。
     const std::string blocks[] = {
+        render_list("Rules from documents you read (still in force)", "hard_rules"),
         render_list("Completed", "completed"),
         render_list("Next actions", "next_actions"),
         render_list("Facts / constraints", "facts_constraints"),
@@ -844,7 +889,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         page_directory_block,
     };
     static const char* kBlockNames[] = {
-        "completed", "next_actions", "facts_constraints", "open_questions",
+        "hard_rules", "completed", "next_actions", "facts_constraints", "open_questions",
         "read_files", "tool_state", "page_directory",
     };
 
@@ -882,9 +927,8 @@ std::string TaskMemoBuilder::RenderRedundantToolCallNote(int repeat_count)
 {
     std::ostringstream oss;
     oss << "Note: you have called the same tool with the same arguments " << repeat_count
-        << " time(s) in a row. If that earlier result is still visible above, re-reading it won't "
-           "give new information; use what you already have. If it's no longer visible (evicted "
-           "from context), calling it again will return the full content.\n";
+        << " time(s) in a row. Its result is already in the conversation (or summarized in this memo); "
+           "repeating it again is unlikely to give new information. Use that result or try a different approach.\n";
     return oss.str();
 }
 

@@ -98,6 +98,42 @@ std::string CapToolResultHeadTail(const std::string& content, size_t content_tok
     return content.substr(0, head_end) + OmittedMarker(content, head_end, tail_begin) + content.substr(tail_begin);
 }
 
+bool ArgsHaveLineRange(const json& args)
+{
+    static const char* kKeys[] = {"offset", "limit", "start_line", "end_line", "line_start", "line_end",
+                                  "startLine", "endLine", "lines", "line_range", "range"};
+    json a = args;
+    if (a.is_string()) {
+        try { a = json::parse(a.get<std::string>()); } catch (...) { return false; }
+    }
+    if (!a.is_object()) return false;
+    for (const char* k : kKeys)
+        if (a.contains(k) && !a[k].is_null()) return true;
+    return false;
+}
+
+bool IsRangedReadResult(const json& msgs, size_t tool_idx)
+{
+    const std::string call_id = msgs[tool_idx].value("tool_call_id", std::string());
+    for (size_t j = tool_idx; j-- > 0;) {
+        if (!msgs[j].is_object()) continue;
+        const std::string role = msgs[j].value("role", std::string());
+        if (role == "tool") continue;
+        if (role != "assistant") return false;
+        if (msgs[j].contains("tool_calls") && msgs[j]["tool_calls"].is_array()) {
+            for (const auto& tc : msgs[j]["tool_calls"]) {
+                if (!tc.is_object()) continue;
+                if (!call_id.empty() && tc.value("id", std::string()) != call_id) continue;
+                if (tc.contains("function") && tc["function"].is_object() &&
+                    tc["function"].contains("arguments") && ArgsHaveLineRange(tc["function"]["arguments"]))
+                    return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
 constexpr size_t kMinSurvivorFloor = 4;
 constexpr size_t kSurvivorCondenseMinShare = 48;
 const char kRawIdxKey[] = "__genie_raw_idx";
@@ -166,8 +202,30 @@ void StripRawIdx(json& messages)
 
 const char kRepeatStubPrefix[] = "[Note: this ";
 const char kRepeatStubSuffix[] =
-    " call returned a result identical to an earlier result in this conversation; "
-    "if that earlier result is no longer visible, call again to get the full content.]";
+    " call returned exactly the same result as the earlier identical call, which is still shown above; "
+    "calling it again will not return anything new. Use that result or change approach.";
+const char kRepeatStubTruncatedHint[] =
+    " That earlier result was truncated; to see an omitted part, read that line range instead of repeating the call.";
+const char kRepeatStubTailHeader[] = "\nIts last lines:\n";
+constexpr size_t kRepeatStubTailLines = 3;
+constexpr size_t kRepeatStubTailMaxBytes = 300;
+
+std::string LastLines(const std::string& content, size_t n, size_t max_bytes)
+{
+    size_t end = content.find_last_not_of(" \t\r\n");
+    if (end == std::string::npos) return "";
+    ++end;
+    size_t begin = end;
+    for (size_t k = 0; k < n && begin > 0; ++k) {
+        const size_t nl = content.rfind('\n', begin - 1);
+        if (nl == std::string::npos) { begin = 0; break; }
+        begin = nl;
+    }
+    if (begin < end && content[begin] == '\n') ++begin;
+    if (end - begin > max_bytes) begin = Utf8Floor(content, end - max_bytes);
+    while (begin < end && (static_cast<unsigned char>(content[begin]) & 0xC0) == 0x80) ++begin;
+    return content.substr(begin, end - begin);
+}
 constexpr double kRepeatRetainRatio = 0.20;
 constexpr double kRepeatRetainExceptionRatio = 0.40;
 
@@ -332,7 +390,12 @@ void ApplyRepeatResultStubs(json& msg, const std::string& key, const void* model
         }
 
         if (stub) {
-            m["content"] = std::string(kRepeatStubPrefix) + nm + kRepeatStubSuffix;
+            const std::string original = msg[kh.full_idx].value("content", std::string());
+            std::string note = std::string(kRepeatStubPrefix) + nm + kRepeatStubSuffix;
+            if (cap_tokens > 0 && count_tokens_fn(original) > cap_tokens) note += kRepeatStubTruncatedHint;
+            const std::string tail = LastLines(original, kRepeatStubTailLines, kRepeatStubTailMaxBytes);
+            if (!tail.empty()) note += kRepeatStubTailHeader + tail;
+            m["content"] = note + "]";
         } else {
             if (kh.full_hash != h) kh.repeat_count = 0;
             kh.full_idx = i;
@@ -2650,8 +2713,9 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         for (size_t i = 0; i < filtered_msg.size(); i++) {
             if (get_json_value(filtered_msg[i], "role", BLANK_STRING) != "tool") continue;
             std::string content = get_json_value(filtered_msg[i], "content", BLANK_STRING);
-            if (content.size() <= cap_tokens) continue;
-            std::string capped = CapToolResultHeadTail(content, CountTokens(content), cap_tokens);
+            const size_t entry_cap = IsRangedReadResult(filtered_msg, i) ? cap_tokens * 2 : cap_tokens;
+            if (content.size() <= entry_cap) continue;
+            std::string capped = CapToolResultHeadTail(content, CountTokens(content), entry_cap);
             if (capped.size() < content.size()) {
                 filtered_msg[i]["content"] = capped;
                 capped_count++;
