@@ -52,21 +52,20 @@ void Logger::log(QnnLog_Level_t level, const char* file, long line, const char* 
   
   va_list argp;
   va_start(argp, fmt);
-  std::string logString(fmt);
   std::ignore = file;
   std::ignore = line;
   uint64_t timestamp = getTimestamp() - m_epoch;
   
   // Call the primary callback (stdout) if available
   if (m_callback) {
-    (*m_callback)(logString.c_str(), level, timestamp, argp);
+    (*m_callback)(fmt, level, timestamp, argp);
   }
   
 #ifdef __ANDROID__
   // Also write to file on Android (independent of m_callback)
   va_list argp_copy;
   va_copy(argp_copy, argp);
-  utils::logFileCallback(logString.c_str(), level, timestamp, argp_copy);
+  utils::logFileCallback(fmt, level, timestamp, argp_copy);
   va_end(argp_copy);
 #endif
   

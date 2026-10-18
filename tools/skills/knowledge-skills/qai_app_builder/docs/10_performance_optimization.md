@@ -34,16 +34,19 @@ for i in range(100):
 PerfProfile.RelPerfProfileGlobal()
 
 # ============================================
-# 方法 2：单次推理设置
+# 方法 2：单次推理设置（不推荐）
 # ============================================
-# 每次推理时指定性能模式
+# 现在忽略该参数（每个进程打印一次 WARN，仅在日志级别 ≥ WARN 时可见）；早期构建（直到首次发布的 2.51.40）中，
+# 它只在本次调用期间提升频率，并会取消方法 1 持有的全局设置。
+# 两种情况都请用方法 1，并给 Inference() 传 PerfProfile.DEFAULT。
 output = model.Inference([input_data], perf_profile=PerfProfile.BURST)
 ```
 
 ⚠️ **重要提示**：
 
-- 使用 `SetPerfProfileGlobal()` 后，`Inference()` 的 `perf_profile` 参数应设置为 `PerfProfile.DEFAULT`
-- 如果在 `Inference()` 中指定其他性能模式，会覆盖全局设置
+- `Inference()` 的 `perf_profile` 参数传 `PerfProfile.DEFAULT`（或不传）
+- 请在第一个模型加载之后调用 `SetPerfProfileGlobal()`；现在也接受加载前（`QNNConfig.Config()` 之后）的调用并在加载时生效，早期构建（直到首次发布的 2.51.40）会静默忽略
+- 早期构建（直到首次发布的 2.51.40）：`Inference()` 中传非 DEFAULT 的 `perf_profile` 会覆盖全局设置
 
 ### Native 模式详解（高性能）
 

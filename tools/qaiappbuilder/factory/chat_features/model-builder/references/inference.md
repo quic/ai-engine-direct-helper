@@ -217,7 +217,7 @@ del model
 | Inference API | `model.Inference([inp])` | `model.Execute([inp])` |
 | Input format | Depends on `--preserve_io`: NCHW if used (default), NHWC if not. **Always check `model.getInputShapes()` first.** | Assuming always NHWC |
 | NCHW→NHWC conversion | Only needed when model input is NHWC: `np.transpose(x, (0,2,3,1))` | Always transposing |
-| Performance mode | `PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)` — **must be called AFTER at least one model is loaded** (otherwise silently ineffective) | `perf_profile=PerfProfile.BURST` in `Inference()` |
+| Performance mode | `PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)` — call it **after the first model is loaded** (earlier builds, up to the first 2.51.40 release, silently ignore a call made before any model exists; current builds record it and apply it on load) | `perf_profile=PerfProfile.BURST` in `Inference()` |
 | Performance lifecycle | Set BURST once before all inference → run all models → release once after all done | Setting/releasing per model call (stack imbalance) |
 | Resource cleanup | `del model` | Leaving model in memory |
 
@@ -227,9 +227,10 @@ del model
 
 > 🔗 Multi-model rules: see § Multi-model same-process below. Symptoms: `troubleshooting/inference-troubleshooting/SKILL.md`.
 
-1. **BURST requires ≥1 loaded QNNContext** — calling before any model loaded silently does nothing (`setPowerConfig error 0x32c9`).
+1. **BURST requires ≥1 loaded QNNContext** — in earlier builds (up to the first 2.51.40 release), calling before any model is loaded silently does nothing (the log shows `initialize one model before set perf profile!`). Current builds record the call and apply it on load; load first anyway so the code is correct on every build.
 2. **Set ONCE per session, hold for all inferences, release ONCE at end.** Never per-call (causes HTP clock ramp jitter). Streaming ASR: set at recording start → hold across all chunks → release after voice session ends. TTS pipeline: set once before first NPU stage → release after last.
 3. **Release BEFORE `del model`** — else `You should set perf profile before you release it!`.
+4. **Per-call `perf_profile` argument**: in earlier builds (up to the first 2.51.40 release) it is applied and a non-DEFAULT value cancels a held global BURST; current builds accept it for compatibility but ignore it (one WARN per process, visible only at log level WARN or higher — the default ERROR level shows nothing). Pass `PerfProfile.DEFAULT` either way.
 
 ```python
 # Session-scoped BURST (correct for streaming/ASR/TTS)

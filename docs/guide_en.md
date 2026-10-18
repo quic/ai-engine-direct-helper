@@ -1319,16 +1319,22 @@ for i in range(100):
 PerfProfile.RelPerfProfileGlobal()
 
 # ============================================
-# Method 2: Single Inference Setting
+# Method 2: Single Inference Setting (not recommended)
 # ============================================
-# Specify performance mode for each inference
+# The argument is accepted for compatibility but ignored (one WARN per process, shown only
+# at log level WARN or higher; the default ERROR level shows nothing).
+# In earlier builds (up to the first 2.51.40 release) it raised the clock for this
+# call only, gave no measurable speed-up, and cancelled a profile held by
+# SetPerfProfileGlobal(). Use Method 1.
 output = model.Inference([input_data], perf_profile=PerfProfile.BURST)
 ```
 
 ⚠️ **Important Notes**:
 
-- After using `SetPerfProfileGlobal()`, the `perf_profile` parameter of `Inference()` should be set to `PerfProfile.DEFAULT`
-- If other performance modes are specified in `Inference()`, it will override the global setting
+- Pass `PerfProfile.DEFAULT` (or nothing) as the `perf_profile` parameter of `Inference()`
+- Call `SetPerfProfileGlobal()` after the first model is loaded. The library also accepts a call made after `QNNConfig.Config()` but before the first load and apply it on load; earlier builds (up to the first 2.51.40 release) silently ignore such a call
+- If raising the clock fails on an already loaded HTP context (the C++ function returns `false`, an ERROR is logged), the request stays recorded and is applied to contexts loaded later in the process
+- Earlier builds (up to the first 2.51.40 release): a non-DEFAULT `perf_profile` in `Inference()` overrides the global setting
 
 ### 3.10 Native Mode Explained (High Performance)
 
@@ -1607,6 +1613,14 @@ void QNN_DBG(const char* fmt, ...);  // Debug log
 #define QNN_LOG_LEVEL_VERBOSE 4
 #define QNN_LOG_LEVEL_DEBUG   5
 ```
+
+**Per-call log lines (changed after the first 2.51.40 release)**: to keep logging off the inference path, lines that were printed on every call now need log level DEBUG:
+
+- `Time: <step> <ms>` timing lines (earlier builds: WARN or higher)
+- `LibAppBuilder::ModelInference: <name>` (earlier builds: INFO)
+- `share memory size(...) is enough for inputs/outputs` (earlier builds: WARN)
+
+Scripts that parse these lines must set `LogLevel.DEBUG`. Output flushing (Windows): ERROR/WARN lines, multi-process (`QNNContextProc`) output and output redirected to `log_out.txt` by `SetLogLevel(level, log_path)` are flushed per line; INFO/DEBUG lines of a single process on a console or pipe are left to stdio buffering, so they can appear later than Python `print()` output. On Linux/Android only ERROR/WARN lines are flushed per line.
 
 #### Performance Configuration Functions
 

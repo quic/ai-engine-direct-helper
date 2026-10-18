@@ -8,6 +8,10 @@
 
 #include "LogUtils.hpp"
 
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+
 #ifdef __ANDROID__
 #include <chrono>
 #include <iomanip>
@@ -49,12 +53,44 @@ std::string getTimeString() {
 }
 #endif
 
-void qnn::log::utils::logCreateLock() {		// zw: We need share the lock between processes.
+namespace {
+// Process-local lock: always taken, serialises the threads of this process.
+std::mutex sg_logLocalMutex;
 #ifdef _WIN32
-    sg_logUtilMutex = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "logStdoutCallbackSharedMutex");
-    if (!sg_logUtilMutex) {
-        sg_logUtilMutex = CreateMutexA(NULL, FALSE, "logStdoutCallbackSharedMutex");
-    }
+// Named (cross-process) lock: only taken once this process has spawned a QAIAppSvc
+// child or is a QAIAppSvc itself, because those processes share one stdout/console.
+std::atomic<HANDLE> sg_logSharedMutex{nullptr};
+std::once_flag sg_logSharedOnce;
+#endif
+// stdout is a file opened by SetLogLevel(level, log_path): the CRT fully buffers it, so
+// without a flush per line INFO lines would only reach log_out.txt when the buffer fills
+// and would be lost on os._exit or a native crash. Per-line flush matches the release.
+std::atomic<bool> sg_stdoutRedirected{false};
+}  // namespace
+
+void qnn::log::utils::logSetStdoutRedirected() {
+    sg_stdoutRedirected.store(true, std::memory_order_relaxed);
+}
+
+void qnn::log::utils::logCreateLock() {
+    // Kept for API compatibility. The named mutex is created lazily by
+    // logEnableCrossProcessLock(); single-process use needs no kernel object.
+}
+
+void qnn::log::utils::logEnableCrossProcessLock() {
+#ifdef _WIN32
+    std::call_once(sg_logSharedOnce, [] {
+        HANDLE h = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "logStdoutCallbackSharedMutex");
+        if (!h) {
+            h = CreateMutexA(NULL, FALSE, "logStdoutCallbackSharedMutex");
+        }
+        // Publish under the local lock so no line is printed half under one lock regime.
+        std::lock_guard<std::mutex> lock(sg_logLocalMutex);
+        // Drain lines buffered under the single-process policy first, so they reach the
+        // shared stdout before any line of the child that is about to be spawned.
+        fflush(stdout);
+        sg_logSharedMutex.store(h, std::memory_order_release);
+    });
 #endif
 }
 
@@ -160,6 +196,49 @@ void qnn::log::utils::logFileCallback(const char* fmt,
 }
 #endif
 
+// Builds "<header><message>\n" into buf (heap-allocated if it does not fit; caller
+// frees when the result != buf). Always ends with exactly one '\n' unless the message
+// already ends with one. va_list is consumed via va_copy so argp stays usable.
+static char* formatLogLine(char* buf, size_t cap, size_t* outLen, const char* fmt, va_list argp,
+                           const char* hdrFmt, ...) {
+    va_list hdrArgs;
+    va_start(hdrArgs, hdrFmt);
+    char hdr[160];
+    int h = vsnprintf(hdr, sizeof(hdr), hdrFmt, hdrArgs);
+    va_end(hdrArgs);
+    if (h < 0) h = 0;
+    if ((size_t)h >= sizeof(hdr)) h = (int)sizeof(hdr) - 1;
+
+    // Format straight into the stack buffer; only a message that does not fit is
+    // formatted a second time into a heap buffer of the exact size.
+    char* out = buf;
+    size_t room = cap;
+    memcpy(out, hdr, (size_t)h);
+    va_list a1;
+    va_copy(a1, argp);
+    int w = vsnprintf(out + h, room - (size_t)h, fmt, a1);
+    va_end(a1);
+    if (w >= 0 && (size_t)h + (size_t)w + 2 > cap) {
+        const size_t need = (size_t)h + (size_t)w + 2;  // + '\n' + '\0'
+        char* big = static_cast<char*>(malloc(need));
+        if (big) {
+            memcpy(big, hdr, (size_t)h);
+            va_list a2;
+            va_copy(a2, argp);
+            w = vsnprintf(big + h, need - (size_t)h, fmt, a2);
+            va_end(a2);
+            out = big;
+            room = need;
+        }
+    }
+    size_t len = (size_t)h + (w < 0 ? 0 : (size_t)w);
+    if (len > room - 2) len = room - 2;  // truncated into the stack buffer (malloc failed)
+    if (len == 0 || out[len - 1] != '\n') out[len++] = '\n';
+    out[len] = '\0';
+    *outLen = len;
+    return out;
+}
+
 void qnn::log::utils::logStdoutCallback(const char* fmt,
                                         QnnLog_Level_t level,
                                         uint64_t timestamp,
@@ -190,24 +269,57 @@ void qnn::log::utils::logStdoutCallback(const char* fmt,
   // To avoid interleaved messages
 #ifdef _WIN32
   {    // zw: enhance the log print.
-    DWORD dwWaitResult = WaitForSingleObject(sg_logUtilMutex, INFINITE);
-    if (WAIT_OBJECT_0 == dwWaitResult) {
-        //std::lock_guard<std::mutex> lock(sg_logUtilMutex);
-        fprintf(stdout, "%8.1fms [%s][%d][%-7s] ", ms, g_ProcName.c_str(), GetCurrentProcessId(), levelStr);
-        vfprintf(stdout, fmt, argp);
-        if (fmt[strlen(fmt) - 1] != '\n') {
-            fprintf(stdout, "\n");
-        }
-        fflush(stdout);
+    std::lock_guard<std::mutex> localLock(sg_logLocalMutex);
+    HANDLE shared = sg_logSharedMutex.load(std::memory_order_acquire);
+    bool owned = true;
+    if (shared) {
+        DWORD dwWaitResult = WaitForSingleObject(shared, INFINITE);
+        // WAIT_ABANDONED: a previous process died while holding the named mutex.
+        // We now own it; proceed with logging rather than silently dropping output.
+        owned = (WAIT_OBJECT_0 == dwWaitResult || WAIT_ABANDONED == dwWaitResult);
     }
-    ReleaseMutex(sg_logUtilMutex);
+    if (owned) {
+        char stackBuf[1024];
+        size_t len = 0;
+        char* line = formatLogLine(stackBuf, sizeof(stackBuf), &len, fmt, argp,
+                                   "%8.1fms [%s][%d][%-7s] ", ms, g_ProcName.c_str(),
+                                   (int)GetCurrentProcessId(), levelStr);
+        // One fwrite per record: with unbuffered stdout (python -u / PYTHONUNBUFFERED=1)
+        // each stdio call is a separate WriteFile, so 3 calls per line cost 3 syscalls.
+        fwrite(line, 1, len, stdout);
+        if (line != stackBuf) free(line);
+        // Flush policy:
+        //  - ERROR/WARN: always, so a native crash or os._exit does not lose the lines that
+        //    explain it (no WARN line is printed per inference, so this is cheap).
+        //  - cross-process mode (shared mutex): always, so a buffered line of one process
+        //    cannot be split by another process's output on the shared stdout.
+        //  - stdout redirected to log_out.txt (SetLogLevel with log_path): always, so the
+        //    file is complete on os._exit / native crash, as in the release.
+        //  - INFO/DEBUG/VERBOSE in a single process on a console/pipe: left to stdio
+        //    buffering; those levels print per-call lines, and a flush per line is one
+        //    extra WriteFile each.
+        if (shared || level == QNN_LOG_LEVEL_ERROR || level == QNN_LOG_LEVEL_WARN ||
+            sg_stdoutRedirected.load(std::memory_order_relaxed)) {
+            fflush(stdout);
+        }
+        if (shared) {
+            ReleaseMutex(shared);
+        }
+    }
   }
 #else
   {
-    std::lock_guard<std::mutex> lock(sg_logUtilMutex);
-    fprintf(stdout, "%8.1fms [%-7s] ", ms, levelStr);
-    vfprintf(stdout, fmt, argp);
-    fprintf(stdout, "\n");
+    std::lock_guard<std::mutex> lock(sg_logLocalMutex);
+    char stackBuf[1024];
+    size_t len = 0;
+    char* line = formatLogLine(stackBuf, sizeof(stackBuf), &len, fmt, argp,
+                               "%8.1fms [%-7s] ", ms, levelStr);
+    fwrite(line, 1, len, stdout);
+    if (line != stackBuf) free(line);
+    // Same policy as Windows; there is no cross-process stdout lock on this path.
+    if (level == QNN_LOG_LEVEL_ERROR || level == QNN_LOG_LEVEL_WARN) {
+        fflush(stdout);
+    }
   }
 #endif
 }

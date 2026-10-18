@@ -37,6 +37,9 @@
 #ifdef _WIN32
 #include <io.h>
 #endif
+// Library-only parts of Utils.hpp (QAIAppSvc also includes it, and the ndk-build defines
+// DLL_EXPORTS for QAIAppSvc too, so DLL_EXPORTS cannot tell the two apart).
+#define QAI_LIBAPPBUILDER_TU 1
 #include "Utils/Utils.hpp"
 
 #if !defined(__ANDROID__) && !defined(__linux__)
@@ -69,9 +72,16 @@ static void* sg_systemLibraryHandle{nullptr};
 static QNN_INTERFACE_VER_TYPE sg_qnnInterface;
 
 QnnHtpDevice_Infrastructure_t *gs_htpInfra(nullptr);
-static bool gs_isGpu = false;
-static bool gs_isCpu = false;
-static bool sg_perf_global = false;
+// Atomic: written by the loading thread (ModelInitializeEx), read by SetPerfProfileGlobal /
+// RelPerfProfileGlobal, which in a QAIAppSvc child may run on the command thread while
+// another model loads asynchronously.
+static std::atomic<bool> gs_isGpu{false};
+static std::atomic<bool> gs_isCpu{false};
+bool sg_perf_global = false;
+// Active perf profile state: sg_perf_global is the authoritative intent flag.
+// sg_perf_profile_value stores the profile string for apply-on-init of new contexts.
+std::string sg_perf_profile_value;
+std::mutex sg_perf_mutex;  // protects sg_powerConfigIds, sg_perf_global, sg_perf_profile_value
 
 // Intentionally process-lifetime allocated (never enters CRT static
 // destruction).  If atexit / ShutdownAllModels() runs, the map is drained
@@ -382,8 +392,23 @@ bool putQnnApp(std::string model_name,
     return false;
   }
 }
+std::string PendingPerfProfileIntent() {
+    std::lock_guard<std::mutex> lock(sg_perf_mutex);
+    return sg_perf_global ? sg_perf_profile_value : std::string();
+}
+
+// Internal (not exported, not in the public header): per-call "Time:" traces are
+// only built and printed when DEBUG logging is on. TimerHelper itself keeps the
+// released 2.51.40 layout and exports (ABI); the gate lives at the call sites.
+bool TimerTraceActive() {
+    return qnn::log::isLogInitialized() &&
+           qnn::log::getLogLevel() >= QNN_LOG_LEVEL_DEBUG;
+}
+
 void SetProcInfo(std::string proc_name, uint64_t epoch) {
     setEpoch(epoch);
+    // Only QAIAppSvc processes call this: they share stdout with the parent.
+    qnn::log::utils::logEnableCrossProcessLock();
     g_ProcName = proc_name;
 }
 
@@ -403,6 +428,8 @@ bool SetLogLevel(int32_t log_level, const std::string log_path) {
         std::string STD_ERR = log_path + "\\log_err.txt";
         if (freopen(STD_OUT.c_str(), "w+", stdout) == nullptr) {
             QNN_WARN("Failed to redirect stdout to %s", STD_OUT.c_str());
+        } else {
+            qnn::log::utils::logSetStdoutRedirected();
         }
         if (freopen(STD_ERR.c_str(), "w+", stderr) == nullptr) {
             QNN_WARN("Failed to redirect stderr to %s", STD_ERR.c_str());
@@ -445,22 +472,60 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
         return true;
     }
 #endif
-    // In cross-process mode the model lives in the Svc child process, so the
-    // perf profile must be applied there. Forward to all Svc processes; if any
-    // exist, that is authoritative and we return its result. With no Svc process
-    // (pure in-process mode) fall through to apply it locally.
-    if (!sg_proc_info_map.empty()) {
-        return TalkToSvc_SetPerfProfileGlobal(perf_profile);
+    // As in the release: once an in-process GPU/CPU model is loaded the HTP perf profile
+    // does not apply, and any value is accepted (gs_isGpu/gs_isCpu are only set by a load).
+    if (sg_proc_info_map.empty() && (gs_isGpu || gs_isCpu)) {
+        // Still record a valid intent, so an HTP context loaded later in this process
+        // (or in this Svc child) picks it up on init.
+        if (perf_profile == "burst" || perf_profile == "high_performance") {
+            std::lock_guard<std::mutex> lock(sg_perf_mutex);
+            sg_perf_profile_value = perf_profile;
+            sg_perf_global = true;
+        }
+        QNN_DEBUG("Skipping HTP performance profile for GPU/CPU backend");
+        return true;
     }
-
-    if (nullptr == sg_backendHandle) {
-        QNN_ERR("SetPerfProfileGlobal::initialize one model before set perf profile!\n");
+    if (perf_profile != "burst" && perf_profile != "high_performance") {
+        QNN_ERR("SetPerfProfileGlobal: invalid perf profile '%s'.\n", perf_profile.c_str());
         return false;
     }
 
+    // The intent is process-wide: record it first, so contexts loaded later in this
+    // process and Svc children created later both pick it up (see initializePerformance
+    // and TalkToSvc_Initialize).
+    {
+        std::lock_guard<std::mutex> lock(sg_perf_mutex);
+        sg_perf_profile_value = perf_profile;
+        sg_perf_global = true;
+    }
+
+    // Cross-process mode: models living in Svc children get it there. A process may
+    // also hold in-process contexts at the same time, so fall through for those.
+    bool ok = true;
+    const bool haveSvc = !sg_proc_info_map.empty();
+    if (haveSvc) {
+        ok = TalkToSvc_SetPerfProfileGlobal(perf_profile) && ok;
+    }
+
+    // Check for an initialized in-process HTP context under the lock BEFORE touching the
+    // backend globals. A context publishes its power-config ids at the end of
+    // initializePerformance, i.e. after sg_backendHandle, sg_qnnInterface and
+    // gs_isGpu/gs_isCpu were written. Testing sg_backendHandle alone is not enough: in a
+    // QAIAppSvc child the 'l' command calls this on the command thread while another
+    // model's async load may be between writing sg_backendHandle and sg_qnnInterface, and
+    // calling deviceGetInfrastructure through a not-yet-assigned interface crashes.
+    std::lock_guard<std::mutex> lock(sg_perf_mutex);  // also guards gs_htpInfra (written in initializePerformance)
+    const std::vector<uint32_t> ids = getAllPowerConfigIdsLocked();
+    if (ids.empty()) {
+        if (!haveSvc) {
+            QNN_INFO("SetPerfProfileGlobal: no in-process HTP power config yet, intent recorded -- will apply on context init.\n");
+        }
+        return ok;  // no in-process HTP context yet (or a GPU/CPU one): applied on its init
+    }
+
     if (gs_isGpu || gs_isCpu) {
-        QNN_DEBUG("Skipping HTP performance profile for GPU backend");
-        return true;
+        QNN_DEBUG("Skipping HTP performance profile for GPU/CPU backend");
+        return ok;
     }
 
     if (nullptr == gs_htpInfra) {
@@ -476,9 +541,7 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
 
     QnnHtpDevice_PerfInfrastructure_t perfInfra = gs_htpInfra->perfInfra;
     QNN_INF("PERF::SetPerfProfileGlobal");
-    sg_perf_global = true;
-
-    return boostPerformance(perfInfra, perf_profile, getAllPowerConfigIds());
+    return boostPerformance(perfInfra, perf_profile, ids) && ok;
 }
 
 bool RelPerfProfileGlobal() {
@@ -490,33 +553,40 @@ bool RelPerfProfileGlobal() {
         return true;
     }
 #endif
-    // Mirror SetPerfProfileGlobal: forward to Svc processes in cross-process mode.
-    if (!sg_proc_info_map.empty()) {
-        return TalkToSvc_RelPerfProfileGlobal();
+    // Mirror SetPerfProfileGlobal: Svc children and in-process contexts both.
+    const bool haveSvc = !sg_proc_info_map.empty();
+    bool ok = true;
+    if (haveSvc) {
+        ok = TalkToSvc_RelPerfProfileGlobal() && ok;
     }
 
-    if (gs_isGpu) {
-        return true;
-    }
+    std::lock_guard<std::mutex> lock(sg_perf_mutex);
+    const bool wasSet = sg_perf_global;
+    sg_perf_global = false;
+    sg_perf_profile_value.clear();
 
-    if (false == sg_perf_global) {
+    if (haveSvc && nullptr == sg_backendHandle) {
+        return ok;  // every model lives in a Svc child
+    }
+    if (gs_isGpu || gs_isCpu) {
+        return ok;
+    }
+    if (!wasSet) {
       QNN_ERR("You should set perf profile before you release it!\n");
       return false;
     }
 
-    // issue#109/#4: never dereference a null HTP infrastructure handle. This
-    // can happen if the backend/context was released between Set and Rel.
-    if (nullptr == gs_htpInfra) {
-      QNN_ERR("RelPerfProfileGlobal::HTP infrastructure is not available (context released?)\n");
-      sg_perf_global = false;
-      return false;
+    const std::vector<uint32_t> ids = getAllPowerConfigIdsLocked();
+    // Nothing was applied in this process: only a recorded intent (Set before any load),
+    // a non-HTP context (.dll model / CPU), or an apply that failed at init. issue#109/#4:
+    // never dereference a null HTP infrastructure handle.
+    if (ids.empty() || nullptr == gs_htpInfra) {
+      return ok;
     }
 
-    sg_perf_global = false;
     QnnHtpDevice_PerfInfrastructure_t perfInfra = gs_htpInfra->perfInfra;
     QNN_INF("PERF::RelPerfProfileGlobal");
-
-    return resetPerformance(perfInfra, getAllPowerConfigIds());
+    return resetPerformance(perfInfra, ids) && ok;
 }
 
 void QNN_ERR(const char* fmt, ...) {
@@ -855,7 +925,7 @@ bool ModelInitializeEx(const std::string& model_name, const std::string& proc_na
         return app->reportError("Binary update/execution failure");
     }
 
-    timerHelper.Print("model_initialize " + model_name);
+    if (TimerTraceActive()) timerHelper.Print("model_initialize " + model_name);
 
     if (!putQnnApp(model_name, std::move(app))) {
       QNN_ERR("ModelInitializeEx: failed to register initialized model: %s\n", model_name.c_str());
@@ -879,7 +949,7 @@ bool ModelInferenceEx(std::string model_name, std::string proc_name, std::string
     }
     bool result = true;
 
-    QNN_INFO("LibAppBuilder::ModelInference: %s \n", model_name.c_str());
+    QNN_DEBUG("LibAppBuilder::ModelInference: %s \n", model_name.c_str());
 
 #ifdef __linux__
     if (isForkedChildWithInheritedQnnState()) {
@@ -916,7 +986,7 @@ bool ModelInferenceEx(std::string model_name, std::string proc_name, std::string
         return false;
     }
 
-    timerHelper.Print("model_inference " + model_name);
+    if (TimerTraceActive()) timerHelper.Print("model_inference " + model_name);
 
     return result;
 }
@@ -958,7 +1028,7 @@ bool ModelDestroyEx(std::string model_name, std::string proc_name) {
     // free functions here; that was the source of double-free risks when
     // the destructor also released the same handles.
     auto status = app->shutdown();
-    timerHelper.Print("model_destroy " + model_name);
+    if (TimerTraceActive()) timerHelper.Print("model_destroy " + model_name);
 
     return (qnn_app::StatusCode::SUCCESS == status);
 }

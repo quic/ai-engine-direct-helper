@@ -91,6 +91,13 @@ void ModelLoad(std::string cmdBuf, ipc::IpcChannel* channel) {
     std::string async_str                   = commands[4];
     std::string input_data_type             = commands[5];
     std::string output_data_type            = commands[6];
+    // Optional 8th field: the client's SetPerfProfileGlobal intent ("-" = none). Record it
+    // in this process before the context is created so initializePerformance applies it.
+    if (commands.size() > 7 && commands[7] != "-") {
+        if (!SetPerfProfileGlobal(commands[7])) {
+            QNN_ERR("ModelLoad: failed to record perf profile '%s'.\n", commands[7].c_str());
+        }
+    }
 
     bool async = (async_str == "async");
 
@@ -147,16 +154,16 @@ static bool WaitForAsyncLoad(const std::string& model_name) {
 }
 
 // Wait for all pending async model loads to finish (used by perf commands that
-// require the backend handle to be initialized).
+// require the backend handle to be initialized). Waits WITHOUT consuming the futures:
+// ModelRun's WaitForAsyncLoad must still see a failed load and report it, instead of
+// finding no future and failing later with "model not found". The map is only touched
+// from this command-loop thread (the load lambdas never access it), so holding the lock
+// while waiting cannot deadlock.
 static void WaitForAllAsyncLoads() {
-    std::unordered_map<std::string, std::future<bool>> pending;
-    {
-        std::lock_guard<std::mutex> lk(g_async_futures_mutex);
-        pending = std::move(g_async_futures);
-    }
-    for (auto& kv : pending) {
+    std::lock_guard<std::mutex> lk(g_async_futures_mutex);
+    for (auto& kv : g_async_futures) {
         if (kv.second.valid()) {
-            kv.second.get();
+            kv.second.wait();
         }
     }
 }
@@ -169,6 +176,9 @@ void ModelRun(std::string cmdBuf, ipc::IpcChannel* channel, ipc::ShmHandle posix
 
     if (commands.size() < 6) {
         QNN_ERR("ModelRun: malformed command, expected at least 6 fields, got %zu\n", commands.size());
+#ifndef _WIN32
+        if (posixFd >= 0) ::close(posixFd);
+#endif
         channel->Write(ACTION_FAILED, strlen(ACTION_FAILED) + 1);
         return;
     }
@@ -191,6 +201,9 @@ void ModelRun(std::string cmdBuf, ipc::IpcChannel* channel, ipc::ShmHandle posix
     // If the model was loaded asynchronously, wait for it to finish before inference.
     if (!WaitForAsyncLoad(model_name)) {
         QNN_ERR("ModelRun: async model load failed for '%s'\n", model_name.c_str());
+#ifndef _WIN32
+        if (posixFd >= 0) ::close(posixFd);
+#endif
         channel->Write(ACTION_FAILED, strlen(ACTION_FAILED) + 1);
         return;
     }
@@ -204,13 +217,10 @@ void ModelRun(std::string cmdBuf, ipc::IpcChannel* channel, ipc::ShmHandle posix
         // two async inferences for the same model run concurrently.
         std::string shm_key = share_memory_name + "_" + request_id;
 
-        // On POSIX the fd must survive until the lambda finishes; dup it so the
-        // server's main loop closing posixFd doesn't affect the lambda.
-#ifndef _WIN32
-        ipc::ShmHandle lambdaFd = (posixFd >= 0) ? ::dup(posixFd) : posixFd;
-#else
+        // POSIX: hand the received fd over to the lambda; OpenShareMem takes ownership
+        // of it (closed by the region, or by OpenFromHandle on mmap failure). This path
+        // does not use posixFd afterwards, so no dup is needed (a dup leaked the original).
         ipc::ShmHandle lambdaFd = posixFd;
-#endif
 
         std::future<InferResult> fut = std::async(std::launch::async,
             [=]() mutable -> InferResult {
@@ -218,9 +228,9 @@ void ModelRun(std::string cmdBuf, ipc::IpcChannel* channel, ipc::ShmHandle posix
 
                 void* lpBase = OpenShareMem(share_memory_name, share_memory_size, lambdaFd, shm_key);
                 if (!lpBase) {
-#ifndef _WIN32
-                    if (lambdaFd >= 0) ::close(lambdaFd);
-#endif
+                    // POSIX: OpenShareMem already closed lambdaFd (OpenFromHandle on mmap
+                    // failure, or the region destructor); closing it again could close an
+                    // unrelated fd that reused the number.
                     return result;
                 }
 
@@ -423,6 +433,8 @@ void getModelInfo(std::string cmdBuf, ipc::IpcChannel* channel) {
     }
 }
 
+static void dispatchCommand(const std::string& record, ipc::IpcChannel* channel, ipc::ShmHandle posixFd);
+
 int svcprocess_run(ipc::IpcChannel* channel) {
     size_t dwRead = 0;
     BOOL bSuccess = false;
@@ -431,6 +443,13 @@ int svcprocess_run(ipc::IpcChannel* channel) {
         ErrorExit("Svc::Failed to get command channel.");
     }
 
+    // Every command is written as one NUL-terminated record. On Windows the channel is an
+    // anonymous (byte-stream) pipe with no message boundaries: when the client sends two
+    // commands without waiting for a reply in between (async 'l' followed by 'i'/'g'), one
+    // ReadFile can return both, or a record can be split across reads. Reassemble records
+    // and dispatch each of them; dispatching only the first one loses the second command
+    // and leaves the client blocked on a reply that never comes.
+    std::string pending;
     for (;;) {
         bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
 
@@ -445,8 +464,36 @@ int svcprocess_run(ipc::IpcChannel* channel) {
         // Any fd that arrived with this message (POSIX SCM_RIGHTS); kInvalidShm() on Windows.
         ipc::ShmHandle posixFd = channel->TakePendingFd();
 
-        char* cmdBuf = g_buffer + 1;
-        switch (g_buffer[0]) {
+#ifndef _WIN32
+        // POSIX: SOCK_SEQPACKET keeps message boundaries, so one Read is one record and a
+        // record never continues in the next Read. A message without a NUL was longer than
+        // GLOBAL_BUFSIZE and the kernel discarded the tail; reject it here instead of
+        // keeping it in `pending`, where it would be glued to the next record.
+        if (std::memchr(g_buffer, '\0', dwRead) == nullptr) {
+            QNN_ERR("Svc::command larger than %d bytes was truncated; rejected.\n", GLOBAL_BUFSIZE);
+            if (posixFd >= 0) ::close(posixFd);
+            channel->Write(ACTION_FAILED, strlen(ACTION_FAILED) + 1);
+            continue;
+        }
+#endif
+        pending.append(g_buffer, dwRead);
+        size_t start = 0;
+        for (size_t end; (end = pending.find('\0', start)) != std::string::npos; start = end + 1) {
+            if (end == start) continue;   // stray NUL
+            const std::string record = pending.substr(start, end - start);
+            dispatchCommand(record, channel, posixFd);
+            posixFd = ipc::kInvalidShm(); // an fd belongs to the record it arrived with
+        }
+        pending.erase(0, start);
+    }
+
+    return 0;
+}
+
+static void dispatchCommand(const std::string& record, ipc::IpcChannel* channel, ipc::ShmHandle posixFd) {
+    {
+        const char* cmdBuf = record.c_str() + 1;
+        switch (record[0]) {
             case 'l':   // load model.
                 ModelLoad(cmdBuf, channel);
                 break;
@@ -474,10 +521,16 @@ int svcprocess_run(ipc::IpcChannel* channel) {
             case 'e':   // release perf profile.
                 RelPerf(channel);
                 break;
-        }
-    }
 
-    return 0;
+            default:
+                QNN_ERR("Svc::Unknown command '%c' (record length %zu).\n", record[0], record.size());
+                break;
+        }
+#ifndef _WIN32
+        // Only 'g' takes ownership of a received fd; close one that came with any other record.
+        if (record[0] != 'g' && posixFd >= 0) ::close(posixFd);
+#endif
+    }
 }
 
 

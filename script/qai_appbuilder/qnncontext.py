@@ -612,6 +612,13 @@ class PerfProfile:
     """
     Set the HTP perf profile.
     file:///C:/Qualcomm/AIStack/QNN/2.19.0.240124/docs/QNN/general/htp/htp_backend.html?highlight=rpc_control_latency#qnn-htp-performance-infrastructure-api
+
+    .. note::
+        The per-call ``perf_profile`` argument of ``Inference()`` is accepted for
+        backward compatibility but has no effect (in earlier builds, up to the first 2.51.40
+        release, it was applied and overrode a global profile). A non-DEFAULT value logs
+        one WARN per process, visible only at log level WARN or higher. Use
+        ``SetPerfProfileGlobal()`` / ``RelPerfProfileGlobal()`` and pass DEFAULT.
     """
     DEFAULT             = "default"     # not change the perf profile.
     HIGH_PERFORMANCE    = "high_performance"
@@ -621,8 +628,10 @@ class PerfProfile:
     def SetPerfProfileGlobal(perf_profile):
         """
         Set the perf profile globally. We can set HTP to 'burst' and keep it for running inference several times, the use RelPerfProfileGlobal to reset it.
-        You should keep the 'perf_profile' parameter of function 'Inference()' as 'PerfProfile.DEFAULT' for the class QNNContext & QNNContextProc. If not, this
-        global setting will be overwritten.
+        Keep the 'perf_profile' parameter of 'Inference()' as 'PerfProfile.DEFAULT' for QNNContext & QNNContextProc.
+        Call it after QNNConfig.Config(); before Config() it does nothing. A call made before the first model is
+        loaded is recorded and applied on load. (Earlier builds, up to the first 2.51.40 release: such a call is ignored, and a non-DEFAULT
+        per-call value overwrites this global setting.)
         """
         global g_runtime
         if g_runtime == Runtime.GPU:

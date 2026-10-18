@@ -7,6 +7,7 @@
 //==============================================================================
 
 #include <inttypes.h>
+#include <atomic>
 
 #include <cstring>
 #include <fstream>
@@ -47,15 +48,28 @@ static const int sg_lowLatency    = 100;   // This will limit sleep modes availa
 static const int sg_highLatency   = 2000;
 static std::set<uint32_t> sg_powerConfigIds = {};
 
+// Externs from LibAppBuilder.cpp for deferred perf profile support.
+extern std::mutex sg_perf_mutex;
+extern std::string sg_perf_profile_value;
+extern bool sg_perf_global;
+extern QnnHtpDevice_Infrastructure_t *gs_htpInfra;
+
 uint32_t getPowerConfigId() {
+  std::lock_guard<std::mutex> lock(sg_perf_mutex);
   if (sg_powerConfigIds.size() > 0) {
     return *sg_powerConfigIds.begin();
   }
   return 1;
 }
 
-std::vector<uint32_t> getAllPowerConfigIds() {
+// Caller must already hold sg_perf_mutex (defined in LibAppBuilder.cpp, extern above).
+std::vector<uint32_t> getAllPowerConfigIdsLocked() {
   return {sg_powerConfigIds.begin(), sg_powerConfigIds.end()};
+}
+
+std::vector<uint32_t> getAllPowerConfigIds() {
+  std::lock_guard<std::mutex> lock(sg_perf_mutex);
+  return getAllPowerConfigIdsLocked();
 }
 
 
@@ -2135,7 +2149,7 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::executeGraphsBuffers(std::vecto
       }
     }
 
-    QNN_WARN("share memory size(%zu) is enough for inputs. required=%zu bytes, graphIdx=%zu",
+    QNN_DEBUG("share memory size(%zu) is enough for inputs. required=%zu bytes, graphIdx=%zu",
     share_memory_size, requiredInputBytesTotal, graphIdx);
   }
 
@@ -2162,10 +2176,6 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::executeGraphsBuffers(std::vecto
           QNN_DEBUG("Successfully populated input tensors for graphIdx: %d", graphIdx);
           Qnn_ErrorHandle_t executeStatus = QNN_GRAPH_NO_ERROR;
 
-          if (!m_isGpu && false == m_runInCpu && "default" != perfProfile && false == boostPerformance(m_perfInfra, perfProfile, m_powerConfigIds)) {
-            QNN_ERROR("Performance boost failure");
-          }
-
           executeStatus =
               m_qnnFunctionPointers.qnnInterface.graphExecute(graphInfo.graph,
                                                               inputs,
@@ -2175,8 +2185,18 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::executeGraphsBuffers(std::vecto
                                                               m_profileBackendHandle,
                                                               nullptr);
 
-          if (!m_isGpu && false == m_runInCpu && "default" != perfProfile && false == resetPerformance(m_perfInfra, m_powerConfigIds)) {
-            QNN_ERROR("Performance reset failure");
+          // The per-call perf profile is ignored: boost/reset around a single graphExecute costs
+          // 4 synchronous RPCs, cannot reach full clock in time, and its reset overwrites a held
+          // SetPerfProfileGlobal(). Use SetPerfProfileGlobal()/RelPerfProfileGlobal() for the whole
+          // task instead. Say so once per process, so code written for the released behaviour
+          // does not lose its speed-up silently.
+          if ("default" != perfProfile) {
+            static std::atomic<bool> s_warned{false};
+            if (!s_warned.exchange(true)) {
+              QNN_WARN("Inference(perf_profile='%s') is ignored; "
+                       "use PerfProfile.SetPerfProfileGlobal() after loading the model.",
+                       perfProfile.c_str());
+            }
           }
 
           if (ProfilingLevel::OFF != m_profilingLevel) {
@@ -2235,7 +2255,7 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::executeGraphsBuffers(std::vecto
                 }
               }
 
-              QNN_WARN("share memory size(%zu) is enough for outputs. required=%zu bytes, graphIdx=%zu", share_memory_size, requiredBytesTotal, graphIdx);
+              QNN_DEBUG("share memory size(%zu) is enough for outputs. required=%zu bytes, graphIdx=%zu", share_memory_size, requiredBytesTotal, graphIdx);
             }
 
             // populate output buffer directly
@@ -2413,10 +2433,29 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::initializePerformance() {
             return StatusCode::FAILURE;
         }
         m_powerConfigIds.push_back(cfgId);
-        sg_powerConfigIds.insert(cfgId);
     }
     m_powerConfigId = m_powerConfigIds.front();
     m_isPerformanceInitialized = true;
+
+    // Publish power-config-ids and apply any pending global perf profile
+    // under the same lock to avoid races with concurrent Set/Rel calls.
+    {
+        std::lock_guard<std::mutex> lock(sg_perf_mutex);
+        for (uint32_t cfgId : m_powerConfigIds) {
+            sg_powerConfigIds.insert(cfgId);
+        }
+        if (sg_perf_global && !sg_perf_profile_value.empty()) {
+            if (boostPerformance(m_perfInfra, sg_perf_profile_value, m_powerConfigIds)) {
+                QNN_INFO("Applied global perf profile '%s' to newly initialized context.\n",
+                         sg_perf_profile_value.c_str());
+                // Ensure gs_htpInfra is set so RelPerfProfileGlobal can reset later.
+                if (nullptr == gs_htpInfra) {
+                    gs_htpInfra = htpInfra;
+                }
+            }
+        }
+    }
+
     return StatusCode::SUCCESS;
 }
 
@@ -2425,6 +2464,7 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::destroyPerformance() {
         return StatusCode::SUCCESS;
 
     StatusCode result = StatusCode::SUCCESS;
+    std::lock_guard<std::mutex> lock(sg_perf_mutex);
     for (uint32_t cfgId : m_powerConfigIds) {
         const auto status = m_perfInfra.destroyPowerConfigId(cfgId);
         // Treat the opaque id as consumed regardless of backend status; retrying

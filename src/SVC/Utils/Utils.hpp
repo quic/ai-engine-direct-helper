@@ -110,6 +110,16 @@ ProcInfo_t* FindProcInfo(std::string proc_name) {
 }
 
 ProcInfo_t* CreateSvcProcess(std::string proc_name) {
+    // From now on this process shares stdout with a QAIAppSvc child: serialise
+    // log lines across processes (single-process use keeps the cheaper local lock).
+    // Only libappbuilder spawns children; QAIAppSvc also compiles this header but never
+    // calls CreateSvcProcess and cannot see LogUtils. Gate on QAI_LIBAPPBUILDER_TU, not
+    // DLL_EXPORTS: the ndk-build (make/Application.mk APP_CPPFLAGS) defines DLL_EXPORTS for
+    // every module, QAIAppSvc included.
+#ifdef QAI_LIBAPPBUILDER_TU
+    qnn::log::utils::logEnableCrossProcessLock();
+#endif
+
     ipc::ChildEndpoints ends;
     auto channel = ipc::IpcChannel::CreateParent(ends);
     if (!channel) {
@@ -151,6 +161,38 @@ BOOL StopSvcProcess(std::string proc_name) {
     return true;
 }
 
+static BOOL TalkToSvc_PerfOne(ProcInfo_t* pProcInfo, char action, const std::string& perf_profile);
+
+// POSIX: the command channel is SOCK_SEQPACKET and the Svc reads at most GLOBAL_BUFSIZE
+// bytes per message, so a longer record is truncated by the kernel and rejected by the
+// Svc. Refuse it here instead: an async 'l' does not read a reply, so a "Failed" reply
+// to it would be left in the socket and every later reply would be off by one.
+// Windows uses a byte-stream pipe and the Svc reassembles records of any length.
+static inline bool SvcCommandFits(const std::string& command, const char* where) {
+#ifndef _WIN32
+    if (command.length() + 1 > (size_t)GLOBAL_BUFSIZE) {
+        QNN_ERR("%s: command of %zu bytes exceeds %d bytes; not sent.\n", where,
+                command.length() + 1, GLOBAL_BUFSIZE);
+        return false;
+    }
+#else
+    (void)command; (void)where;
+#endif
+    return true;
+}
+// Internal gate for per-call "Time:" traces. Not part of the public header.
+#ifdef QAI_LIBAPPBUILDER_TU
+bool TimerTraceActive();  // defined in LibAppBuilder.cpp
+#else
+// QAIAppSvc compiles this header but never runs the TalkToSvc_* paths.
+static inline bool TimerTraceActive() { return false; }
+#endif
+#ifdef QAI_LIBAPPBUILDER_TU
+// Pending SetPerfProfileGlobal intent recorded before any model was loaded (P3-A,
+// defined in LibAppBuilder.cpp). Returns "" when none.
+std::string PendingPerfProfileIntent();
+#endif
+
 // Send model data to the Svc through the command channel and receive the response.
 BOOL TalkToSvc_Initialize(const std::string& model_name, const std::string& proc_name, const std::string& model_path,
                           const std::string& backend_lib_path, const std::string& system_lib_path, bool async, const std::string& input_data_type, const std::string& output_data_type) {
@@ -171,7 +213,18 @@ BOOL TalkToSvc_Initialize(const std::string& model_name, const std::string& proc
     }
 
     std::string command = "l" + model_name + ";" + model_path + ";" + backend_lib_path + ";" + system_lib_path + ";" + async_str + ";" + input_data_type + ";" + output_data_type;
+#ifdef QAI_LIBAPPBUILDER_TU
+    // Carry the process-wide SetPerfProfileGlobal intent with every load, so the child
+    // records it before ModelInitialize and applies it when the context is created.
+    // This needs no extra round trip (an async load stays async), and it also covers a
+    // retried load and a Svc child created after the Set. "-" = no intent.
+    {
+        const std::string pending = PendingPerfProfileIntent();
+        command += ";" + (pending.empty() ? std::string("-") : pending);
+    }
+#endif
 
+    if (!SvcCommandFits(command, "TalkToSvc_Initialize")) return false;
     TimerHelper timerHelper;
     // Write command to Svc.
     bSuccess = channel->Write(command.c_str(), command.length() + 1);
@@ -179,7 +232,7 @@ BOOL TalkToSvc_Initialize(const std::string& model_name, const std::string& proc
 
     if (!async) {  // We only wait for Svc response when sync mode. Otherwise, we just return.
         // Read command from Svc.
-        bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+        bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
         if(dwRead) {
             g_buffer[dwRead] = 0;
             QNN_INF("TalkToSvc_Initialize::ReadFromPipe: %s dwRead = %d\n", g_buffer, (int)dwRead);
@@ -190,7 +243,7 @@ BOOL TalkToSvc_Initialize(const std::string& model_name, const std::string& proc
         if (!bSuccess || dwRead == 0) return false;
     }
 
-    timerHelper.Print("TalkToSvc_Initialize::Pipe talk");
+    if (TimerTraceActive()) timerHelper.Print("TalkToSvc_Initialize::Pipe talk");
 
     // Add "model_name" to "sg_model_info_map".
     sg_model_info_map.insert(std::make_pair(model_name, pProcInfo));
@@ -207,10 +260,11 @@ static BOOL TalkToSvc_PerfOne(ProcInfo_t* pProcInfo, char action, const std::str
     bool bSuccess;
 
     std::string command = std::string(1, action) + perf_profile;
+    if (!SvcCommandFits(command, "TalkToSvc_PerfOne")) return false;
     bSuccess = channel->Write(command.c_str(), command.length() + 1);
     if (!bSuccess) return false;
 
-    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
     if (!bSuccess || dwRead == 0) {
         QNN_ERR("TalkToSvc_Perf::Failed to read from channel, perhaps child process died.\n");
         return false;
@@ -258,6 +312,7 @@ BOOL TalkToSvc_Destroy(std::string model_name, std::string proc_name) {
     bool bSuccess;
 
     std::string command = "r" + model_name;
+    if (!SvcCommandFits(command, "TalkToSvc_Destroy")) return false;
 
     TimerHelper timerHelper;
     // Write command to Svc.
@@ -266,7 +321,7 @@ BOOL TalkToSvc_Destroy(std::string model_name, std::string proc_name) {
     if (!bSuccess) return false;
 
     // Read command from Svc.
-    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
     if (dwRead) {
         g_buffer[dwRead] = 0;
         QNN_INF("TalkToSvc_Destroy::ReadFromPipe: %s dwRead = %d\n", g_buffer, (int)dwRead);
@@ -275,7 +330,7 @@ BOOL TalkToSvc_Destroy(std::string model_name, std::string proc_name) {
         QNN_ERR("TalkToSvc_Destroy::ReadFromPipe: Failed to read from channel, perhaps child process died.\n");
     }
     if (!bSuccess || dwRead == 0) return false;
-    timerHelper.Print("TalkToSvc_Destroy::Pipe talk");
+    if (TimerTraceActive()) timerHelper.Print("TalkToSvc_Destroy::Pipe talk");
 
     sg_model_info_map.erase(model_name);
     if(sg_model_info_map.size() == 0) {     // If no model in this process, stop this process.
@@ -292,6 +347,11 @@ void ShareMemToVector(std::string strBufferArray, uint8_t* lpBase, std::vector<u
     std::vector<std::string> strOffsetArray;
     std::vector<std::string> strSizeArray;
     split_string(strArray, strBufferArray, '=');
+    // An empty reply "=" (no tensors) leaves strArray empty: split_string drops empty
+    // fields. Nothing to decode; indexing strArray[0]/[1] would read out of bounds.
+    if (strArray.size() < 2) {
+        return;
+    }
     split_string(strOffsetArray, strArray[0], ',');
     split_string(strSizeArray, strArray[1], ',');
 
@@ -299,7 +359,7 @@ void ShareMemToVector(std::string strBufferArray, uint8_t* lpBase, std::vector<u
     size_t dataSize = 0;
 
     // Perhaps the data in buffer is not in order.
-    for (int i = 0; i < strOffsetArray.size(); i++) {
+    for (int i = 0; i < (int)strOffsetArray.size() && i < (int)strSizeArray.size(); i++) {
         offset = std::stoull(strOffsetArray[i]);
         dataSize = std::stoull(strSizeArray[i]);
         size.push_back(dataSize);
@@ -445,12 +505,13 @@ BOOL TalkToSvc_Inference(std::string model_name, std::string proc_name, std::str
     // Write command to Svc. On POSIX, the shared-memory fd travels with the
     // command so the server can map it (it cannot be opened by name). On
     // Windows the fd is ignored and the server opens the mapping by name.
+    if (!SvcCommandFits(command, "TalkToSvc_Inference")) return false;
     ipc::ShmHandle shmHandle = pShareMemInfo->region ? pShareMemInfo->region->Handle() : ipc::kInvalidShm();
     bSuccess = channel->WriteWithFd(command.c_str(), command.length() + 1, shmHandle);
     if (!bSuccess) return false;
 
     // Read command from Svc.
-    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
     if(dwRead) {
         g_buffer[dwRead] = 0;
         QNN_INF("TalkToSvc_Inference::ReadFromPipe: %s dwRead = %d\n", g_buffer, (int)dwRead);
@@ -505,12 +566,13 @@ std::string TalkToSvc_InferenceAsync(std::string model_name, std::string proc_na
     command = command + perfProfile + ";";
     command = command + std::to_string(graphIndex) + ";async";   // mark as async
 
+    if (!SvcCommandFits(command, "TalkToSvc_InferenceAsync")) return "";
     ipc::ShmHandle shmHandle = pShareMemInfo->region ? pShareMemInfo->region->Handle() : ipc::kInvalidShm();
     bSuccess = channel->WriteWithFd(command.c_str(), command.length() + 1, shmHandle);
     if (!bSuccess) return "";
 
     // Server replies with request_id immediately (not the full result).
-    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
     if (!bSuccess || dwRead == 0) {
         QNN_ERR("TalkToSvc_InferenceAsync::Failed to read request_id.\n");
         return "";
@@ -547,10 +609,11 @@ BOOL TalkToSvc_WaitInference(const std::string& request_id,
     bool bSuccess;
 
     std::string command = "q" + request_id;
+    if (!SvcCommandFits(command, "TalkToSvc_WaitInference")) return false;
     bSuccess = channel->Write(command.c_str(), command.length() + 1);
     if (!bSuccess) return false;
 
-    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
     if (dwRead) {
         g_buffer[dwRead] = 0;
         QNN_INF("TalkToSvc_WaitInference::ReadFromPipe: %s dwRead = %d\n", g_buffer, (int)dwRead);
@@ -606,13 +669,14 @@ ModelInfo_t TalkToSvc_getModelInfo(std::string model_name, std::string proc_name
     bool bSuccess;
 
     std::string command = "i" + model_name + ";" + input + ";";
+    if (!SvcCommandFits(command, "TalkToSvc_getModelInfo")) return output;
 
     // Write command to Svc.
     bSuccess = channel->Write(command.c_str(), command.length() + 1);
     if (!bSuccess) return output;
 
     // Read command from Svc.
-    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE, dwRead);
+    bSuccess = channel->Read(g_buffer, GLOBAL_BUFSIZE - 1, dwRead);
     if(dwRead) {
         g_buffer[dwRead] = 0;
     }
