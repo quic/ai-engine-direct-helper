@@ -818,12 +818,13 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                 repetition_key = ToolCallRepetitionStore::MakeKey(session_key, instance_config_->get_model_name());
             }
             const bool redundant_guard_enabled = model_config_.GetToolCallRepairConfig().redundant_call_guard.enabled;
+            const bool output_truncated = handle->was_stopped_by_output_limit();
 
             if (!IsUnknowToolCallJson(toolResponse))
             {
                 // Layer0/1/2 某一层成功恢复出合法工具调用：打断"连续触发 Layer3"的判定序列。
                 ToolCallCircuitBreakerStore::GetInstance().RecordSuccess(circuit_breaker_key);
-                finishReason = "tool_calls";
+                finishReason = output_truncated ? "length" : "tool_calls";
                 std::string tool_name;
                 try
                 {
@@ -837,7 +838,10 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                         const std::string signature = tool_name + "|" + parsed.value("arguments", json::object()).dump();
                         if (redundant_guard_enabled)
                             ToolCallRepetitionStore::GetInstance().RecordCall(repetition_key, signature);
-                        const std::string conclusion = TaskMemoBuilder::ExtractThinkConclusion(response_buffer);
+                        std::string conclusion = TaskMemoBuilder::ExtractThinkConclusion(response_buffer);
+                        if (output_truncated)
+                            conclusion += (conclusion.empty() ? "" : " ") + std::string("this call was cut off by the output token limit after ")
+                                + std::to_string(response_buffer.size()) + " characters, so its arguments are incomplete; split the content into several smaller calls";
                         if (!conclusion.empty())
                             TaskMemoBuilder::PinThinkConclusion(think_session_key, signature, conclusion);
                     }
@@ -861,7 +865,7 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                     best_effort["name"] = partial_recovery["name"];
                     best_effort["arguments"] = partial_recovery.value("arguments", json::object());
                     toolResponse = ResponseTools::wrapJsonInToolCall(best_effort.dump());
-                    finishReason = "tool_calls";
+                    finishReason = output_truncated ? "length" : "tool_calls";
                     isToolResponse = true;
                     send_tool_call_status_once(partial_recovery["name"].get<std::string>());
                     if (redundant_guard_enabled)

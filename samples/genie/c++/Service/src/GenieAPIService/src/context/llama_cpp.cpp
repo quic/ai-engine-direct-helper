@@ -505,6 +505,8 @@ public:
         int think_token_start = -1;
         bool think_force_closing = false;
         std::vector<llama_token> think_force_tokens;
+        const int ctx_left_for_output = std::max(1, n_ctx - (int) embd_inp.size());
+        const int max_output_tokens = max_length_ > 0 ? std::min(max_length_, ctx_left_for_output) : ctx_left_for_output;
         int32_t think_budget_tokens = params_.sampling.reasoning_budget_tokens;
         if (!is_aux_inference && think_time_budget_s_ > 0)
         {
@@ -585,12 +587,12 @@ public:
                         << " total generated tokens. Forcing </think> close." << std::endl;
                 }
             }
-            if (max_length_ > 0 && n_generated >= max_length_)
+            if (n_generated >= max_output_tokens)
             {
                 My_Log{My_Log::Level::kWarning}
                     << "[LLAMACpp] " << query_type
                     << " Generated " << n_generated
-                    << " tokens, reached max output limit " << max_length_
+                    << " tokens, reached max output limit " << max_output_tokens
                     << ". Stopping generation." << std::endl;
                 stopped_by_output_limit_ = true;
                 should_stop = true;
@@ -1140,8 +1142,8 @@ public:
     std::condition_variable cv;
     bool done{false};
 
-    // Fix: 最大输出 token 数（由 SetParams 设置，默认 4096）
-    int max_length_ = 4096;
+    // Fix: 最大输出 token 数（由 SetParams 设置；0 表示按剩余上下文）
+    int max_length_ = 0;
     // Fix: 是否因输出 token 限制而停止生成
     bool stopped_by_output_limit_ = false;
 
