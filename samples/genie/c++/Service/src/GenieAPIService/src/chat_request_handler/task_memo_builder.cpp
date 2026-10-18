@@ -537,8 +537,11 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
                 entry["last_success"][tool] = ReplaceInvalidUtf8(safe_utf8_truncate(FullToolCall(last_assistant_content), kMaxLastSuccessChars, "..."));
                 CapObjectSize(entry["last_success"], 6);
             }
-            for (const auto& a : ExtractArtifactLines(m.content))
-                AppendCapped(entry["artifacts"], ReplaceInvalidUtf8(a), kMaxArtifacts);
+            const std::string tool_name = call.substr(0, call.find(' '));
+            const bool reads_content = IsReadLikeToolName(tool_name) || tool_name.find("fetch") != std::string::npos;
+            if (!failed && !call.empty() && !reads_content)
+                for (const auto& a : ExtractArtifactLines(m.content))
+                    AppendCapped(entry["artifacts"], ReplaceInvalidUtf8(a), kMaxArtifacts);
 
             // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
             // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。
