@@ -36,11 +36,12 @@ std::string getLogFilePath();
 void logFileCallback(const char* fmt, QnnLog_Level_t level, uint64_t timestamp, va_list argp);
 #endif
 
-#ifdef _WIN32
-static HANDLE sg_logUtilMutex = nullptr;	// zw: We need share the lock between processes.
-#else
-static std::mutex sg_logUtilMutex;
-#endif
+// Switch stdout logging to the cross-process named mutex. Call before spawning a
+// QAIAppSvc child (it inherits stdout) and inside a QAIAppSvc process. Until then
+// a process-local mutex is used (single-process case: no kernel round trip per line).
+void logEnableCrossProcessLock();
+// stdout was redirected to a log file (SetLogLevel(level, log_path)): flush every line.
+void logSetStdoutRedirected();
 }  // namespace utils
 }  // namespace log
 }  // namespace qnn

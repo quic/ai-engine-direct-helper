@@ -146,10 +146,9 @@ realesrgan   = None
 class RealESRGan(QNNContext):
     def Inference(self, input_data):
         input_datas = [input_data]
-        # Pass PerfProfile.BURST directly so the HTP runs at maximum clock speed.
-        # Using DEFAULT here would silently fall back to a lower power state and
-        # roughly double the inference latency on float32 .bin models.
-        output_data = super().Inference(input_datas, perf_profile=PerfProfile.BURST)[0]
+        # NOTE: For whole-task performance, use PerfProfile.SetPerfProfileGlobal(PerfProfile.BURST)
+        # before running inference and PerfProfile.RelPerfProfileGlobal() after.
+        output_data = super().Inference(input_datas)[0]
         return output_data
 
 # ─────────────────────────────────────────────────────────────────────────────

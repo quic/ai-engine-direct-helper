@@ -150,7 +150,7 @@ print(f"Cosine similarity: {cos:.6f}")  # expect >0.9999 for float models
 
 **Rules:**
 
-1. **BURST only takes effect AFTER at least one model (QNNContext) is loaded in the process.** Calling it before any context exists silently does nothing (you will see `setPowerConfig error 0x32c9` — "no BURST permission").
+1. **Set BURST after at least one model (QNNContext) is loaded in the process.** In earlier builds (up to the first 2.51.40 release), calling it before any context exists silently does nothing; the log shows `initialize one model before set perf profile!`. Current builds record the call and apply it on load.
 
 2. **Set BURST ONCE at the start of the whole task and hold it for the ENTIRE session; release it ONCE only when the whole task is finished.** Do **NOT** Set/Release around every single inference call.
    - **Voice input / streaming ASR**: raise HTP to BURST the moment recording starts (the model begins working), keep it held through **all** interim + final inference chunks, and release only after the **entire** voice-input session ends (voice output finished). Never Set/Rel per audio chunk.

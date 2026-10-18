@@ -34,6 +34,8 @@ bool boostPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, std::string p
 bool resetPerformance(QnnHtpDevice_PerfInfrastructure_t perfInfra, const std::vector<uint32_t>& contextIds);
 uint32_t getPowerConfigId();
 std::vector<uint32_t> getAllPowerConfigIds();
+// Caller must hold sg_perf_mutex. Does not lock.
+std::vector<uint32_t> getAllPowerConfigIdsLocked();
 
 namespace qnn {
 namespace tools {

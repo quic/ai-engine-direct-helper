@@ -1320,16 +1320,21 @@ for i in range(100):
 PerfProfile.RelPerfProfileGlobal()
 
 # ============================================
-# 方法 2：单次推理设置
+# 方法 2：单次推理设置（不推荐）
 # ============================================
-# 每次推理时指定性能模式
+# 为兼容保留该参数，但不再生效（每个进程打印一次 WARN，仅在日志级别 ≥ WARN 时可见；
+# 默认的 ERROR 级别下不会有任何提示）。
+# 早期构建（直到首次发布的 2.51.40）中，它只在本次调用期间提升频率，实测没有加速，
+# 而且会取消 SetPerfProfileGlobal() 持有的全局设置。请使用方法 1。
 output = model.Inference([input_data], perf_profile=PerfProfile.BURST)
 ```
 
 ⚠️ **重要提示**：
 
-- 使用 `SetPerfProfileGlobal()` 后，`Inference()` 的 `perf_profile` 参数应设置为 `PerfProfile.DEFAULT`
-- 如果在 `Inference()` 中指定其他性能模式，会覆盖全局设置
+- `Inference()` 的 `perf_profile` 参数传 `PerfProfile.DEFAULT`（或不传）
+- 请在第一个模型加载之后调用 `SetPerfProfileGlobal()`。现在也接受在 `QNNConfig.Config()` 之后、第一个模型加载之前调用，并在加载时生效；早期构建（直到首次发布的 2.51.40）会静默忽略这种调用
+- 如果对已加载的 HTP 上下文提升频率失败（C++ 函数返回 `false`，并打印 ERROR），这次设置仍然保留，之后在本进程中加载的上下文会应用它
+- 早期构建（直到首次发布的 2.51.40）：`Inference()` 中传非 DEFAULT 的 `perf_profile` 会覆盖全局设置
 
 ### 3.10 Native 模式详解（高性能）
 
@@ -1604,6 +1609,14 @@ void QNN_DBG(const char* fmt, ...);  // 调试日志
 #define QNN_LOG_LEVEL_VERBOSE 4
 #define QNN_LOG_LEVEL_DEBUG   5
 ```
+
+**逐次调用的日志行（首次发布的 2.51.40 之后有变化）**：为了不让日志拖慢推理，原来每次调用都打印的几行，现在要日志级别为 DEBUG 才输出：
+
+- `Time: <步骤> <毫秒>` 计时行（早期构建：WARN 及以上即可见）
+- `LibAppBuilder::ModelInference: <名称>`（早期构建：INFO）
+- `share memory size(...) is enough for inputs/outputs`（早期构建：WARN）
+
+需要解析这些行的脚本，请设置 `LogLevel.DEBUG`。刷新规则（Windows）：ERROR/WARN 行、多进程（`QNNContextProc`）的输出，以及经 `SetLogLevel(level, log_path)` 重定向到 `log_out.txt` 的输出，都逐行刷新；单进程输出到控制台或管道时，INFO/DEBUG 行由 stdio 缓冲，可能晚于 Python `print()` 的输出出现。Linux/Android 上只有 ERROR/WARN 行逐行刷新。
 
 #### 性能配置函数
 
