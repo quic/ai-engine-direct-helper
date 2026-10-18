@@ -29,7 +29,20 @@ constexpr float kEvictionHighWaterRatio = 0.95f;
 constexpr size_t kMaxEvictionStates = 64;
 constexpr float kToolEntryCapRatio = 0.3f;
 constexpr float kToolEntryHeadShare = 0.6f;
+constexpr size_t kToolEntryHardCapTokens = 1536;
+constexpr float kToolEntryErrorShare = 0.25f;
 const char kToolEntryOmitted[] = "\n[... output truncated ...]\n";
+const char kToolEntryErrorsHeader[] = "[error lines from truncated part]\n";
+
+bool IsErrorLine(const std::string& line)
+{
+    static const char* kSignals[] = {"error", "Error", "ERROR", "Traceback", "Exception", "exception",
+                                     "failed", "Failed", "FAILED", "not found", "No such file"};
+    for (const char* s : kSignals) {
+        if (line.find(s) != std::string::npos) return true;
+    }
+    return false;
+}
 
 size_t Utf8Floor(const std::string& s, size_t pos)
 {
@@ -53,6 +66,26 @@ std::string CapToolResultHeadTail(const std::string& content, size_t content_tok
     if (tail_nl != std::string::npos && tail_nl + 1 < content.size() &&
         tail_nl - tail_begin < tail_target / 2) tail_begin = tail_nl + 1;
     if (tail_begin <= head_end) return content;
+    const size_t error_budget = static_cast<size_t>(static_cast<double>(keep_bytes) * kToolEntryErrorShare);
+    std::string errors;
+    size_t pos = head_end;
+    while (pos < tail_begin && errors.size() < error_budget) {
+        size_t nl = content.find('\n', pos);
+        if (nl == std::string::npos || nl > tail_begin) nl = tail_begin;
+        const std::string line = content.substr(pos, nl - pos);
+        if (IsErrorLine(line)) {
+            const size_t room = error_budget - errors.size();
+            errors += line.size() <= room ? line : line.substr(0, Utf8Floor(line, room));
+            errors += '\n';
+        }
+        pos = nl + 1;
+    }
+    if (!errors.empty()) {
+        const size_t shrink = std::min(errors.size(), head_end / 2);
+        head_end = Utf8Floor(content, head_end - shrink);
+        return content.substr(0, head_end) + kToolEntryOmitted + kToolEntryErrorsHeader + errors +
+               kToolEntryOmitted + content.substr(tail_begin);
+    }
     return content.substr(0, head_end) + kToolEntryOmitted + content.substr(tail_begin);
 }
 
@@ -572,6 +605,18 @@ void MessagePreFilter::CaptureDroppedMessages(const json& original, const json& 
         return content;
     };
 
+    std::unordered_set<size_t> kept_raw;
+    for (const auto& m : kept) {
+        if (m.is_object() && m.contains(kRawIdxKey)) kept_raw.insert(m[kRawIdxKey].get<size_t>());
+    }
+    if (!kept_raw.empty()) {
+        for (size_t i = 0; i < original.size(); ++i) {
+            const std::string role = get_json_value(original[i], "role", BLANK_STRING);
+            if (role == "system" || role == "developer" || kept_raw.count(i)) continue;
+            prefilter_dropped_messages_.push_back({role, message_content_for_memo(original[i])});
+        }
+        return;
+    }
     std::unordered_multiset<std::string> kept_signatures;
     for (const auto& m : kept) {
         std::string role = get_json_value(m, "role", BLANK_STRING);
@@ -2239,8 +2284,8 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         if (model_config_.getenablePromptDebug()) {
             My_Log{My_Log::Level::kInfo} << "[PreFilter] Skipped (no model handle)" << std::endl;
         }
-        StripRawIdx(filtered_msg);
         CaptureDroppedMessages(msg, filtered_msg);
+        StripRawIdx(filtered_msg);
         return filtered_msg;
     }
 
@@ -2322,8 +2367,8 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
             << " tok), skipping all phases, FitMessagesToContext will handle" << std::endl;
         // 打印诊断信息（system prompt 超出时，messages 尚未压缩，但仍有参考价值）
         print_diag_dump(filtered_msg);
-        StripRawIdx(filtered_msg);
         CaptureDroppedMessages(msg, filtered_msg);
+        StripRawIdx(filtered_msg);
         return filtered_msg;
     }
 
@@ -2590,7 +2635,7 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
     }
 
     if (prefix_cache_active && contextSize > 0) {
-        const size_t cap_tokens = tool_entry_cap_tokens;
+        const size_t cap_tokens = std::min(tool_entry_cap_tokens, kToolEntryHardCapTokens);
         size_t capped_count = 0;
         for (size_t i = 0; i < filtered_msg.size(); i++) {
             if (get_json_value(filtered_msg[i], "role", BLANK_STRING) != "tool") continue;
@@ -2924,7 +2969,7 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         }
     }
 
-    StripRawIdx(validated_msg);
     CaptureDroppedMessages(msg, validated_msg);
+    StripRawIdx(validated_msg);
     return validated_msg;
 }

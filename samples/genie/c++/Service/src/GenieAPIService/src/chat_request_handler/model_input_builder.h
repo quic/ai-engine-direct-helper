@@ -1818,11 +1818,32 @@ private:
         if (messages.empty() || !messages.back().is_object() || messages.back().value("role", "") != "tool")
             return false;
         std::string reason;
-        const std::string content = get_json_value<std::string>(messages.back(), "content", "");
         static const std::regex kExitCode(R"(exit code:\s*(-?\d+))", std::regex::icase);
-        std::smatch m;
-        if (std::regex_search(content, m, kExitCode) && m[1].str() != "0")
-            reason = "exit_code=" + m[1].str();
+        auto failed_code = [](const json &msg) -> std::string {
+            const std::string c = get_json_value<std::string>(msg, "content", "");
+            std::smatch fm;
+            return (std::regex_search(c, fm, kExitCode) && fm[1].str() != "0") ? fm[1].str() : std::string();
+        };
+        const std::string code = failed_code(messages.back());
+        if (!code.empty())
+        {
+            bool prev_failed = false;
+            for (size_t i = messages.size() - 1; i-- > 0;)
+            {
+                if (!messages[i].is_object())
+                    continue;
+                const std::string role = messages[i].value("role", "");
+                if (role == "user")
+                    break;
+                if (role == "tool")
+                {
+                    prev_failed = !failed_code(messages[i]).empty();
+                    break;
+                }
+            }
+            if (!prev_failed)
+                reason = "exit_code=" + code;
+        }
         const auto &rg_cfg = instance_config_->i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
         if (reason.empty() && rg_cfg.enabled)
         {

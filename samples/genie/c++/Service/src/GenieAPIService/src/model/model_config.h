@@ -284,7 +284,7 @@ struct WindowsShellHintConfig {
 
 struct AdaptiveThinkingConfig {
     bool enabled = true;
-    int time_budget_s = 30;
+    int time_budget_s = 15;
     int min_tokens = 128;
     int max_tokens = 0;
     int ctx_reserve_tokens = 2048;

@@ -511,12 +511,12 @@ public:
             const double tg_rate = last_decode_tok_s_ > 0.0 ? last_decode_tok_s_ : 10.0;
             int64_t budget = (int64_t) (tg_rate * think_time_budget_s_);
             const int64_t ctx_left = (int64_t) n_ctx - (int64_t) embd_inp.size() - think_ctx_reserve_;
-            budget = std::min(budget, ctx_left);
             if (think_max_tokens_ > 0)
             {
                 budget = std::min<int64_t>(budget, think_max_tokens_);
             }
             budget = std::max<int64_t>(budget, think_min_tokens_);
+            budget = std::max<int64_t>(0, std::min(budget, ctx_left));
             think_budget_tokens = (int32_t) budget;
             think_in_progress = true;
             think_token_start = 0;
