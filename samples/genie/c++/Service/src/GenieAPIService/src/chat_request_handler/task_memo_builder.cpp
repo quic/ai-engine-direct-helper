@@ -15,6 +15,10 @@
 #include <algorithm>
 #include <functional>
 #include <cstring>
+#include <cctype>
+#include <chrono>
+#include <mutex>
+#include <unordered_map>
 
 TaskMemoBuilder::TaskMemoBuilder(
     const PromptOptimizationConfig::TaskMemoConfig& config,
@@ -295,6 +299,113 @@ namespace {
     }
 }
 
+std::string TaskMemoBuilder::StripThinkBlock(const std::string& content)
+{
+    const size_t close = content.rfind("</think>");
+    if (close != std::string::npos)
+        return content.substr(close + 8);
+    const size_t open = content.find("<think>");
+    return open == std::string::npos ? content : content.substr(0, open);
+}
+
+namespace {
+    const char kPinPrefix[] = "[reasoning note: ";
+    std::mutex g_pin_mu;
+    std::unordered_map<std::string, std::pair<std::string, std::chrono::steady_clock::time_point>> g_pins;
+}
+
+void TaskMemoBuilder::PinThinkConclusion(const std::string& session_key, const std::string& call_signature,
+                                         const std::string& conclusion)
+{
+    if (session_key.empty() || call_signature.empty() || conclusion.empty())
+        return;
+    std::lock_guard<std::mutex> lk(g_pin_mu);
+    const auto now = std::chrono::steady_clock::now();
+    if (g_pins.size() > 4096) {
+        for (auto it = g_pins.begin(); it != g_pins.end();)
+            it = (now - it->second.second > std::chrono::hours(2)) ? g_pins.erase(it) : std::next(it);
+        if (g_pins.size() > 4096)
+            g_pins.clear();
+    }
+    g_pins[session_key + "\x1f" + call_signature] = {conclusion, now};
+}
+
+std::string TaskMemoBuilder::LookupPinnedConclusion(const std::string& session_key, const std::string& call_signature)
+{
+    if (session_key.empty() || call_signature.empty())
+        return "";
+    std::lock_guard<std::mutex> lk(g_pin_mu);
+    auto it = g_pins.find(session_key + "\x1f" + call_signature);
+    return it == g_pins.end() ? "" : std::string(kPinPrefix) + it->second.first + "]\n";
+}
+
+std::string TaskMemoBuilder::ExtractThinkConclusion(const std::string& content)
+{
+    if (content.rfind(kPinPrefix, 0) == 0) {
+        const size_t end = content.find("]\n");
+        return end == std::string::npos ? "" : content.substr(sizeof(kPinPrefix) - 1, end - (sizeof(kPinPrefix) - 1));
+    }
+    size_t open = content.find("<think>");
+    size_t close = content.find("</think>", open == std::string::npos ? 0 : open);
+    if (open == std::string::npos && close == std::string::npos)
+        return "";
+    const size_t body_begin = open == std::string::npos ? 0 : open + 7;
+    std::string body = content.substr(body_begin, close == std::string::npos ? std::string::npos : close - body_begin);
+    static const std::string kForced = "Considering the time constraints";
+    const size_t forced = body.rfind(kForced);
+    if (forced != std::string::npos)
+        body.resize(forced);
+    while (!body.empty() && std::isspace(static_cast<unsigned char>(body.back())))
+        body.pop_back();
+    if (body.empty())
+        return "";
+    size_t start = body.size() > 240 ? body.size() - 240 : 0;
+    if (start > 0) {
+        const size_t nl = body.find('\n', start);
+        const size_t dot = body.find(". ", start);
+        const size_t cut = std::min(nl, dot == std::string::npos ? std::string::npos : dot + 1);
+        if (cut != std::string::npos && cut + 1 < body.size())
+            start = cut + 1;
+    }
+    while (start < body.size() && (static_cast<unsigned char>(body[start]) & 0xC0) == 0x80)
+        ++start;
+    std::string out = body.substr(start);
+    for (char& c : out)
+        if (c == '\n' || c == '\r') c = ' ';
+    return out;
+}
+
+std::string TaskMemoBuilder::ExtractToolCallSummary(const std::string& content)
+{
+    std::string visible = StripThinkBlock(content);
+    if (visible.rfind(kPinPrefix, 0) == 0) {
+        const size_t end = visible.find("]\n");
+        if (end != std::string::npos)
+            visible = visible.substr(end + 2);
+    }
+    const size_t tc = visible.find("<tool_call>");
+    if (tc == std::string::npos)
+        return "";
+    size_t end = visible.find("</tool_call>", tc);
+    std::string body = visible.substr(tc + 11, end == std::string::npos ? std::string::npos : end - tc - 11);
+    try {
+        json j = json::parse(body);
+        std::string out = j.value("name", "");
+        if (j.contains("arguments")) {
+            const auto& a = j["arguments"];
+            if (a.is_object() && a.size() == 1 && a.begin()->is_string())
+                out += " " + a.begin()->get<std::string>();
+            else
+                out += " " + a.dump();
+        }
+        return safe_utf8_truncate(out, 400, "...");
+    } catch (...) {
+        for (char& c : body)
+            if (c == '\n' || c == '\r') c = ' ';
+        return safe_utf8_truncate(body, 400, "...");
+    }
+}
+
 std::string TaskMemoBuilder::ExtractReadToolPath(const std::string& assistant_content)
 {
     return ExtractReadToolPathImpl(assistant_content);
@@ -332,17 +443,21 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             if (todo_pos != std::string::npos)
                 AppendCapped(entry["open_questions"], "待办: " + ReplaceInvalidUtf8(safe_utf8_truncate(m.content.substr(todo_pos), 160, "")), kMaxItemsPerField);
         } else if (m.role == "assistant") {
-            bool is_tool_call = m.content.find("to=functions.") != std::string::npos ||
-                                 m.content.find("<tool_call>") != std::string::npos;
-            if (is_tool_call)
-                AppendCapped(entry["completed"], "已发起工具调用: " + preview, kMaxItemsPerField);
+            const std::string conclusion = TaskMemoBuilder::ExtractThinkConclusion(m.content);
+            if (!conclusion.empty())
+                AppendCapped(entry["facts_constraints"], "思考结论: " + ReplaceInvalidUtf8(conclusion), kMaxItemsPerField);
+            const std::string call = ExtractToolCallSummary(m.content);
+            if (!call.empty())
+                AppendCapped(entry["completed"], "已发起工具调用: " + ReplaceInvalidUtf8(call), kMaxItemsPerField);
             last_assistant_content = m.content;
         } else if (m.role == "tool") {
             bool failed = LooksLikeFailure(m.content);
             entry["tool_state"]["tool_result_" + std::to_string(tool_seq++)] =
                 (failed ? "失败: " : "成功: ") + preview;
             CapObjectSize(entry["tool_state"], kMaxItemsPerField);
-            AppendCapped(entry["completed"], (failed ? "工具调用失败: " : "工具调用完成: ") + preview, kMaxItemsPerField);
+            const std::string call = ExtractToolCallSummary(last_assistant_content);
+            AppendCapped(entry["completed"], (failed ? "工具调用失败: " : "工具调用完成: ") +
+                (call.empty() ? std::string() : ReplaceInvalidUtf8(call) + " -> ") + preview, kMaxItemsPerField);
 
             // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
             // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。

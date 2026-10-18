@@ -29,10 +29,18 @@ constexpr float kEvictionHighWaterRatio = 0.95f;
 constexpr size_t kMaxEvictionStates = 64;
 constexpr float kToolEntryCapRatio = 0.3f;
 constexpr float kToolEntryHeadShare = 0.6f;
-constexpr size_t kToolEntryHardCapTokens = 1536;
+constexpr float kToolEntryHardCapRatio = 0.09375f;
 constexpr float kToolEntryErrorShare = 0.25f;
-const char kToolEntryOmitted[] = "\n[... output truncated ...]\n";
 const char kToolEntryErrorsHeader[] = "[error lines from truncated part]\n";
+
+std::string OmittedMarker(const std::string& content, size_t head_end, size_t tail_begin)
+{
+    const size_t first = static_cast<size_t>(std::count(content.begin(), content.begin() + head_end, '\n')) + 1;
+    const size_t last = static_cast<size_t>(std::count(content.begin(), content.begin() + tail_begin, '\n'));
+    const size_t total = static_cast<size_t>(std::count(content.begin(), content.end(), '\n')) + 1;
+    return "\n[... output truncated: lines " + std::to_string(first) + "-" + std::to_string(std::max(first, last)) +
+           " of " + std::to_string(total) + " omitted; re-read that line range if you need it ...]\n";
+}
 
 bool IsErrorLine(const std::string& line)
 {
@@ -83,10 +91,11 @@ std::string CapToolResultHeadTail(const std::string& content, size_t content_tok
     if (!errors.empty()) {
         const size_t shrink = std::min(errors.size(), head_end / 2);
         head_end = Utf8Floor(content, head_end - shrink);
-        return content.substr(0, head_end) + kToolEntryOmitted + kToolEntryErrorsHeader + errors +
-               kToolEntryOmitted + content.substr(tail_begin);
+        const std::string marker = OmittedMarker(content, head_end, tail_begin);
+        return content.substr(0, head_end) + marker + kToolEntryErrorsHeader + errors + "\n" +
+               content.substr(tail_begin);
     }
-    return content.substr(0, head_end) + kToolEntryOmitted + content.substr(tail_begin);
+    return content.substr(0, head_end) + OmittedMarker(content, head_end, tail_begin) + content.substr(tail_begin);
 }
 
 constexpr size_t kMinSurvivorFloor = 4;
@@ -2635,7 +2644,8 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
     }
 
     if (prefix_cache_active && contextSize > 0) {
-        const size_t cap_tokens = std::min(tool_entry_cap_tokens, kToolEntryHardCapTokens);
+        const size_t cap_tokens = std::min(tool_entry_cap_tokens,
+            static_cast<size_t>(static_cast<float>(contextSize) * kToolEntryHardCapRatio));
         size_t capped_count = 0;
         for (size_t i = 0; i < filtered_msg.size(); i++) {
             if (get_json_value(filtered_msg[i], "role", BLANK_STRING) != "tool") continue;

@@ -808,10 +808,12 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
             // ToolCallCircuitBreakerStore 对空 key 的全部操作均安全地不做任何事。
             std::string circuit_breaker_key;
             std::string repetition_key;
+            std::string think_session_key;
             if (instance_config_ && !retry_request_data_.is_null()
                 && retry_request_data_.contains("messages") && retry_request_data_["messages"].is_array())
             {
                 const std::string session_key = TaskMemoBuilder::ComputeFirstMsgKey(retry_request_data_["messages"]);
+                think_session_key = session_key;
                 circuit_breaker_key = ToolCallCircuitBreakerStore::MakeKey(session_key, instance_config_->get_model_name());
                 repetition_key = ToolCallRepetitionStore::MakeKey(session_key, instance_config_->get_model_name());
             }
@@ -830,10 +832,14 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                     {
                         tool_name = parsed["name"].get<std::string>();
                     }
-                    if (redundant_guard_enabled && !tool_name.empty())
+                    if (!tool_name.empty())
                     {
                         const std::string signature = tool_name + "|" + parsed.value("arguments", json::object()).dump();
-                        ToolCallRepetitionStore::GetInstance().RecordCall(repetition_key, signature);
+                        if (redundant_guard_enabled)
+                            ToolCallRepetitionStore::GetInstance().RecordCall(repetition_key, signature);
+                        const std::string conclusion = TaskMemoBuilder::ExtractThinkConclusion(response_buffer);
+                        if (!conclusion.empty())
+                            TaskMemoBuilder::PinThinkConclusion(think_session_key, signature, conclusion);
                     }
                 }
                 catch (...) {}

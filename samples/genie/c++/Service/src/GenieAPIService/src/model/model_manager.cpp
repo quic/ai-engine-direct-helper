@@ -1086,6 +1086,8 @@ bool ModelManager::InitializeConfig()
                     at_cfg.enabled = at.value("enabled", at_cfg.enabled);
                     at_cfg.time_budget_s = at.value("time_budget_s", at_cfg.time_budget_s);
                     at_cfg.min_tokens = at.value("min_tokens", at_cfg.min_tokens);
+                    at_cfg.max_per_session = at.value("max_per_session", at_cfg.max_per_session);
+                    at_cfg.error_repeat_window = at.value("error_repeat_window", at_cfg.error_repeat_window);
                     at_cfg.max_tokens = at.value("max_tokens", at_cfg.max_tokens);
                     at_cfg.ctx_reserve_tokens = at.value("ctx_reserve_tokens", at_cfg.ctx_reserve_tokens);
                     My_Log{} << "[Config] adaptive_thinking loaded: enabled=" << at_cfg.enabled
@@ -1310,6 +1312,8 @@ bool ModelManager::InitializeConfig()
                                 rf.value("tag_weight", (size_t) 2);
                         prompt_optimization_config_.relevance_filter.anchor_first_user_message =
                                 rf.value("anchor_first_user_message", true);
+                        prompt_optimization_config_.relevance_filter.keep_all_tools_ratio =
+                                rf.value("keep_all_tools_ratio", 0.15);
                         prompt_optimization_config_.relevance_filter.protect_core_capability_tools =
                                 rf.value("protect_core_capability_tools", true);
                         if (rf.contains("core_capability_keywords") && rf["core_capability_keywords"].is_array())

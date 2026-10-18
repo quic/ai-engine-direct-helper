@@ -1190,6 +1190,17 @@ nlohmann::ordered_json PromptOptimizer::FilterToolsByRelevance(
 
     nlohmann::ordered_json filtered = nlohmann::ordered_json::array();
     const auto& relevance_cfg = model_config_.GetPromptOptimizationConfig().relevance_filter;
+    if (relevance_cfg.keep_all_tools_ratio > 0.0) {
+        const size_t all_tokens = CountTokens(tools_array.dump());
+        const size_t keep_all_cap = static_cast<size_t>(
+            static_cast<double>(model_config_.context_size()) * relevance_cfg.keep_all_tools_ratio);
+        if (all_tokens <= keep_all_cap && all_tokens <= token_budget) {
+            My_Log{My_Log::Level::kInfo} << "[FilterToolsByRelevance] " << tools_array.size()
+                                          << " tool(s) total " << all_tokens << " tok <= keep_all cap "
+                                          << keep_all_cap << ", kept as-is" << std::endl;
+            return tools_array;
+        }
+    }
 
     // 打分并过滤掉零分项
     std::vector<std::pair<size_t, size_t>> scored; // (tools_array 中的下标, score)
@@ -1266,6 +1277,7 @@ nlohmann::ordered_json PromptOptimizer::FilterToolsByRelevance(
 
     // 按 token 预算贪心保留 Top-K
     size_t used_tokens = 0;
+    std::vector<size_t> kept;
     for (size_t idx : ordered) {
         const auto& tool = tools_array[idx];
         size_t item_tokens = CountTokens(tool.dump());
@@ -1273,7 +1285,11 @@ nlohmann::ordered_json PromptOptimizer::FilterToolsByRelevance(
             break;
         }
         used_tokens += item_tokens;
-        filtered.push_back(tool);
+        kept.push_back(idx);
+    }
+    std::sort(kept.begin(), kept.end());
+    for (size_t idx : kept) {
+        filtered.push_back(tools_array[idx]);
     }
 
     const size_t protected_kept =

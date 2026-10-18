@@ -23,7 +23,9 @@
 #include "tool_call_circuit_breaker_store.h"
 #include "tool_call_repetition_store.h"
 #include <chrono>
+#include <mutex>
 #include <regex>
+#include <unordered_map>
 #include <unordered_set>
 
 
@@ -455,9 +457,23 @@ private:
                     element["tool_calls"].is_array())
                 {
                     auto converted_calls = optimizer_.ConvertOpenAIToolCalls(element["tool_calls"]);
+                    std::string pin;
+                    if (!element["tool_calls"].empty() && element["tool_calls"][0].contains("function")) {
+                        const auto &fn = element["tool_calls"][0]["function"];
+                        std::string args = "{}";
+                        try {
+                            if (fn.contains("arguments") && fn["arguments"].is_string())
+                                args = json::parse(fn["arguments"].get<std::string>()).dump();
+                            else if (fn.contains("arguments") && fn["arguments"].is_object())
+                                args = fn["arguments"].dump();
+                        } catch (...) {}
+                        pin = TaskMemoBuilder::LookupPinnedConclusion(
+                            TaskMemoBuilder::ComputeFirstMsgKey(msg), fn.value("name", "") + "|" + args);
+                    }
                     for (const auto& converted_content : converted_calls)
                     {
-                        all_messages.push_back({role, converted_content});
+                        all_messages.push_back({role, pin + converted_content});
+                        pin.clear();
                     }
                 }
                 else
@@ -1817,46 +1833,102 @@ private:
         const auto &messages = request_data_["messages"];
         if (messages.empty() || !messages.back().is_object() || messages.back().value("role", "") != "tool")
             return false;
-        std::string reason;
-        static const std::regex kExitCode(R"(exit code:\s*(-?\d+))", std::regex::icase);
-        auto failed_code = [](const json &msg) -> std::string {
-            const std::string c = get_json_value<std::string>(msg, "content", "");
-            std::smatch fm;
-            return (std::regex_search(c, fm, kExitCode) && fm[1].str() != "0") ? fm[1].str() : std::string();
-        };
-        const std::string code = failed_code(messages.back());
-        if (!code.empty())
+        const std::string session_key = TaskMemoBuilder::ComputeFirstMsgKey(messages);
+        static std::mutex s_mu;
+        static std::unordered_map<std::string, std::pair<int, std::chrono::steady_clock::time_point>> s_counts;
+        const auto now = std::chrono::steady_clock::now();
+        if (at_cfg.max_per_session > 0)
         {
-            bool prev_failed = false;
-            for (size_t i = messages.size() - 1; i-- > 0;)
+            std::lock_guard<std::mutex> lk(s_mu);
+            auto it = s_counts.find(session_key);
+            if (it != s_counts.end() && now - it->second.second < std::chrono::hours(2)
+                && it->second.first >= at_cfg.max_per_session)
+                return false;
+        }
+        std::vector<std::string> recent_errors;
+        for (size_t i = messages.size(); i-- > 0 && (int) recent_errors.size() <= at_cfg.error_repeat_window;)
+        {
+            if (!messages[i].is_object())
+                continue;
+            const std::string role = messages[i].value("role", "");
+            if (role == "user")
+                break;
+            if (role == "tool")
+                recent_errors.push_back(FirstFailureLine(get_json_value<std::string>(messages[i], "content", "")));
+        }
+        std::string reason;
+        if (!recent_errors.empty() && !recent_errors[0].empty())
+        {
+            if (recent_errors.size() < 2 || recent_errors[1].empty())
+                reason = "new_failure";
+            else
             {
-                if (!messages[i].is_object())
-                    continue;
-                const std::string role = messages[i].value("role", "");
-                if (role == "user")
-                    break;
-                if (role == "tool")
+                for (size_t i = 2; i < recent_errors.size(); ++i)
                 {
-                    prev_failed = !failed_code(messages[i]).empty();
-                    break;
+                    if (recent_errors[i] == recent_errors[0])
+                    {
+                        reason = "error_repeated";
+                        break;
+                    }
                 }
             }
-            if (!prev_failed)
-                reason = "exit_code=" + code;
         }
         const auto &rg_cfg = instance_config_->i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
         if (reason.empty() && rg_cfg.enabled)
         {
-            const std::string key = ToolCallRepetitionStore::MakeKey(
-                TaskMemoBuilder::ComputeFirstMsgKey(messages), instance_config_->get_model_name());
+            const std::string key = ToolCallRepetitionStore::MakeKey(session_key, instance_config_->get_model_name());
             const int count = ToolCallRepetitionStore::GetInstance().GetRepeatCount(key);
-            if (count >= rg_cfg.repeat_threshold)
+            if (count >= std::max(rg_cfg.repeat_threshold, 3))
                 reason = "repeat_count=" + std::to_string(count);
         }
         if (reason.empty())
             return false;
-        My_Log{} << "[AdaptiveThinking] enabling /think for this turn: " << reason << std::endl;
+        int used = 1;
+        {
+            std::lock_guard<std::mutex> lk(s_mu);
+            if (s_counts.size() > 512)
+                s_counts.clear();
+            auto &slot = s_counts[session_key];
+            if (now - slot.second >= std::chrono::hours(2))
+                slot.first = 0;
+            used = ++slot.first;
+            slot.second = now;
+        }
+        My_Log{} << "[AdaptiveThinking] enabling /think for this turn: " << reason
+                 << " (session_count=" << used << ")" << std::endl;
         return true;
+    }
+
+    static std::string FirstFailureLine(const std::string &content)
+    {
+        static const char* kSignals[] = {
+            "Traceback (most recent call last)", "Error:", "ERROR:", "error:", "Exception:",
+            "No such file or directory", "Permission denied", "not recognized as", "command not found",
+            "FAILED", "failed with", "Cannot find", "cannot find"};
+        static const std::regex kNonZeroExit(R"((exit|return)\s*(code|status)\s*[:=]?\s*-?[1-9]\d*)", std::regex::icase);
+        size_t pos = 0;
+        std::string fallback;
+        while (pos < content.size())
+        {
+            size_t nl = content.find('\n', pos);
+            if (nl == std::string::npos)
+                nl = content.size();
+            const std::string line = content.substr(pos, nl - pos);
+            for (const char* s : kSignals)
+            {
+                if (line.find(s) != std::string::npos)
+                {
+                    if (std::string(s) != "Traceback (most recent call last)")
+                        return std::regex_replace(line, std::regex(R"(\d+)"), "#").substr(0, 160);
+                    if (fallback.empty())
+                        fallback = "Traceback";
+                }
+            }
+            if (fallback.empty() && std::regex_search(line, kNonZeroExit))
+                fallback = "nonzero_exit";
+            pos = nl + 1;
+        }
+        return fallback;
     }
 
     std::string BuildTaskMemoSection() const

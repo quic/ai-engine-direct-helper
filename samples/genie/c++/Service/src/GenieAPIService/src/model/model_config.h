@@ -285,7 +285,9 @@ struct WindowsShellHintConfig {
 struct AdaptiveThinkingConfig {
     bool enabled = true;
     int time_budget_s = 15;
-    int min_tokens = 128;
+    int min_tokens = 320;
+    int max_per_session = 5;
+    int error_repeat_window = 4;
     int max_tokens = 0;
     int ctx_reserve_tokens = 2048;
 };
@@ -531,6 +533,7 @@ struct PromptOptimizationConfig {
         // tag_weight=0 时逐字节回退：tags 不参与打分（等价于 D4 引入前）。
         size_t tag_weight = 2;
         bool anchor_first_user_message = true;
+        double keep_all_tools_ratio = 0.15;
         bool protect_core_capability_tools = true;
         std::vector<std::string> core_capability_keywords = {
             "read", "write", "edit", "create", "save", "patch", "append", "delete",

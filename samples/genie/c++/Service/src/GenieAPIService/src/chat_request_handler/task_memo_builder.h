@@ -59,6 +59,12 @@ public:
 
     static std::string ComputeFingerprint(const json& messages);
     static std::string ComputeFirstMsgKey(const json& messages);
+    static std::string StripThinkBlock(const std::string& content);
+    static std::string ExtractThinkConclusion(const std::string& content);
+    static std::string ExtractToolCallSummary(const std::string& content);
+    static void PinThinkConclusion(const std::string& session_key, const std::string& call_signature,
+                                   const std::string& conclusion);
+    static std::string LookupPinnedConclusion(const std::string& session_key, const std::string& call_signature);
 
     // 从一条承载 tool_call 的 assistant 消息文本里抽取 read 类工具调用的路径参数；
     // 返回空串表示不是 read 类调用或未找到路径参数。供"重复读取同一文件"通用提示复用，
