@@ -1864,6 +1864,15 @@ private:
                 }
             }
         }
+        if (reason.empty() && at_cfg.near_repeat_window > 1)
+        {
+            const std::string near_tpl = NearRepeatTemplate(messages, at_cfg.near_repeat_window);
+            if (!near_tpl.empty())
+            {
+                reason = "near_repeat";
+                signature = "near:" + near_tpl;
+            }
+        }
         const auto &rg_cfg = instance_config_->i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
         if (reason.empty() && rg_cfg.enabled)
         {
@@ -1920,6 +1929,43 @@ private:
                  << " (sig_count=" << sig_count << ", think_turns=" << st.think_turns
                  << "/" << st.tool_turns << ")" << std::endl;
         return true;
+    }
+
+    static std::string NearRepeatTemplate(const json &messages, int window)
+    {
+        std::vector<std::string> calls;
+        for (size_t i = messages.size(); i-- > 0 && (int) calls.size() < window;)
+        {
+            const json &m = messages[i];
+            if (!m.is_object())
+                continue;
+            const std::string role = m.value("role", "");
+            if (role == "user")
+                break;
+            if (role != "assistant" || !m.contains("tool_calls") || !m["tool_calls"].is_array() || m["tool_calls"].empty())
+                continue;
+            const json &fn = m["tool_calls"][0].value("function", json::object());
+            const json &args = fn.contains("arguments") ? fn["arguments"] : json();
+            calls.push_back(fn.value("name", "") + "\x1f" + (args.is_string() ? args.get<std::string>() : args.dump()));
+        }
+        if ((int) calls.size() < window)
+            return "";
+        size_t lcp = calls[0].size();
+        bool all_same = true;
+        for (size_t k = 1; k < calls.size(); ++k)
+        {
+            size_t n = 0;
+            while (n < lcp && n < calls[k].size() && calls[k][n] == calls[0][n])
+                ++n;
+            lcp = n;
+            all_same = all_same && calls[k] == calls[0];
+        }
+        size_t shortest = calls[0].size();
+        for (const auto &c : calls)
+            shortest = std::min(shortest, c.size());
+        if (all_same || lcp < 24 || lcp * 10 < shortest * 6)
+            return "";
+        return calls[0].substr(0, std::min<size_t>(lcp, 160));
     }
 
     static std::string FirstFailureLine(const std::string &content)

@@ -122,6 +122,52 @@ namespace {
     constexpr size_t kMaxHardRules = 12;
     constexpr size_t kMaxHardRulesPerFile = 6;
     constexpr size_t kMaxHardRuleChars = 220;
+    constexpr size_t kMaxArtifacts = 8;
+    constexpr size_t kMaxArtifactLinesPerResult = 3;
+    constexpr size_t kMaxLastSuccessChars = 900;
+
+    std::string FullToolCall(const std::string& assistant_content) {
+        std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
+        const size_t tc = visible.find("<tool_call>");
+        if (tc == std::string::npos)
+            return "";
+        const size_t end = visible.find("</tool_call>", tc);
+        std::string body = visible.substr(tc + 11, end == std::string::npos ? std::string::npos : end - tc - 11);
+        try {
+            json j = json::parse(body);
+            return j.value("name", "") + " " + (j.contains("arguments") ? j["arguments"].dump() : std::string("{}"));
+        } catch (...) {
+            for (char& c : body)
+                if (c == '\n' || c == '\r') c = ' ';
+            return body;
+        }
+    }
+
+    std::vector<std::string> ExtractArtifactLines(const std::string& content) {
+        static const char* kVerbs[] = {"saved", "written", "created", "generated", "exported", "wrote", "已保存", "已生成"};
+        std::vector<std::string> out;
+        size_t pos = 0;
+        while (pos < content.size() && out.size() < kMaxArtifactLinesPerResult) {
+            size_t nl = content.find('\n', pos);
+            if (nl == std::string::npos) nl = content.size();
+            std::string line = content.substr(pos, nl - pos);
+            pos = nl + 1;
+            std::string lower = line;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char) tolower(c); });
+            bool verb = false;
+            for (const char* v : kVerbs)
+                if (lower.find(v) != std::string::npos) { verb = true; break; }
+            const bool path = line.find(":\\") != std::string::npos || line.find(":/") != std::string::npos ||
+                              line.find(" /") != std::string::npos;
+            if (!verb || !path)
+                continue;
+            const size_t b = line.find_first_not_of(" \t\r");
+            line = line.substr(b == std::string::npos ? 0 : b);
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            out.push_back(safe_utf8_truncate(line, kMaxHardRuleChars, "..."));
+        }
+        return out;
+    }
 
     bool IsHardRuleLine(const std::string& line) {
         static const char* kMarkers[] = {"NEVER", "MUST", "MANDATORY", "Do NOT", "DO NOT",
@@ -475,9 +521,6 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             const std::string conclusion = TaskMemoBuilder::ExtractThinkConclusion(m.content);
             if (!conclusion.empty())
                 AppendCapped(entry["facts_constraints"], "思考结论: " + ReplaceInvalidUtf8(conclusion), kMaxItemsPerField);
-            const std::string call = ExtractToolCallSummary(m.content);
-            if (!call.empty())
-                AppendCapped(entry["completed"], "已发起工具调用: " + ReplaceInvalidUtf8(call), kMaxItemsPerField);
             last_assistant_content = m.content;
         } else if (m.role == "tool") {
             bool failed = LooksLikeFailure(m.content);
@@ -485,8 +528,17 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
                 (failed ? "失败: " : "成功: ") + preview;
             CapObjectSize(entry["tool_state"], kMaxItemsPerField);
             const std::string call = ExtractToolCallSummary(last_assistant_content);
-            AppendCapped(entry["completed"], (failed ? "工具调用失败: " : "工具调用完成: ") +
-                (call.empty() ? std::string() : ReplaceInvalidUtf8(call) + " -> ") + preview, kMaxItemsPerField);
+            AppendCapped(entry["completed"], (failed ? "失败: " : "成功: ") +
+                (call.empty() ? std::string() : ReplaceInvalidUtf8(safe_utf8_truncate(call, 200, "...")) + " -> ") + preview, kMaxItemsPerField);
+            if (!failed && !call.empty()) {
+                const std::string tool = call.substr(0, call.find(' '));
+                if (!entry.contains("last_success") || !entry["last_success"].is_object())
+                    entry["last_success"] = json::object();
+                entry["last_success"][tool] = ReplaceInvalidUtf8(safe_utf8_truncate(FullToolCall(last_assistant_content), kMaxLastSuccessChars, "..."));
+                CapObjectSize(entry["last_success"], 6);
+            }
+            for (const auto& a : ExtractArtifactLines(m.content))
+                AppendCapped(entry["artifacts"], ReplaceInvalidUtf8(a), kMaxArtifacts);
 
             // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
             // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。
@@ -726,6 +778,9 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
             model_entry["_next_page_id"] = entry["_next_page_id"];
             // read_files（已读文件索引）同理：模型层不感知、不生成，必须显式透传。
             model_entry["read_files"] = entry["read_files"];
+            for (const char* k : {"hard_rules", "_hard_rule_files", "artifacts", "last_success"})
+                if (entry.contains(k))
+                    model_entry[k] = entry[k];
             // original_goal_raw/confidence 权威兜底，从 entry 显式透传，不允许模型层输出覆盖。
             model_entry["original_goal_raw"] = entry["original_goal_raw"];
             model_entry["original_goal_confidence"] = entry["original_goal_confidence"];
@@ -861,6 +916,16 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         read_files_block = oss.str();
     }
 
+    std::string last_success_block;
+    if (entry.contains("last_success") && entry["last_success"].is_object() && !entry["last_success"].empty()) {
+        std::ostringstream oss;
+        oss << "Last successful call per tool (reuse instead of re-deriving the syntax):\n";
+        for (auto it = entry["last_success"].begin(); it != entry["last_success"].end(); ++it)
+            if (it.value().is_string())
+                oss << "- " << it.value().get<std::string>() << "\n";
+        last_success_block = oss.str();
+    }
+
     // 轻量分页目录：最低优先级，预算放不下时整块跳过。只渲染 page_id/source_range/
     // gist 三个字段，不含任何原始消息文本——与 BuildRuleLayer() 落盘时的安全边界一致。
     std::string page_directory_block;
@@ -880,6 +945,8 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     // 由高到低优先级排列；预算不足时跳过放不下的块，不做块内截断。
     const std::string blocks[] = {
         render_list("Rules from documents you read (still in force)", "hard_rules"),
+        render_list("Artifacts already produced (confirmed by tool output; do not redo these steps)", "artifacts"),
+        last_success_block,
         render_list("Completed", "completed"),
         render_list("Next actions", "next_actions"),
         render_list("Facts / constraints", "facts_constraints"),
@@ -889,7 +956,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         page_directory_block,
     };
     static const char* kBlockNames[] = {
-        "hard_rules", "completed", "next_actions", "facts_constraints", "open_questions",
+        "hard_rules", "artifacts", "last_success", "completed", "next_actions", "facts_constraints", "open_questions",
         "read_files", "tool_state", "page_directory",
     };
 

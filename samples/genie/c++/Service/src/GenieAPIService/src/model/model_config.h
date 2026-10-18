@@ -289,6 +289,7 @@ struct AdaptiveThinkingConfig {
     int max_per_signature = 2;
     double max_think_turn_share = 0.4;
     int error_repeat_window = 4;
+    int near_repeat_window = 5;
     int max_tokens = 0;
     int ctx_reserve_tokens = 2048;
 };

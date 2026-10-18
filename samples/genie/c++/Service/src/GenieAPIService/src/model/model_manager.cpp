@@ -1089,6 +1089,7 @@ bool ModelManager::InitializeConfig()
                     at_cfg.max_per_signature = at.value("max_per_signature", at_cfg.max_per_signature);
                     at_cfg.max_think_turn_share = at.value("max_think_turn_share", at_cfg.max_think_turn_share);
                     at_cfg.error_repeat_window = at.value("error_repeat_window", at_cfg.error_repeat_window);
+                    at_cfg.near_repeat_window = at.value("near_repeat_window", at_cfg.near_repeat_window);
                     at_cfg.max_tokens = at.value("max_tokens", at_cfg.max_tokens);
                     at_cfg.ctx_reserve_tokens = at.value("ctx_reserve_tokens", at_cfg.ctx_reserve_tokens);
                     My_Log{} << "[Config] adaptive_thinking loaded: enabled=" << at_cfg.enabled
