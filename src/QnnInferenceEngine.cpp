@@ -2479,6 +2479,14 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::destroyPerformance() {
             result = StatusCode::FAILURE;
         }
     }
+    // No HTP context is left in this process: drop the cached infrastructure. It was handed
+    // out for a context that no longer exists, and nothing guarantees it outlives that
+    // context (the shared device handle is only kept alive by AISW-149462, see freeDevice()).
+    // Set/Rel return early while the ids are empty, and the next HTP context re-caches it in
+    // initializePerformance, so an old pointer is never combined with a new context's ids.
+    if (sg_powerConfigIds.empty()) {
+        gs_htpInfra = nullptr;
+    }
     m_powerConfigIds.clear();
     m_isPerformanceInitialized = false;
     return result;
