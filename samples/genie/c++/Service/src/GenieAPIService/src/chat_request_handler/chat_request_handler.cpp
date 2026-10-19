@@ -99,6 +99,10 @@ void WriteRequestTrace(const std::string &request_id, const std::string &model_n
     rec.backend_metrics = handle ? handle->GetLastQueryTraceMetrics() : json(nullptr);
     rec.prompt_ledger = ledger.ToJson();
     rec.request_body = request_body;
+    if (handle)
+    {
+        rec.token_length = [handle](const std::string &s) { return handle->TokenLength(s); };
+    }
     writer.WriteRecord(rec);
 }
 } // namespace

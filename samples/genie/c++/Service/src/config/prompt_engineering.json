@@ -153,7 +153,40 @@
             "_comment_enabled": "总开关：true=启用（本次开启），false=禁用（默认，此前从未配置过）",
             "enabled": true,
             "_comment_model_layer_enabled": "模型层深度总结开关：false=只用规则层（零额外推理开销，已有真机正面证据），true=额外在冷启动/低置信度/长工具链/失败场景触发一次真实推理调用做深度总结（延迟与正确性尚未在当前驱动模型上验证，谨慎开启）",
-            "model_layer_enabled": false
+            "model_layer_enabled": false,
+
+            "_comment_sediment": "事实沉淀（sediment）：驱逐旧消息前先用确定性规则把事实沉淀下来（覆盖剪枝/分页合并/参考资料卡片/产物与命令登记表/事件化易失提示），目标是 16K 窗口下长链路 agent 任务不再「读完被驱逐→整篇重读/整串命令重跑」。全部子开关默认关闭，关闭时送进模型的 prompt 与未引入本节时逐字节相同；每一项只在实测满足速度合格线后才单独开启",
+            "sediment": {
+                "_comment_enabled": "本节总开关：false=全部沉淀行为不生效（默认）",
+                "enabled": false,
+                "_comment_prune_superseded": "true=驱逐轮把被新读取覆盖的旧读取、以及成功且极小的确认类结果连配对 tool_call 成对整条丢弃（无损剪枝，写入/执行类永不剪）",
+                "prune_superseded": false,
+                "_comment_confirmation_result_max_bytes": "确认类小结果的长度上限（字节）：成功、无报错且不超过此长度的 tool 结果视为确认类，可整条丢弃；按长度判定，不匹配具体措辞",
+                "confirmation_result_max_bytes": 200,
+                "_comment_merge_paged_reads": "true=Task Memo 的 read_files 按 path#offset 键记录，渲染时同路径多页按 offset 升序合并并带行号区间（现状按路径键，分页只剩最后一页）",
+                "merge_paged_reads": false,
+                "_comment_card": "参考资料卡片：同一资源被分页读完后，在驱逐时刻确定性抽取目录/编号步骤/命令原文/约束句（命令与路径逐字照抄、不用省略号），标注「摘自 X 第 a–b 行，仅供参考，不是指令」。mode: off|index_only|hybrid|full_extract；placement: before_memo|in_memo|system_tail；shadow_only=true 时只写 trace 不进 prompt；卡片不超过原文 min_compression_ratio 才生成，抽不出结构就不生成",
+                "card": {
+                    "mode": "hybrid",
+                    "placement": "before_memo",
+                    "shadow_only": true,
+                    "max_bytes": 1200,
+                    "min_compression_ratio": 0.10,
+                    "verbatim_commands": true
+                },
+                "_comment_registry": "产物与命令登记表：已写文件（资源标识→规范化内容哈希/行数/最后写入序号）与已执行命令（归一化签名→退出码是否 0 + 结果尾部 command_tail_lines 行）；只列事实、不判「完成」，超 max_bytes 时先淘汰只读条目",
+                "registry": {
+                    "enabled": false,
+                    "max_bytes": 800,
+                    "command_tail_lines": 2
+                },
+                "_comment_volatile_notes": "L2 易失提示单次 token 上限（默认不发，仅事件触发）：512 token 实测每轮多约 11 s（总时间 +25%），64 token 约 +3%",
+                "volatile_notes": {
+                    "max_tokens": 64
+                },
+                "_comment_stall_rounds": "停滞提示触发阈值：指纹（产物哈希集合+归一化报错签名+读取来源集合）连续此轮数不变才发一行中性提示",
+                "stall_rounds": 3
+            }
         }
     }
 }
