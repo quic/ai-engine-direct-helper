@@ -577,14 +577,17 @@ struct ModelManager::ModeVerifier
         std::shared_ptr<ContextBase> CreateIfVerifiedImpl() override
         {
             auto load_with_device = [this](const std::string &device, bool draft_on_cpu = false,
-                                           bool reduced_ubatch = false) -> std::shared_ptr<ContextBase>
+                                           bool reduced_ubatch = false,
+                                           bool full_gpu = false) -> std::shared_ptr<ContextBase>
             {
                 My_Log{} << "[GGUFVerify] load attempt: device=" << device
                           << ", draft_device=" << (draft_on_cpu ? std::string("cpu") : device)
-                          << ", reduced_ubatch=" << (reduced_ubatch ? 1 : 0) << std::endl;
+                          << ", reduced_ubatch=" << (reduced_ubatch ? 1 : 0)
+                          << ", full_gpu=" << (full_gpu ? 1 : 0) << std::endl;
                 config_->set_device(device);
                 config_->set_speculative_draft_forced_cpu(draft_on_cpu);
                 config_->set_speculative_reduced_ubatch(reduced_ubatch);
+                config_->set_speculative_full_gpu(full_gpu);
                 config_->i_model_config_ = *self_;
                 config_->i_model_config_.genieModelHandle = self_->genieModelHandle = std::make_shared<LLAMACppBuilder>(*config_);
                 return self_->genieModelHandle;
@@ -646,11 +649,20 @@ struct ModelManager::ModeVerifier
             // 模型（现有全部 GGUF 模型）完全不触发下面这段新增逻辑，零行为变化。
             llama_speculative::DraftModelConfig draft_config = llama_speculative::DraftModelConfig::ParseFrom(j);
             config_->set_speculative_draft_configured(draft_config.present);
+            bool full_gpu_fits = false;
             if (draft_config.present)
             {
                 int configured_context_size = config_->get_context_size();
                 uint64_t effective_context_size = configured_context_size > 0
                         ? static_cast<uint64_t>(configured_context_size) : 32768ULL;
+                uint64_t gpu_required = 0;
+                uint64_t gpu_available = 0;
+                full_gpu_fits = llama_speculative::SpeculativeFitsFullGpu(
+                        config_->get_model_path(), draft_config.path, effective_context_size,
+                        &gpu_required, &gpu_available);
+                My_Log{} << "[GGUFVerify] full GPU check: required=" << gpu_required
+                          << " bytes, gpu_available=" << gpu_available
+                          << " bytes, fits=" << (full_gpu_fits ? 1 : 0) << std::endl;
                 uint64_t required = llama_speculative::EstimateSpeculativeMemoryRequirement(
                         config_->get_model_path(), draft_config.path, effective_context_size);
                 uint64_t available = llama_speculative::GetAvailablePhysicalMemoryBytes();
@@ -675,12 +687,31 @@ struct ModelManager::ModeVerifier
                           << ", available_physical_memory_bytes=" << available << std::endl;
             }
 
+            bool target_weights_too_large = false;
+            if (full_gpu_fits && requested_device != "cpu")
+            {
+                try
+                {
+                    return load_with_device("gpu", false, false, true);
+                }
+                catch (const std::exception &e)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] full GPU load failed, fallback to tuned split: " << e.what() << std::endl;
+                }
+                catch (...)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] full GPU load failed with unknown error, fallback to tuned split"
+                            << std::endl;
+                }
+            }
+
             if (requested_device == "cpu")
             {
                 return load_with_device("cpu");
             }
 
-            bool target_weights_too_large = false;
             try
             {
                 return load_with_device("gpu");

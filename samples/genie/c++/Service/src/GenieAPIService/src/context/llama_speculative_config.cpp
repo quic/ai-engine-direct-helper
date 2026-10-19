@@ -12,6 +12,7 @@
 
 #ifdef USE_GGUF
 #include "gguf.h"
+#include "ggml-backend.h"
 #endif
 #include "utils.h"
 
@@ -42,6 +43,7 @@ struct GgufModelShape
     uint32_t n_layer = 0;
     uint32_t n_head_kv = 0;
     uint32_t key_length = 0;
+    uint32_t full_attention_interval = 0;
 };
 
 // 只读 GGUF 文件头的 KV 元数据（no_alloc=true，不创建 ggml_context、不加载任何张量数据），
@@ -78,6 +80,7 @@ GgufModelShape ReadGgufModelShape(const std::string &gguf_path)
     shape.n_layer = read_u32("block_count");
     shape.n_head_kv = read_u32("attention.head_count_kv");
     shape.key_length = read_u32("attention.key_length");
+    shape.full_attention_interval = read_u32("full_attention_interval");
     shape.ok = shape.n_layer > 0 && shape.n_head_kv > 0 && shape.key_length > 0;
 
     gguf_free(ctx);
@@ -96,7 +99,15 @@ uint64_t EstimateKvCacheBytes(const GgufModelShape &shape, uint64_t context_size
     }
     return 2ULL * shape.n_layer * context_size * shape.n_head_kv * shape.key_length * 2ULL;
 }
+
+uint64_t EstimateAttentionKvCacheBytes(const GgufModelShape &shape, uint64_t context_size)
+{
+    const uint64_t full = EstimateKvCacheBytes(shape, context_size);
+    return shape.full_attention_interval > 1 ? full / shape.full_attention_interval : full;
+}
 #endif // USE_GGUF
+
+constexpr uint64_t kFullGpuComputeReserveBytes = 1024ULL * 1024 * 1024;
 
 } // namespace
 
@@ -250,6 +261,50 @@ uint64_t GetAvailablePhysicalMemoryBytes()
     }
 #endif
     return UINT64_MAX;
+}
+
+bool SpeculativeFitsFullGpu(const std::string &model_dir, const std::string &draft_relative_path,
+                            uint64_t context_size, uint64_t *required_out, uint64_t *available_out)
+{
+#ifdef USE_GGUF
+    std::vector<std::string> main_gguf_files;
+    File::MatchFileInDir(model_dir, ".gguf", &main_gguf_files);
+    if (main_gguf_files.empty())
+    {
+        return false;
+    }
+    const std::string draft_gguf_path = (std::filesystem::path(model_dir) / draft_relative_path).string();
+
+    ggml_backend_load_all();
+    ggml_backend_dev_t gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    if (!gpu)
+    {
+        return false;
+    }
+    size_t free = 0;
+    size_t total = 0;
+    ggml_backend_dev_memory(gpu, &free, &total);
+
+    uint64_t required = File::get_file_size(main_gguf_files.front(), std::ios::binary);
+    if (File::IsFileExist(draft_gguf_path))
+    {
+        required += File::get_file_size(draft_gguf_path, std::ios::binary);
+    }
+    required += EstimateAttentionKvCacheBytes(ReadGgufModelShape(main_gguf_files.front()), context_size);
+    required += EstimateAttentionKvCacheBytes(ReadGgufModelShape(draft_gguf_path), context_size);
+    required += kFullGpuComputeReserveBytes;
+
+    if (required_out) *required_out = required;
+    if (available_out) *available_out = free;
+    return free > 0 && required <= free;
+#else
+    (void) model_dir;
+    (void) draft_relative_path;
+    (void) context_size;
+    (void) required_out;
+    (void) available_out;
+    return false;
+#endif
 }
 
 uint32_t ReadGgufBlockCount(const std::string &gguf_path)

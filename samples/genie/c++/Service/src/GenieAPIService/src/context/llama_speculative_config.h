@@ -72,6 +72,10 @@ uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
 // GlobalMemoryStatusEx 模式）。用于投机解码（draft_model）模型加载前的动态内存门槛检查。
 uint64_t GetAvailablePhysicalMemoryBytes();
 
+// 主模型 + 草稿权重 + attention 层 KV + 计算余量是否装得进 GPU 设备报告的可用显存。
+bool SpeculativeFitsFullGpu(const std::string &model_dir, const std::string &draft_relative_path,
+                            uint64_t context_size, uint64_t *required_out, uint64_t *available_out);
+
 // 主模型 GGUF 的 block_count；读不到返回 0。
 uint32_t ReadGgufBlockCount(const std::string &gguf_path);
 

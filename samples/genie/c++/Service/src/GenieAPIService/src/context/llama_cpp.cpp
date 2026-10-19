@@ -1682,7 +1682,11 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     {
         const bool user_ot = std::any_of(configured_extra_args.begin(), configured_extra_args.end(),
                                          [](const std::string &a) { return a == "-ot" || a == "--override-tensor"; });
-        if (speculative_requested && !user_ot && draft_config.spec_type.find("dflash") != std::string::npos)
+        if (speculative_requested && model_config_.is_speculative_full_gpu())
+        {
+            arg_strings.insert(arg_strings.end(), {"-ngl", "99"});
+        }
+        else if (speculative_requested && !user_ot && draft_config.spec_type.find("dflash") != std::string::npos)
         {
             const std::string ot = llama_speculative::BuildDflashFfnCpuOverride(
                     llama_speculative::ReadGgufBlockCount(gguf_path));
