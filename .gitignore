@@ -11,3 +11,8 @@ dist/
 __pycache__/
 *.pyc
 script/qai_appbuilder/libs/
+
+# Local agent / assistant scratch directories (tool output, diffs, attached files).
+# Unanchored so it also covers tools/qaiappbuilder/.qai and .attachments.
+.qai/
+.attachments/
