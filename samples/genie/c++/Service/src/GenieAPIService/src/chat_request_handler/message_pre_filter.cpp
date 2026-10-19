@@ -414,215 +414,6 @@ void ApplyRepeatResultStubs(json& msg, const std::string& key, const void* model
     }
 }
 
-std::string ToLower(std::string s)
-{
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
-bool IsReadLikeTool(const std::string& name)
-{
-    static const char* kNames[] = {"read", "fetch", "cat", "view", "open", "download", "browse"};
-    const std::string n = ToLower(name);
-    for (const char* k : kNames)
-        if (n.find(k) != std::string::npos) return true;
-    return false;
-}
-
-json ParseCallArgs(const json& tc)
-{
-    if (!tc.is_object() || !tc.contains("function") || !tc["function"].is_object() ||
-        !tc["function"].contains("arguments")) return json();
-    const json& a = tc["function"]["arguments"];
-    if (a.is_string()) return json::parse(a.get<std::string>(), nullptr, false);
-    return a;
-}
-
-std::string CallSource(const json& tc)
-{
-    static const char* kKeys[] = {"path", "file_path", "filePath", "file", "filename", "url", "uri"};
-    const json a = ParseCallArgs(tc);
-    if (!a.is_object()) return "";
-    for (const char* k : kKeys) {
-        if (!a.contains(k) || !a[k].is_string()) continue;
-        std::string s = a[k].get<std::string>();
-        if (s.empty()) continue;
-        if (s.find("://") == std::string::npos) std::replace(s.begin(), s.end(), '/', '\\');
-        return ToLower(s);
-    }
-    return "";
-}
-
-std::string CallName(const json& tc)
-{
-    if (!tc.is_object() || !tc.contains("function") || !tc["function"].is_object()) return "";
-    return tc["function"].value("name", std::string());
-}
-
-std::string SourceBasename(const std::string& src)
-{
-    std::string s = src.substr(0, src.find_first_of("?#"));
-    while (!s.empty() && (s.back() == '\\' || s.back() == '/')) s.pop_back();
-    const size_t p = s.find_last_of("\\/");
-    return p == std::string::npos ? s : s.substr(p + 1);
-}
-
-const json* ToolCallForResult(const json& msgs, size_t tool_idx)
-{
-    const std::string call_id = msgs[tool_idx].value("tool_call_id", std::string());
-    for (size_t j = tool_idx; j-- > 0;) {
-        if (!msgs[j].is_object()) continue;
-        const std::string role = msgs[j].value("role", std::string());
-        if (role == "tool") continue;
-        if (role != "assistant" || !msgs[j].contains("tool_calls") || !msgs[j]["tool_calls"].is_array() ||
-            msgs[j]["tool_calls"].empty()) return nullptr;
-        for (const auto& tc : msgs[j]["tool_calls"])
-            if (!call_id.empty() && tc.is_object() && tc.value("id", std::string()) == call_id) return &tc;
-        return &msgs[j]["tool_calls"][0];
-    }
-    return nullptr;
-}
-
-struct StickyEdit {
-    size_t orig_hash = 0;
-    std::string content;
-};
-struct StickyState {
-    const void* model = nullptr;
-    std::unordered_map<size_t, StickyEdit> edits;
-};
-std::mutex g_sticky_mutex;
-std::unordered_map<std::string, StickyState> g_sticky_states;
-
-size_t ContentHash(const json& m)
-{
-    return std::hash<std::string>()(m.value("content", std::string()));
-}
-
-void ApplyStickyEdits(json& msg, const std::string& key, const void* model)
-{
-    if (key.empty() || !msg.is_array()) return;
-    std::lock_guard<std::mutex> lk(g_sticky_mutex);
-    auto it = g_sticky_states.find(key);
-    if (it == g_sticky_states.end()) return;
-    if (it->second.model != model) { g_sticky_states.erase(it); return; }
-    auto& edits = it->second.edits;
-    for (auto e = edits.begin(); e != edits.end();) {
-        if (e->first < msg.size() && msg[e->first].is_object() && msg[e->first]["content"].is_string() &&
-            ContentHash(msg[e->first]) == e->second.orig_hash) {
-            msg[e->first]["content"] = e->second.content;
-            ++e;
-        } else {
-            e = edits.erase(e);
-        }
-    }
-}
-
-bool HasStickyEdit(const std::string& key, size_t idx)
-{
-    std::lock_guard<std::mutex> lk(g_sticky_mutex);
-    auto it = g_sticky_states.find(key);
-    return it != g_sticky_states.end() && it->second.edits.count(idx) != 0;
-}
-
-void RecordStickyEdit(const std::string& key, const void* model, size_t idx, size_t orig_hash, const std::string& content)
-{
-    if (key.empty()) return;
-    std::lock_guard<std::mutex> lk(g_sticky_mutex);
-    StickyState& st = g_sticky_states[key];
-    if (st.model != model) st = StickyState{model, {}};
-    auto e = st.edits.find(idx);
-    if (e != st.edits.end()) orig_hash = e->second.orig_hash;
-    st.edits[idx] = StickyEdit{orig_hash, content};
-    if (g_sticky_states.size() > kMaxEvictionStates) {
-        StickyState keep = std::move(st);
-        g_sticky_states.clear();
-        g_sticky_states[key] = std::move(keep);
-    }
-}
-
-size_t FirstTrailingTool(const json& msg)
-{
-    size_t k = msg.size();
-    while (k > 0 && msg[k - 1].is_object() && msg[k - 1].value("role", std::string()) == "tool") --k;
-    return k;
-}
-
-void ApplyThrashHints(json& msg, const std::string& key, const void* model,
-                      const std::unordered_set<size_t>& evicted_raw_idx)
-{
-    if (key.empty() || evicted_raw_idx.empty() || !msg.is_array()) return;
-    const size_t fresh_begin = FirstTrailingTool(msg);
-    std::unordered_map<std::string, std::vector<size_t>> reads;
-    for (size_t i = 0; i < msg.size(); ++i) {
-        if (!msg[i].is_object() || msg[i].value("role", std::string()) != "tool" ||
-            !msg[i].contains("content") || !msg[i]["content"].is_string()) continue;
-        const json* tc = ToolCallForResult(msg, i);
-        if (!tc || !IsReadLikeTool(CallName(*tc))) continue;
-        const std::string src = CallSource(*tc);
-        if (src.empty()) continue;
-        std::vector<size_t>& prev = reads[src];
-        const bool earlier_evicted = std::any_of(prev.begin(), prev.end(),
-            [&](size_t k) { return evicted_raw_idx.count(k) != 0; });
-        prev.push_back(i);
-        if (i < fresh_begin || !earlier_evicted || HasStickyEdit(key, i)) continue;
-        const size_t orig = ContentHash(msg[i]);
-        const std::string hinted = msg[i]["content"].get<std::string>() + "\n[Note: " + src + " has been read " +
-            std::to_string(prev.size()) + " times; the earlier copy was moved out of context to fit the window.]";
-        msg[i]["content"] = hinted;
-        RecordStickyEdit(key, model, i, orig, hinted);
-        My_Log{My_Log::Level::kInfo} << "[PreFilter] Thrash hint: idx=" << i << " reads=" << prev.size() << std::endl;
-    }
-}
-
-int ClassifyDropUnit(const json& msgs, size_t begin, size_t end, bool superseded_on, bool unreferenced_on)
-{
-    const json& head = msgs[begin];
-    if (!head.contains("tool_calls") || !head["tool_calls"].is_array() || head["tool_calls"].empty()) return 2;
-    const size_t n = msgs.size();
-    if (superseded_on) {
-        bool all_superseded = true;
-        for (const auto& tc : head["tool_calls"]) {
-            const std::string name = CallName(tc);
-            const std::string src = CallSource(tc);
-            if (!IsReadLikeTool(name) || src.empty()) { all_superseded = false; break; }
-            const std::string key = CanonicalToolCallKey(tc);
-            bool found = false;
-            for (size_t j = end; j + 1 < n && !found; ++j) {
-                if (!msgs[j].is_object() || msgs[j].value("role", std::string()) != "assistant" ||
-                    !msgs[j].contains("tool_calls") || !msgs[j]["tool_calls"].is_array()) continue;
-                if (msgs[j + 1].value("role", std::string()) != "tool") continue;
-                for (const auto& later : msgs[j]["tool_calls"]) {
-                    if (CallName(later) != name || CallSource(later) != src) continue;
-                    if (!ArgsHaveLineRange(ParseCallArgs(later)) || CanonicalToolCallKey(later) == key) { found = true; break; }
-                }
-            }
-            if (!found) { all_superseded = false; break; }
-        }
-        if (all_superseded) return 0;
-    }
-    if (unreferenced_on) {
-        std::vector<std::string> names;
-        for (const auto& tc : head["tool_calls"]) {
-            const std::string b = SourceBasename(CallSource(tc));
-            if (b.size() >= 3) names.push_back(b);
-        }
-        if (names.empty()) return 2;
-        for (size_t k = end; k < n; ++k) {
-            if (!msgs[k].is_object()) continue;
-            const std::string role = msgs[k].value("role", std::string());
-            if (role != "assistant" && role != "user") continue;
-            std::string text = ToLower(get_json_value(msgs[k], "content", BLANK_STRING));
-            if (msgs[k].contains("tool_calls")) text += ToLower(msgs[k]["tool_calls"].dump());
-            for (const auto& b : names)
-                if (text.find(b) != std::string::npos) return 2;
-        }
-        return 1;
-    }
-    return 2;
-}
-
-
 constexpr size_t kGrowthWindow = 4;
 constexpr float kGrowthReserveRounds = 3.0f;
 constexpr float kEvictionLowWaterFloorRatio = 0.4f;
@@ -2101,17 +1892,12 @@ void MessagePreFilter::DropOldMessagesBatch(
     size_t repeat_retained_tokens = 0;
     size_t repeat_total_retained_tokens = 0;
 
-    const auto& es_cfg = model_config_.GetPromptOptimizationConfig().eviction_select;
-    const bool ranked = PrefixCacheActive() && (es_cfg.superseded_first || es_cfg.unreferenced_first);
-    for (int pass = ranked ? 0 : 2; pass <= 2 && !floor_hit && freed_tokens < tokens_to_free; ++pass) {
     size_t i = 0;
     while (i < n && freed_tokens < tokens_to_free) {
-        if (to_delete[i]) { i++; continue; }
         auto role = get_json_value(filtered_msg[i], "role", BLANK_STRING);
 
         // 跳过 system 消息
         if (role == "system") { i++; continue; }
-        if (pass < 2 && !(role == "assistant" && IsToolRelatedMessage(filtered_msg[i], role))) { i++; continue; }
 
         // 跳过非旧消息（old_flags[i] == false）
         if (!old_flags[i]) { i++; continue; }
@@ -2125,21 +1911,6 @@ void MessagePreFilter::DropOldMessagesBatch(
             while (chain_end < n &&
                    get_json_value(filtered_msg[chain_end], "role", BLANK_STRING) == "tool") {
                 chain_end++;
-            }
-            if (pass < 2) {
-                bool repeat_chain = false;
-                for (size_t k = i; k < chain_end && !repeat_chain; ++k) {
-                    if (!filtered_msg[k].is_object() || !filtered_msg[k].contains(kRawIdxKey)) continue;
-                    const size_t raw_idx = filtered_msg[k][kRawIdxKey].get<size_t>();
-                    repeat_chain = repeat_must_keep_raw_.count(raw_idx) || repeat_protected_raw_.count(raw_idx);
-                }
-                if (repeat_chain || ClassifyDropUnit(filtered_msg, i, chain_end, es_cfg.superseded_first,
-                                                     es_cfg.unreferenced_first) > pass) {
-                    i = chain_end;
-                    continue;
-                }
-                My_Log{My_Log::Level::kInfo} << "[PreFilter] Eviction pick: pass="
-                    << (pass == 0 ? "superseded" : "unreferenced") << " idx=" << i << std::endl;
             }
 
             if (PrefixCacheActive() && (!repeat_protected_raw_.empty() || !repeat_must_keep_raw_.empty())) {
@@ -2220,7 +1991,6 @@ void MessagePreFilter::DropOldMessagesBatch(
             prefilter_stats_.total_dropped++;
             i++;
         }
-    }
     }
 
     if (floor_hit && freed_tokens < tokens_to_free) {
@@ -2505,9 +2275,6 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
     const std::unordered_set<size_t> prior_dropped_set(prior_state.dropped.begin(), prior_state.dropped.end());
     const bool eviction_state_unknown = !evict_key.empty() && !have_prior && invalid_reason != "first_eviction";
     const json msg_raw_for_hash = evict_key.empty() ? json() : msg;
-    ApplyStickyEdits(msg, evict_key, handle.get());
-    if (model_config_.GetPromptOptimizationConfig().eviction_select.thrash_hint)
-        ApplyThrashHints(msg, evict_key, handle.get(), prior_dropped_set);
     const size_t tool_entry_cap_tokens = (contextSize > 0)
         ? static_cast<size_t>(static_cast<float>(contextSize) * kToolEntryCapRatio) : 0;
     const size_t must_keep_budget_total = static_cast<size_t>(
@@ -2960,46 +2727,6 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
             My_Log{My_Log::Level::kInfo} << "[PreFilter] Tool entry cap: capped=" << capped_count
                                           << ", cap=" << cap_tokens << " tok"
                                           << ", tokens=" << after_phase0_tokens << std::endl;
-        }
-        const size_t high_water = static_cast<size_t>(static_cast<float>(available_tokens) * kEvictionHighWaterRatio);
-        if (model_config_.GetPromptOptimizationConfig().eviction_select.tighten_incoming &&
-            !evict_key.empty() && after_phase0_tokens > high_water) {
-            const size_t excess = after_phase0_tokens - high_water;
-            const size_t fresh_begin = FirstTrailingTool(filtered_msg);
-            struct Shrink { size_t k; size_t tok; };
-            std::vector<Shrink> fresh;
-            size_t room = 0;
-            for (size_t k = fresh_begin; k < filtered_msg.size(); ++k) {
-                if (!filtered_msg[k].contains(kRawIdxKey) || !filtered_msg[k]["content"].is_string()) continue;
-                if (HasStickyEdit(evict_key, filtered_msg[k][kRawIdxKey].get<size_t>())) continue;
-                const size_t tok = CountTokens(filtered_msg[k]["content"].get<std::string>());
-                const size_t floor_tok = (IsRangedReadResult(filtered_msg, k) ? cap_tokens * 2 : cap_tokens) / 2;
-                if (tok <= floor_tok) continue;
-                fresh.push_back({k, tok});
-                room += tok - floor_tok;
-            }
-            if (!fresh.empty() && room >= excess) {
-                size_t need = excess + static_cast<size_t>(excess / 10) + 16;
-                size_t freed = 0;
-                for (const auto& f : fresh) {
-                    if (freed >= need) break;
-                    const size_t floor_tok = (IsRangedReadResult(filtered_msg, f.k) ? cap_tokens * 2 : cap_tokens) / 2;
-                    const size_t target = std::max(floor_tok, f.tok > need - freed ? f.tok - (need - freed) : floor_tok);
-                    const std::string content = filtered_msg[f.k]["content"].get<std::string>();
-                    const std::string tight = CapToolResultHeadTail(content, f.tok, target);
-                    if (tight.size() >= content.size()) continue;
-                    const size_t raw_idx = filtered_msg[f.k][kRawIdxKey].get<size_t>();
-                    const size_t orig = raw_idx < msg_raw_for_hash.size() ? ContentHash(msg_raw_for_hash[raw_idx]) : 0;
-                    filtered_msg[f.k]["content"] = tight;
-                    freed += f.tok - CountTokens(tight);
-                    RecordStickyEdit(evict_key, handle.get(), raw_idx, orig, tight);
-                }
-                after_phase0_tokens = calc_msg_tokens(filtered_msg);
-                budget_satisfied = (after_phase0_tokens <= available_tokens);
-                My_Log{My_Log::Level::kInfo} << "[PreFilter] Tighten incoming: excess=" << excess
-                                              << ", freed=" << freed << ", tokens=" << after_phase0_tokens
-                                              << ", high_water=" << high_water << std::endl;
-            }
         }
     }
 

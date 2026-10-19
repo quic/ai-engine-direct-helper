@@ -661,13 +661,6 @@ struct PromptOptimizationConfig {
         double ascii_bytes_per_token = 4.0;     // 非 CJK（ASCII 等）字节的 bytes/token 估算比例
     } fidelity;
 
-    struct EvictionSelectConfig {
-        bool superseded_first = true;
-        bool unreferenced_first = true;
-        bool thrash_hint = true;
-        bool tighten_incoming = true;
-    } eviction_select;
-
     // ── D3：预算分区（skills / tools 分区 + 技能保底名额）──────────────────
     // ComputeRelevanceTokenBudget() 原为单一总预算，一条超长工具输出可以把
     // 技能目录挤没。

@@ -1293,20 +1293,6 @@ bool ModelManager::InitializeConfig()
                                  << std::endl;
                     }
 
-                    if (po.contains("eviction_select") && po["eviction_select"].is_object())
-                    {
-                        const auto &es = po["eviction_select"];
-                        auto &es_cfg = prompt_optimization_config_.eviction_select;
-                        es_cfg.superseded_first = es.value("superseded_first", es_cfg.superseded_first);
-                        es_cfg.unreferenced_first = es.value("unreferenced_first", es_cfg.unreferenced_first);
-                        es_cfg.thrash_hint = es.value("thrash_hint", es_cfg.thrash_hint);
-                        es_cfg.tighten_incoming = es.value("tighten_incoming", es_cfg.tighten_incoming);
-                        My_Log{} << "[Config] eviction_select loaded: superseded_first=" << es_cfg.superseded_first
-                                 << ", unreferenced_first=" << es_cfg.unreferenced_first
-                                 << ", thrash_hint=" << es_cfg.thrash_hint
-                                 << ", tighten_incoming=" << es_cfg.tighten_incoming << std::endl;
-                    }
-
                     // [relevance_filter] 相关性过滤配置（旧配置文件中没有该节时使用默认值，不报错）
                     if (po.contains("relevance_filter") && po["relevance_filter"].is_object())
                     {
