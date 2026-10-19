@@ -697,19 +697,22 @@ private:
                               + "Ensure the model directory contains a valid prompt.json file."};
         }
 
+        const std::string empty_think_start = j["start"].get<std::string>() + "<think>\n\n</think>\n\n";
         std::string start_prompt_str = j["start"].get<std::string>();
         if (force_empty_think_prefill)
         {
-            start_prompt_str += "<think>\n\n</think>\n\n";
+            start_prompt_str = empty_think_start;
         }
         else if (force_open_think_prefill)
         {
             start_prompt_str += "<think>\n";
         }
+        const bool stable_empty_think_history = force_empty_think_prefill
+            || (force_open_think_prefill && instance_config_->is_speculative_draft_configured());
         std::string modelInputContent = chat_history_.GetUserMessage(
                                                           str_replace(j["system"], "string", systemDefaultPrompt),
                                                           start_prompt_str,
-                                                          force_empty_think_prefill ? start_prompt_str : std::string());
+                                                          stable_empty_think_history ? empty_think_start : std::string());
 
         // 计算最终提示词的真实 token 数
         // 修复：使用注入的 context_（多模型并发安全），而非 model_config_.get_genie_model_handle()
