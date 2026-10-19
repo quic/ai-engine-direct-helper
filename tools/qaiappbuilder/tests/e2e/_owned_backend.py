@@ -29,6 +29,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.e2e import _failure_logs
 from tests.e2e import conftest as c
 
 __all__ = ["OwnedBackend", "owned_backend"]
@@ -42,6 +43,7 @@ class OwnedBackend:
     log_path: Path | None = None
     clients: list[httpx.Client] = field(default_factory=list)
     _runs: int = 0
+    _handle: int | None = None
 
     @property
     def base_url(self) -> str:
@@ -66,6 +68,12 @@ class OwnedBackend:
                 [c._python_executable(), "-m", "apps.api", "--port", str(c.E2E_PORT)],
                 cwd=str(cwd or c.REPO_ROOT), env=env, stdout=fh, stderr=subprocess.STDOUT,
             )
+        proc, log = self.proc, self.log_path
+        self._unregister()
+        self._handle = _failure_logs.register(
+            f"owned backend run #{self._runs} log={log.name}",
+            pid_of=lambda: proc.pid, log_of=lambda: log, returncode_of=proc.poll, port=c.E2E_PORT,
+        )
         c._wait_healthy(self.proc, self.base_url, self.log_path)
         client = httpx.Client(base_url=self.base_url, timeout=30.0)
         client.get("/api/system/uptime")
@@ -91,6 +99,7 @@ class OwnedBackend:
             except Exception:  # noqa: BLE001 - cleanup must not raise
                 pass
         self.clients.clear()
+        self._unregister()
         if self.proc is not None:
             c._stop(self.proc)
         # Wait (bounded) for the port to be released so a following start() does not race it. Not fatal here:
@@ -98,6 +107,11 @@ class OwnedBackend:
         deadline = time.monotonic() + 30.0
         while not c._port_is_free(c.E2E_HOST, c.E2E_PORT) and time.monotonic() < deadline:
             time.sleep(0.3)
+
+    def _unregister(self) -> None:
+        if self._handle is not None:
+            _failure_logs.unregister(self._handle)
+            self._handle = None
 
     def log_text(self) -> str:
         return self.log_path.read_text(encoding="utf-8", errors="replace") if self.log_path else ""
@@ -134,6 +148,13 @@ def owned_backend() -> Iterator[OwnedBackend]:
     ob = OwnedBackend(work=work, data_dir=data)
     try:
         yield ob
+    except BaseException as exc:
+        # The failure hook runs AFTER this block has stopped the backend and deleted its log, so snapshot here first.
+        if not isinstance(exc, (pytest.skip.Exception, KeyboardInterrupt, SystemExit, GeneratorExit)):
+            nodeid = os.environ.get("PYTEST_CURRENT_TEST", "?").rsplit(" (", 1)[0]
+            if _failure_logs.snapshot_failure(c.REPO_ROOT, nodeid, "call", f"{type(exc).__name__}: {exc}"):
+                _failure_logs.mark_done(nodeid)
+        raise
     finally:
         try:
             ob.stop()

@@ -39,6 +39,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.e2e import _failure_logs
 from tests.e2e._jwt import JwtStatus, read_real_jwt_status
 
 # tools/qaiappbuilder  (this file: <repo>/tests/e2e/conftest.py)
@@ -277,6 +278,10 @@ def _start_backend(*, auth_enabled: bool) -> Iterator[Backend]:
             stdout=log,
             stderr=subprocess.STDOUT,
         )
+    handle = _failure_logs.register(
+        f"suite backend (auth {'on' if auth_enabled else 'off'}) log={log_path.name}",
+        pid_of=lambda: proc.pid, log_of=lambda: log_path, returncode_of=proc.poll, port=E2E_PORT,
+    )
     try:
         _wait_healthy(proc, base_url, log_path)
         yield Backend(
@@ -287,8 +292,19 @@ def _start_backend(*, auth_enabled: bool) -> Iterator[Backend]:
             log_path=log_path,
         )
     finally:
+        _failure_logs.unregister(handle)
         _stop(proc)
         shutil.rmtree(work, ignore_errors=True)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):  # noqa: ANN201
+    """When a test fails, keep the live backend's log + process state (see ``_failure_logs``). Passing tests keep nothing."""
+    outcome = yield
+    rep = outcome.get_result()
+    if rep.failed and not _failure_logs.is_done(item.nodeid):
+        err = f"{type(call.excinfo.value).__name__}: {call.excinfo.value}" if call.excinfo else rep.longreprtext[-600:]
+        _failure_logs.snapshot_failure(REPO_ROOT, item.nodeid, rep.when, err)
 
 
 @pytest.fixture(scope="module")

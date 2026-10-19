@@ -28,6 +28,7 @@ Examples::
 Output goes to ``<project>/data/e2e-reports/<timestamp>/`` (git-ignored)::
 
     report.html  summary.json  junit/<category>.xml  logs/<category>.log
+    backend-logs/  (only when a test failed: the backend's log + process state at that moment)
 
 Exit code: 0 = no failures/errors (skips are fine), 1 = failures/errors,
 2 = usage / pre-flight problem (nothing was run).
@@ -636,6 +637,7 @@ def main(argv: list[str]) -> int:
             "real_jwt": args.real_jwt, "pytest_args": pytest_args, "categories": selected}
 
     print(f"Report dir: {out}\nCategories: {', '.join(selected)}\n")
+    env["QAI_E2E_KEEP_DIR"] = str(out / "backend-logs")   # failed tests leave the backend log + process state here
     baseline = {p for p in WATCHED if port_busy(p)}   # busy before we start: not ours, never reported
     results: list[dict] = []
     for i, cat in enumerate(selected, 1):
@@ -668,6 +670,9 @@ def main(argv: list[str]) -> int:
     if summ.get("leaking_categories"):
         print("Left processes behind (ports): " + ", ".join(summ["leaking_categories"]))
     print(f"HTML : {out / 'report.html'}\nJSON : {out / 'summary.json'}")
+    kept = sorted((out / "backend-logs").glob("*.txt")) if (out / "backend-logs").is_dir() else []
+    if kept:
+        print(f"Backend logs kept for {len(kept)} failing test(s): {out / 'backend-logs'}")
     return 1 if (t["failed"] or t["error"] or summ["bad_categories"]) else 0
 
 
