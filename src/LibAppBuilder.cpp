@@ -472,9 +472,11 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
         return true;
     }
 #endif
-    // As in the release: once an in-process GPU/CPU model is loaded the HTP perf profile
-    // does not apply, and any value is accepted (gs_isGpu/gs_isCpu are only set by a load).
-    if (sg_proc_info_map.empty() && (gs_isGpu || gs_isCpu)) {
+    // As in the release: when only in-process GPU/CPU models are loaded the HTP perf profile
+    // does not apply, and any value is accepted. gs_isGpu/gs_isCpu only describe the LAST
+    // loaded model, so also require that no HTP context has published a power-config id;
+    // otherwise an HTP model loaded earlier in the same process would be skipped.
+    if (sg_proc_info_map.empty() && (gs_isGpu || gs_isCpu) && getAllPowerConfigIds().empty()) {
         // Still record a valid intent, so an HTP context loaded later in this process
         // (or in this Svc child) picks it up on init.
         if (perf_profile == "burst" || perf_profile == "high_performance") {
@@ -522,11 +524,8 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
         }
         return ok;  // no in-process HTP context yet (or a GPU/CPU one): applied on its init
     }
-
-    if (gs_isGpu || gs_isCpu) {
-        QNN_DEBUG("Skipping HTP performance profile for GPU/CPU backend");
-        return ok;
-    }
+    // Non-empty ids mean at least one in-process HTP context exists. Apply to it even if
+    // the most recently loaded model is GPU/CPU (gs_isGpu/gs_isCpu only track the last load).
 
     if (nullptr == gs_htpInfra) {
         QnnDevice_Infrastructure_t deviceInfra = nullptr;
@@ -568,15 +567,18 @@ bool RelPerfProfileGlobal() {
     if (haveSvc && nullptr == sg_backendHandle) {
         return ok;  // every model lives in a Svc child
     }
-    if (gs_isGpu || gs_isCpu) {
-        return ok;
-    }
+    // Decide on the published HTP power-config ids, not on gs_isGpu/gs_isCpu: those only
+    // describe the LAST loaded model, so HTP -> Set -> load CPU/GPU model -> Rel used to
+    // return early and leave the HTP context voted at BURST.
+    const std::vector<uint32_t> ids = getAllPowerConfigIdsLocked();
     if (!wasSet) {
+      if (ids.empty() && (gs_isGpu || gs_isCpu)) {
+        return ok;  // only non-HTP contexts in this process: nothing to release (as in the release)
+      }
       QNN_ERR("You should set perf profile before you release it!\n");
       return false;
     }
 
-    const std::vector<uint32_t> ids = getAllPowerConfigIdsLocked();
     // Nothing was applied in this process: only a recorded intent (Set before any load),
     // a non-HTP context (.dll model / CPU), or an apply that failed at init. issue#109/#4:
     // never dereference a null HTP infrastructure handle.
