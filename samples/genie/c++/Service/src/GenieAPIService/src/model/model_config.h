@@ -775,9 +775,9 @@ struct PromptOptimizationConfig {
         } page_directory;
 
         struct SedimentCardConfig {
-            std::string mode = "hybrid";
+            std::string mode = "index_only";
             std::string placement = "before_memo";
-            bool shadow_only = true;
+            bool shadow_only = false;
             double max_ratio = 0.02;
             size_t max_bytes = 1200;
             double trigger_result_ratio = 0.05;

@@ -1498,9 +1498,9 @@ bool ModelManager::InitializeConfig()
                             if (sd.contains("card") && sd["card"].is_object())
                             {
                                 const auto &cd = sd["card"];
-                                sed_cfg.card.mode = cd.value("mode", std::string("hybrid"));
+                                sed_cfg.card.mode = cd.value("mode", std::string("index_only"));
                                 sed_cfg.card.placement = cd.value("placement", std::string("before_memo"));
-                                sed_cfg.card.shadow_only = cd.value("shadow_only", true);
+                                sed_cfg.card.shadow_only = cd.value("shadow_only", false);
                                 sed_cfg.card.max_ratio = cd.value("max_ratio", 0.02);
                                 sed_cfg.card.max_bytes = cd.value("max_bytes", (size_t) 1200);
                                 sed_cfg.card.trigger_result_ratio = cd.value("trigger_result_ratio", 0.05);

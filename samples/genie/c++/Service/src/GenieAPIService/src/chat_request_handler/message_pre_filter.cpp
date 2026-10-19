@@ -8,6 +8,7 @@
 
 #include "message_pre_filter.h"
 #include "content_condenser.h"
+#include "tool_call_shape.h"
 #include "../processor/harmony.h"
 #include "../gateway/security/security_utils.h"
 #include <utils.h>
@@ -201,75 +202,7 @@ void StripRawIdx(json& messages)
     }
 }
 
-constexpr size_t kResourceValueMaxBytes = 1024;
-constexpr size_t kWritePayloadMinBytes = 24;
-
-json ParseToolCallArgs(const json& tool_call)
-{
-    if (!tool_call.is_object() || !tool_call.contains("function") || !tool_call["function"].is_object())
-        return json();
-    const json& fn = tool_call["function"];
-    if (!fn.contains("arguments")) return json();
-    json a = fn["arguments"];
-    if (a.is_string()) {
-        try { a = json::parse(a.get<std::string>()); } catch (...) { return json(); }
-    }
-    return a.is_object() ? a : json();
-}
-
-bool IsResourceLikeValue(const std::string& v)
-{
-    if (v.empty() || v.size() > kResourceValueMaxBytes) return false;
-    if (v.find_first_of(" \t\r\n") != std::string::npos) return false;
-    return v.find('/') != std::string::npos || v.find('\\') != std::string::npos;
-}
-
-std::string ResourceArgKey(const json& args)
-{
-    if (!args.is_object()) return std::string();
-    for (auto it = args.begin(); it != args.end(); ++it) {
-        if (!it.value().is_string()) continue;
-        if (IsResourceLikeValue(it.value().get<std::string>())) return it.key();
-    }
-    return std::string();
-}
-
-void ScanStringPayload(const json& v, size_t& max_len, size_t& nonempty)
-{
-    if (v.is_string()) {
-        const size_t n = v.get<std::string>().size();
-        if (n == 0) return;
-        ++nonempty;
-        if (n > max_len) max_len = n;
-        return;
-    }
-    if (!v.is_array() && !v.is_object()) return;
-    for (auto it = v.begin(); it != v.end(); ++it) ScanStringPayload(it.value(), max_len, nonempty);
-}
-
-bool IsWriteLikeArgs(const json& args, const std::string& resource_key)
-{
-    size_t max_len = 0;
-    size_t nonempty = 0;
-    for (auto it = args.begin(); it != args.end(); ++it) {
-        if (it.key() == resource_key) continue;
-        ScanStringPayload(it.value(), max_len, nonempty);
-    }
-    return max_len >= kWritePayloadMinBytes || nonempty >= 2;
-}
-
-bool IsWriteLikeCall(const json& assistant_msg)
-{
-    if (!assistant_msg.is_object() || !assistant_msg.contains("tool_calls") ||
-        !assistant_msg["tool_calls"].is_array()) return false;
-    for (const auto& tc : assistant_msg["tool_calls"]) {
-        const json args = ParseToolCallArgs(tc);
-        const std::string resource_key = ResourceArgKey(args);
-        if (resource_key.empty()) continue;
-        if (IsWriteLikeArgs(args, resource_key)) return true;
-    }
-    return false;
-}
+using namespace tool_shape;
 
 json PairedToolCall(const json& msgs, size_t tool_idx)
 {
@@ -292,32 +225,7 @@ json PairedToolCall(const json& msgs, size_t tool_idx)
 
 std::string ResourceKeyOfToolResult(const json& msgs, size_t tool_idx)
 {
-    const json args = ParseToolCallArgs(PairedToolCall(msgs, tool_idx));
-    const std::string resource_key = ResourceArgKey(args);
-    if (resource_key.empty() || IsWriteLikeArgs(args, resource_key)) return std::string();
-    return args.at(resource_key).get<std::string>();
-}
-
-long long ArgsInt(const json& args, const char* key, long long fallback)
-{
-    if (!args.is_object() || !args.contains(key)) return fallback;
-    const json& v = args.at(key);
-    if (v.is_number_integer()) return v.get<long long>();
-    if (v.is_number_float()) return static_cast<long long>(v.get<double>());
-    if (v.is_string()) {
-        try { return std::stoll(v.get<std::string>()); } catch (...) { return fallback; }
-    }
-    return fallback;
-}
-
-void ReadSpanOfArgs(const json& args, long long& span_begin, long long& span_end)
-{
-    span_begin = std::max<long long>(1, ArgsInt(args, "offset", ArgsInt(args, "start_line", 1)));
-    span_end = std::numeric_limits<long long>::max();
-    const long long limit = ArgsInt(args, "limit", -1);
-    const long long end_line = ArgsInt(args, "end_line", -1);
-    if (limit > 0) span_end = span_begin + limit - 1;
-    else if (end_line >= span_begin) span_end = end_line;
+    return ReadResourceOfArgs(ParseToolCallArgs(PairedToolCall(msgs, tool_idx)));
 }
 
 bool HasErrorSignal(const std::string& content)
@@ -1506,6 +1414,8 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         result.memo_confidence = memo_result.confidence;
         result.memo_refresh_count = memo_result.refresh_count;
         result.memo_pages_total = memo_result.pages_total;
+        result.memo_card_bytes = memo_result.card_bytes;
+        result.memo_card_stable = memo_result.card_stable;
     }
 
     // 步骤 4: 最终检查

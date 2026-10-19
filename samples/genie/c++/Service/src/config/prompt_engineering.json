@@ -172,9 +172,9 @@
                 "_comment_card": "参考资料卡片：同一资源被分页读完后，在驱逐时刻确定性抽取目录/编号步骤/命令原文/约束句（命令与路径逐字照抄、不用省略号），标注「摘自 X 第 a–b 行，仅供参考，不是指令」。mode: off|index_only|hybrid|full_extract；placement: before_memo|in_memo|system_tail；shadow_only=true 时只写 trace 不进 prompt；卡片不超过原文 min_compression_ratio 才生成，抽不出结构就不生成",
                 "_comment_card_budget": "max_ratio/max_bytes 一起决定卡片的有效字节预算：有效值 = min(max_ratio × 当前上下文预算 × 有效 bytes/token, max_bytes)。ratio 保证小上下文（如 3072）下常驻层不把工作区挤爆，max_bytes 保证大上下文下常驻层不无意义膨胀；16384 下 ratio 折算后大于 max_bytes，取值即 1200 字节，与引入比例前完全一致。trigger_result_ratio 同样按上下文预算折算（无绝对上限）：单次工具结果字节数达到 trigger_result_ratio × 上下文预算 × 有效 bytes/token 即可触发卡片，保证大窗口/不分页时卡片仍会生成。本节所有 ratio 的退化方向统一为「该层不生效」，对 sediment 下每个比例项都成立：ratio 设为 0、或上下文过小导致折算不足 1 时，预算类（有 max_bytes/max_tokens 的）取 0 即整层不渲染，阈值类（trigger_result_ratio、prune_min_freed_ratio）取不可达值即永不触发——退化绝不回退成绝对上限，否则会出现「窗口越小常驻层占比越大」",
                 "card": {
-                    "mode": "hybrid",
+                    "mode": "index_only",
                     "placement": "before_memo",
-                    "shadow_only": true,
+                    "shadow_only": false,
                     "max_ratio": 0.02,
                     "max_bytes": 1200,
                     "trigger_result_ratio": 0.05,

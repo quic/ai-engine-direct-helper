@@ -747,6 +747,8 @@ private:
                 last_ledger_.memo_confidence = optimized.memo_confidence;
                 last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
                 last_ledger_.memo_pages_total = optimized.memo_pages_total;
+                last_ledger_.memo_card_bytes = optimized.memo_card_bytes;
+                last_ledger_.memo_card_stable = optimized.memo_card_stable;
                 last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
                 last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
                 last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -1739,6 +1741,8 @@ private:
             last_ledger_.memo_confidence = optimized.memo_confidence;
             last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
             last_ledger_.memo_pages_total = optimized.memo_pages_total;
+            last_ledger_.memo_card_bytes = optimized.memo_card_bytes;
+            last_ledger_.memo_card_stable = optimized.memo_card_stable;
             last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
             last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
             last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -2021,7 +2025,9 @@ private:
         }
 
         std::string rendered = TaskMemoBuilder::Render(*memo_entry);
-        if (rendered.empty()) {
+        const std::string cards = memo_entry->value("_cards_before_memo", false)
+            ? TaskMemoBuilder::RenderCards(*memo_entry) : std::string();
+        if (rendered.empty() && cards.empty()) {
             std::string standalone = BuildStandaloneRedundantToolCallNote();
             return !standalone.empty() ? standalone + consecutive_failure_note
                                         : (consecutive_failure_note.empty() ? "" : consecutive_failure_note);
@@ -2029,7 +2035,7 @@ private:
 
         const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
         double ratio = po_cfg.task_memo.token_budget_ratio;
-        if (ratio > 0.0) {
+        if (ratio > 0.0 && !rendered.empty()) {
             double bytes_per_token = EstimateCjkAwareBytesPerToken(
                 rendered, po_cfg.fidelity.cjk_bytes_per_token, po_cfg.fidelity.ascii_bytes_per_token);
             size_t budget_bytes = static_cast<size_t>(
@@ -2038,7 +2044,7 @@ private:
                 rendered = TaskMemoBuilder::Render(*memo_entry, budget_bytes);
             }
         }
-        return "\n\n" + rendered + consecutive_failure_note;
+        return "\n\n" + cards + (cards.empty() || rendered.empty() ? "" : "\n") + rendered + consecutive_failure_note;
     }
 
     std::string BuildTaskMemoBody() const
@@ -2049,11 +2055,13 @@ private:
         if (!memo_entry)
             return "";
         std::string rendered = TaskMemoBuilder::Render(*memo_entry);
-        if (rendered.empty())
+        const std::string cards = memo_entry->value("_cards_before_memo", false)
+            ? TaskMemoBuilder::RenderCards(*memo_entry) : std::string();
+        if (rendered.empty() && cards.empty())
             return "";
         const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
         double ratio = po_cfg.task_memo.token_budget_ratio;
-        if (ratio > 0.0) {
+        if (ratio > 0.0 && !rendered.empty()) {
             double bytes_per_token = EstimateCjkAwareBytesPerToken(
                 rendered, po_cfg.fidelity.cjk_bytes_per_token, po_cfg.fidelity.ascii_bytes_per_token);
             size_t budget_bytes = static_cast<size_t>(
@@ -2062,7 +2070,11 @@ private:
                 rendered = TaskMemoBuilder::Render(*memo_entry, budget_bytes);
             }
         }
-        return "\n\n" + rendered;
+        if (!cards.empty()) {
+            My_Log{My_Log::Level::kDebug} << "[TaskMemo] Cards injected before memo: card_bytes=" << cards.size()
+                                          << ", memo_bytes=" << rendered.size() << std::endl;
+        }
+        return "\n\n" + cards + (cards.empty() || rendered.empty() ? "" : "\n") + rendered;
     }
 
     std::string BuildTaskMemoNotes() const

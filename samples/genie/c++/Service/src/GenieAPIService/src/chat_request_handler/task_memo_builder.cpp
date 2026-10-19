@@ -7,6 +7,7 @@
 //==============================================================================
 
 #include "task_memo_builder.h"
+#include "tool_call_shape.h"
 #include "tool_call_circuit_breaker_store.h"
 #include <utils.h>
 #include "log.h"
@@ -112,7 +113,27 @@ std::optional<json> TaskMemoBuilder::Lookup(const json& raw_messages) const
 {
     if (!config_.enabled || !store_)
         return std::nullopt;
-    return store_->Lookup(ComputeFingerprint(raw_messages), ComputeFirstMsgKey(raw_messages));
+    auto entry = store_->Lookup(ComputeFingerprint(raw_messages), ComputeFirstMsgKey(raw_messages));
+    if (entry)
+        SanitizeSedimentMarkers(*entry);
+    return entry;
+}
+
+void TaskMemoBuilder::SanitizeSedimentMarkers(json& entry) const
+{
+    if (!entry.is_object())
+        return;
+    const auto& sed = config_.sediment;
+    if (!sed.enabled || !sed.merge_paged_reads) {
+        entry.erase("_read_merge");
+        entry.erase("_read_page_lines");
+    }
+    if (!sed.enabled || sed.card.mode == "off" || sed.card.shadow_only) {
+        entry.erase("_cards_render");
+        entry.erase("_cards_before_memo");
+    } else if (sed.card.placement != "before_memo") {
+        entry.erase("_cards_before_memo");
+    }
 }
 
 // ── BuildRuleLayer ────────────────────────────────────────────────────────────
@@ -306,6 +327,363 @@ namespace {
                 return assistant_content.substr(q1 + 1, q2 - q1 - 1);
         }
         return "";
+    }
+
+    constexpr size_t kMaxCardSegments = 24;
+    constexpr size_t kMaxCardHeadingBytes = 80;
+
+    long long ArgsIntOfText(const std::string& text, const char* key, long long fallback) {
+        const std::string pat = std::string("\"") + key + "\"";
+        const size_t kp = text.find(pat);
+        if (kp == std::string::npos)
+            return fallback;
+        const size_t colon = text.find(':', kp + pat.size());
+        if (colon == std::string::npos)
+            return fallback;
+        size_t c = colon + 1;
+        while (c < text.size() && (text[c] == ' ' || text[c] == '\t' || text[c] == '"'))
+            ++c;
+        if (c >= text.size() || !isdigit((unsigned char) text[c]))
+            return fallback;
+        long long v = 0;
+        while (c < text.size() && isdigit((unsigned char) text[c]))
+            v = v * 10 + (text[c++] - '0');
+        return v;
+    }
+
+    long long ReadOffsetOfText(const std::string& text) {
+        long long v = ArgsIntOfText(text, "offset", -1);
+        if (v < 0)
+            v = ArgsIntOfText(text, "start_line", -1);
+        return v < 1 ? 1 : v;
+    }
+
+    std::string ShapeReadResourceOfText(const std::string& text) {
+        return tool_shape::ReadResourceOfArgs(tool_shape::ParseArgsObjectFromText(text));
+    }
+
+    size_t CountLinesOf(const std::string& s) {
+        if (s.empty())
+            return 0;
+        size_t n = 0;
+        for (char c : s)
+            if (c == '\n') ++n;
+        if (s.back() != '\n')
+            ++n;
+        return n;
+    }
+
+    std::string RightTrimLine(const std::string& s) {
+        std::string out = s;
+        while (!out.empty() && (out.back() == '\r' || out.back() == ' ' || out.back() == '\t'))
+            out.pop_back();
+        return out;
+    }
+
+    bool HasEnumeratorPrefix(const std::string& body) {
+        size_t c = 0;
+        while (c < body.size() && isdigit((unsigned char) body[c]))
+            ++c;
+        if (c > 0 && c < body.size()) {
+            if (body[c] == '.' || body[c] == ')' || body[c] == ':')
+                return c + 1 >= body.size() || body[c + 1] == ' ' || body[c + 1] == '\t';
+            if (body.compare(c, 3, "\xe3\x80\x81") == 0)
+                return true;
+        }
+        static const char* kBullets[] = { "- ", "* ", "+ ", "\xe2\x80\xa2 ", "\xe3\x83\xbb" };
+        for (const char* b : kBullets)
+            if (body.rfind(b, 0) == 0)
+                return true;
+        return false;
+    }
+
+    bool LooksLikeCommandBody(const std::string& body, size_t indent) {
+        if (body.rfind("$ ", 0) == 0 || body.rfind("> ", 0) == 0 || body.rfind("```", 0) == 0 ||
+            body.rfind("~~~", 0) == 0)
+            return true;
+        if (body.find(" --") != std::string::npos)
+            return true;
+        if (indent >= 4 && (body.find('/') != std::string::npos || body.find('\\') != std::string::npos))
+            return true;
+        return false;
+    }
+
+    bool LooksLikeHeadingBody(const std::string& body, const std::string& next_line, size_t indent) {
+        if (body.size() > kMaxCardHeadingBytes)
+            return false;
+        const char tail = body.back();
+        if (tail == '.' || tail == ',' || tail == ';')
+            return false;
+        if (body.size() >= 3) {
+            const std::string t = body.substr(body.size() - 3);
+            if (t == "\xe3\x80\x82" || t == "\xef\xbc\x8c" || t == "\xef\xbc\x9b")
+                return false;
+        }
+        const std::string next = RightTrimLine(next_line);
+        if (next.empty())
+            return true;
+        const size_t next_indent = next.find_first_not_of(" \t");
+        return next_indent != std::string::npos && next_indent > indent;
+    }
+
+    bool IsStructuralLine(const std::string& line, const std::string& next_line) {
+        const std::string trimmed = RightTrimLine(line);
+        const size_t indent = trimmed.find_first_not_of(" \t");
+        if (indent == std::string::npos)
+            return false;
+        const std::string body = trimmed.substr(indent);
+        if (body.size() < 2)
+            return false;
+        if (IsHardRuleLine(body) || HasEnumeratorPrefix(body) || LooksLikeCommandBody(body, indent))
+            return true;
+        return LooksLikeHeadingBody(body, next_line, indent);
+    }
+
+    struct CardPage {
+        long long begin = 1;
+        std::string content;
+    };
+
+    struct CardSource {
+        std::string source;
+        std::vector<CardPage> pages;
+        size_t reads = 0;
+        size_t max_result_bytes = 0;
+    };
+
+    void CollectReadPages(const json& raw_messages, std::vector<CardSource>& out) {
+        if (!raw_messages.is_array())
+            return;
+        std::unordered_map<std::string, std::pair<std::string, long long>> pending;
+        std::vector<std::pair<std::string, long long>> fifo;
+        for (const auto& msg : raw_messages) {
+            if (!msg.is_object())
+                continue;
+            const std::string role = msg.value("role", "");
+            if (role == "assistant") {
+                bool structured = false;
+                if (msg.contains("tool_calls") && msg["tool_calls"].is_array()) {
+                    for (const auto& tc : msg["tool_calls"]) {
+                        if (!tc.is_object())
+                            continue;
+                        const json& fn = (tc.contains("function") && tc["function"].is_object()) ? tc["function"] : tc;
+                        const json args = tool_shape::ParseArgsValue(
+                            fn.contains("arguments") ? fn["arguments"] : json());
+                        const std::string src = tool_shape::ReadResourceOfArgs(args);
+                        if (src.empty())
+                            continue;
+                        structured = true;
+                        const long long begin = tool_shape::ReadBeginOfArgs(args);
+                        const std::string id = tc.value("id", "");
+                        if (id.empty())
+                            fifo.emplace_back(src, begin);
+                        else
+                            pending[id] = { src, begin };
+                    }
+                }
+                if (!structured) {
+                    const std::string text = get_json_value<std::string>(msg, "content", "");
+                    const json args = tool_shape::ParseArgsObjectFromText(text);
+                    const std::string src = tool_shape::ReadResourceOfArgs(args);
+                    if (!src.empty())
+                        fifo.emplace_back(src, tool_shape::ReadBeginOfArgs(args));
+                }
+            } else if (role == "tool") {
+                std::pair<std::string, long long> key;
+                const std::string id = msg.value("tool_call_id", "");
+                if (!id.empty()) {
+                    auto it = pending.find(id);
+                    if (it == pending.end())
+                        continue;
+                    key = it->second;
+                    pending.erase(it);
+                } else if (!fifo.empty()) {
+                    key = fifo.front();
+                    fifo.erase(fifo.begin());
+                } else {
+                    continue;
+                }
+                const std::string content = get_json_value<std::string>(msg, "content", "");
+                if (content.empty() || LooksLikeFailure(content))
+                    continue;
+                CardSource* slot = nullptr;
+                for (auto& s : out) {
+                    if (s.source == key.first) {
+                        slot = &s;
+                        break;
+                    }
+                }
+                if (!slot) {
+                    out.push_back(CardSource{ key.first, {}, 0, 0 });
+                    slot = &out.back();
+                }
+                ++slot->reads;
+                slot->max_result_bytes = std::max(slot->max_result_bytes, content.size());
+                bool dup = false;
+                for (const auto& p : slot->pages) {
+                    if (p.begin == key.second) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup)
+                    slot->pages.push_back(CardPage{ key.second, content });
+            }
+        }
+    }
+
+    std::vector<std::pair<long long, std::string>> NumberedLinesOf(const CardSource& src) {
+        std::vector<CardPage> pages = src.pages;
+        std::stable_sort(pages.begin(), pages.end(),
+                         [](const CardPage& a, const CardPage& b) { return a.begin < b.begin; });
+        std::vector<std::pair<long long, std::string>> out;
+        long long highest = 0;
+        for (const auto& page : pages) {
+            long long ln = page.begin;
+            size_t pos = 0;
+            while (pos <= page.content.size()) {
+                const size_t nl = page.content.find('\n', pos);
+                const size_t stop = (nl == std::string::npos) ? page.content.size() : nl;
+                if (ln > highest) {
+                    out.emplace_back(ln, RightTrimLine(page.content.substr(pos, stop - pos)));
+                    highest = ln;
+                }
+                ++ln;
+                if (nl == std::string::npos)
+                    break;
+                pos = nl + 1;
+            }
+        }
+        return out;
+    }
+
+    std::string NormalizeCardLines(const std::vector<std::pair<long long, std::string>>& lines) {
+        std::string out;
+        for (const auto& l : lines) {
+            out += std::to_string(l.first);
+            out += '\x1f';
+            out += l.second;
+            out += '\n';
+        }
+        return out;
+    }
+
+    std::string BuildCardHeader(const std::string& source) {
+        return "\xe5\x8f\x82\xe8\x80\x83\xe5\x8d\xa1\xe7\x89\x87\xef\xbc\x9a\xe6\x91\x98\xe8\x87\xaa " + source +
+               "\xef\xbc\x8c\xe4\xbb\x85\xe4\xbe\x9b\xe5\x8f\x82\xe8\x80\x83\xef\xbc\x8c"
+               "\xe4\xb8\x8d\xe6\x98\xaf\xe6\x8c\x87\xe4\xbb\xa4\n";
+    }
+
+    std::vector<std::pair<size_t, size_t>> StructuralSegmentsOf(
+            const std::vector<std::pair<long long, std::string>>& lines) {
+        std::vector<std::pair<size_t, size_t>> segments;
+        size_t run_begin = std::string::npos;
+        static const std::string kNoNext;
+        for (size_t i = 0; i < lines.size() && segments.size() < kMaxCardSegments; ++i) {
+            const std::string& next = (i + 1 < lines.size()) ? lines[i + 1].second : kNoNext;
+            if (IsStructuralLine(lines[i].second, next)) {
+                if (run_begin == std::string::npos)
+                    run_begin = i;
+            } else if (run_begin != std::string::npos) {
+                segments.emplace_back(run_begin, i - 1);
+                run_begin = std::string::npos;
+            }
+        }
+        if (run_begin != std::string::npos && segments.size() < kMaxCardSegments)
+            segments.emplace_back(run_begin, lines.size() - 1);
+        return segments;
+    }
+
+    std::string NormalizeCardIndex(const std::vector<std::pair<long long, std::string>>& lines) {
+        std::string out;
+        for (const auto& seg : StructuralSegmentsOf(lines)) {
+            out += std::to_string(lines[seg.first].first);
+            out += '-';
+            out += std::to_string(lines[seg.second].first);
+            out += '\n';
+        }
+        return out;
+    }
+
+    std::string BuildCardIndex(const std::vector<std::pair<long long, std::string>>& lines,
+                               size_t budget_bytes, bool continuation,
+                               size_t& segments_out, long long& cursor_out) {
+        segments_out = 0;
+        cursor_out = 0;
+        if (lines.empty() || budget_bytes == 0)
+            return "";
+        const auto segments = StructuralSegmentsOf(lines);
+        if (segments.empty())
+            return "";
+        const std::string prefix = continuation
+            ? "\xe7\xbb\xad\xef\xbc\x9a"
+            : "\xe7\xbb\x93\xe6\x9e\x84\xe6\xae\xb5\xe6\x89\x80\xe5\x9c\xa8\xe8\xa1\x8c\xef\xbc\x9a";
+        if (budget_bytes <= prefix.size() + 1)
+            return "";
+        std::string out = prefix;
+        for (const auto& seg : segments) {
+            std::ostringstream item;
+            if (segments_out > 0)
+                item << ", ";
+            item << lines[seg.first].first << "-" << lines[seg.second].first;
+            if (out.size() + item.str().size() + 1 > budget_bytes)
+                break;
+            out += item.str();
+            ++segments_out;
+            cursor_out = lines[seg.second].first;
+        }
+        if (segments_out == 0)
+            return "";
+        out += "\n";
+        return out;
+    }
+
+    std::string BuildCardSegments(const std::vector<std::pair<long long, std::string>>& lines,
+                                  size_t budget_bytes, size_t& segments_out, long long& cursor_out) {
+        segments_out = 0;
+        cursor_out = 0;
+        if (lines.empty() || budget_bytes == 0)
+            return "";
+        const auto segments = StructuralSegmentsOf(lines);
+        if (segments.empty())
+            return "";
+
+        std::string out;
+        for (const auto& seg : segments) {
+            std::ostringstream widest_head;
+            widest_head << "[\xe7\xac\xac " << lines[seg.first].first << "-" << lines[seg.second].first
+                        << " \xe8\xa1\x8c]\n";
+            const size_t head_bytes = widest_head.str().size();
+            if (out.size() + head_bytes >= budget_bytes)
+                break;
+            const size_t avail = budget_bytes - out.size() - head_bytes;
+            size_t last = seg.first;
+            size_t acc = 0;
+            bool any = false;
+            for (size_t i = seg.first; i <= seg.second; ++i) {
+                const size_t need = lines[i].second.size() + 1;
+                if (acc + need > avail)
+                    break;
+                acc += need;
+                last = i;
+                any = true;
+            }
+            if (!any)
+                break;
+            std::ostringstream chunk;
+            chunk << "[\xe7\xac\xac " << lines[seg.first].first << "-" << lines[last].first
+                  << " \xe8\xa1\x8c]\n";
+            for (size_t i = seg.first; i <= last; ++i)
+                chunk << lines[i].second << "\n";
+            out += chunk.str();
+            ++segments_out;
+            cursor_out = lines[last].first;
+            if (last < seg.second)
+                break;
+        }
+        if (segments_out == 0)
+            return "";
+        return out;
     }
 
     std::string ReplaceInvalidUtf8(const std::string& s) {
@@ -538,7 +916,11 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
                 CapObjectSize(entry["last_success"], 6);
             }
             const std::string tool_name = call.substr(0, call.find(' '));
-            const bool reads_content = IsReadLikeToolName(tool_name) || tool_name.find("fetch") != std::string::npos;
+            const std::string shape_read_path = config_.sediment.enabled
+                ? ShapeReadResourceOfText(last_assistant_content) : std::string();
+            const bool reads_content = config_.sediment.enabled
+                ? !shape_read_path.empty()
+                : (IsReadLikeToolName(tool_name) || tool_name.find("fetch") != std::string::npos);
             if (!failed && !call.empty() && !reads_content)
                 for (const auto& a : ExtractArtifactLines(m.content))
                     AppendCapped(entry["artifacts"], ReplaceInvalidUtf8(a), kMaxArtifacts);
@@ -546,9 +928,22 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
             // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。
             if (!failed) {
-                std::string read_path = ExtractReadToolPathImpl(last_assistant_content);
+                std::string read_path = config_.sediment.enabled
+                    ? shape_read_path : ExtractReadToolPathImpl(last_assistant_content);
                 if (!read_path.empty()) {
-                    entry["read_files"][read_path] = preview;
+                    if (config_.sediment.enabled && config_.sediment.merge_paged_reads) {
+                        const long long begin = ReadOffsetOfText(last_assistant_content);
+                        const long long end = begin + (long long) CountLinesOf(m.content) - 1;
+                        const std::string page_key = read_path + "#" + std::to_string(begin);
+                        entry["read_files"][page_key] = preview;
+                        if (!entry.contains("_read_page_lines") || !entry["_read_page_lines"].is_object())
+                            entry["_read_page_lines"] = json::object();
+                        entry["_read_page_lines"][page_key] = end;
+                        entry["_read_merge"] = true;
+                        CapObjectSize(entry["_read_page_lines"], kMaxItemsPerField);
+                    } else {
+                        entry["read_files"][read_path] = preview;
+                    }
                     CapObjectSize(entry["read_files"], kMaxItemsPerField);
                     if (!entry.contains("hard_rules") || !entry["hard_rules"].is_array())
                         entry["hard_rules"] = json::array();
@@ -610,6 +1005,246 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
     entry["content_hash"] = std::to_string(std::hash<std::string>{}(concat));
     entry["confidence"] = 0.6;
     return entry;
+}
+
+// ── UpdateCards（参考资料卡片：确定性抽取，只在驱逐时刻重写）───────────────────
+
+bool TaskMemoBuilder::UpdateCards(json& entry, const json& raw_messages) const
+{
+    const auto& card_cfg = config_.sediment.card;
+    if (!config_.sediment.enabled || card_cfg.mode == "off")
+        return true;
+
+    std::vector<CardSource> sources;
+    CollectReadPages(raw_messages, sources);
+    if (sources.empty())
+        return true;
+
+    const size_t context_budget = (size_t) std::max(0, instance_config_.get_context_size());
+    double bytes_per_token = entry.value("_card_bytes_per_token", 0.0);
+    if (bytes_per_token <= 0.0) {
+        std::string probe;
+        for (const auto& s : sources)
+            for (const auto& p : s.pages)
+                probe += p.content;
+        const auto& fid = instance_config_.i_model_config_.GetPromptOptimizationConfig().fidelity;
+        bytes_per_token = EstimateCjkAwareBytesPerToken(probe, fid.cjk_bytes_per_token, fid.ascii_bytes_per_token);
+        entry["_card_bytes_per_token"] = bytes_per_token;
+    }
+    size_t budget = entry.value("_card_budget_bytes", (size_t) 0);
+    if (budget == 0) {
+        budget = ResolveSedimentBudget(card_cfg.max_ratio, card_cfg.max_bytes, context_budget, bytes_per_token);
+        if (budget == 0)
+            return true;
+        entry["_card_budget_bytes"] = budget;
+    }
+    const size_t trigger_bytes = ResolveSedimentThreshold(card_cfg.trigger_result_ratio,
+                                                           context_budget, bytes_per_token);
+
+    if (!entry.contains("cards") || !entry["cards"].is_array())
+        entry["cards"] = json::array();
+    entry["_cards_render"] = !card_cfg.shadow_only;
+    entry["_cards_before_memo"] = (card_cfg.placement == "before_memo");
+
+    size_t used = CardBytesOf(entry);
+    bool stable = true;
+
+    std::vector<const CardSource*> triggered;
+    for (const auto& src : sources) {
+        if (src.reads > 1 || src.max_result_bytes >= trigger_bytes)
+            triggered.push_back(&src);
+    }
+    size_t slots = triggered.size();
+    for (const auto& c : entry["cards"]) {
+        if (!c.is_object())
+            continue;
+        const std::string s = c.value("source", std::string());
+        bool present = false;
+        for (const auto* t : triggered) {
+            if (t->source == s) {
+                present = true;
+                break;
+            }
+        }
+        if (!present)
+            ++slots;
+    }
+    const size_t share = (slots > 0) ? budget / slots : 0;
+
+    auto reserved_for_others = [&](const std::string& self) -> size_t {
+        size_t reserved = 0;
+        for (const auto& c : entry["cards"]) {
+            if (!c.is_object())
+                continue;
+            const std::string s = c.value("source", std::string());
+            if (s == self)
+                continue;
+            const size_t owned = c.value("text", std::string()).size();
+            if (share > owned)
+                reserved += share - owned;
+        }
+        for (const auto* t : triggered) {
+            if (t->source == self)
+                continue;
+            bool has_card = false;
+            for (const auto& c : entry["cards"]) {
+                if (c.is_object() && c.value("source", std::string()) == t->source) {
+                    has_card = true;
+                    break;
+                }
+            }
+            if (!has_card)
+                reserved += share;
+        }
+        return reserved;
+    };
+
+    auto rebuild = [&](const std::string& source,
+                       const std::vector<std::pair<long long, std::string>>& lines,
+                       size_t avail, json& out_card) -> bool {
+        const std::string header = BuildCardHeader(source);
+        if (avail <= header.size())
+            return false;
+        size_t segments = 0;
+        long long cursor = 0;
+        std::string kind = "extract";
+        std::string body;
+        if (card_cfg.mode != "index_only")
+            body = BuildCardSegments(lines, avail - header.size(), segments, cursor);
+        if (segments == 0) {
+            kind = "index";
+            body = BuildCardIndex(lines, avail - header.size(), false, segments, cursor);
+        }
+        if (segments == 0)
+            return false;
+        size_t raw_bytes = 0;
+        for (const auto& l : lines)
+            raw_bytes += l.second.size() + 1;
+        const std::string text = header + body;
+        if ((double) text.size() > (double) raw_bytes * card_cfg.min_compression_ratio)
+            return false;
+        std::vector<std::pair<long long, std::string>> covered;
+        for (const auto& l : lines) {
+            if (l.first <= cursor)
+                covered.push_back(l);
+        }
+        out_card = json::object();
+        out_card["source"] = source;
+        out_card["kind"] = kind;
+        out_card["line_begin"] = lines.front().first;
+        out_card["line_end"] = cursor;
+        out_card["line_cursor"] = cursor;
+        out_card["covered_hash"] = std::to_string(std::hash<std::string>{}(
+            kind == "index" ? NormalizeCardIndex(covered) : NormalizeCardLines(covered)));
+        out_card["segments"] = segments;
+        out_card["text"] = ReplaceInvalidUtf8(text);
+        return true;
+    };
+
+    for (const auto* srcp : triggered) {
+        const CardSource& src = *srcp;
+        const auto lines = NumberedLinesOf(src);
+        if (lines.empty())
+            continue;
+        size_t index = entry["cards"].size();
+        for (size_t i = 0; i < entry["cards"].size(); ++i) {
+            if (entry["cards"][i].is_object()
+                    && entry["cards"][i].value("source", std::string()) == src.source) {
+                index = i;
+                break;
+            }
+        }
+        const size_t global_left = (budget > used) ? budget - used : 0;
+        bool all_sources_carded = true;
+        for (const auto* t : triggered) {
+            bool has_card = false;
+            for (const auto& c : entry["cards"]) {
+                if (c.is_object() && c.value("source", std::string()) == t->source) {
+                    has_card = true;
+                    break;
+                }
+            }
+            if (!has_card) {
+                all_sources_carded = false;
+                break;
+            }
+        }
+        const size_t reserved = reserved_for_others(src.source);
+        const size_t extra = (all_sources_carded && global_left > reserved) ? global_left - reserved : 0;
+        if (index >= entry["cards"].size()) {
+            json card;
+            if (rebuild(src.source, lines, std::min(share + extra, global_left), card)) {
+                used += card["text"].get<std::string>().size();
+                entry["cards"].push_back(card);
+            }
+            continue;
+        }
+        json& existing = entry["cards"][index];
+        const std::string kind = existing.value("kind", std::string("extract"));
+        const long long cursor = existing.value("line_cursor", (long long) 0);
+        std::vector<std::pair<long long, std::string>> covered, fresh;
+        for (const auto& l : lines)
+            (l.first <= cursor ? covered : fresh).push_back(l);
+        const std::string covered_hash = std::to_string(std::hash<std::string>{}(
+            kind == "index" ? NormalizeCardIndex(covered) : NormalizeCardLines(covered)));
+        const size_t own_bytes = existing.value("text", std::string()).size();
+        if (covered_hash != existing.value("covered_hash", std::string())) {
+            json card;
+            const size_t room = (budget + own_bytes > used) ? budget + own_bytes - used : 0;
+            if (rebuild(src.source, lines, std::min(std::max(share, own_bytes), room), card)) {
+                used = used + card["text"].get<std::string>().size() - own_bytes;
+                existing = card;
+                stable = false;
+            }
+            continue;
+        }
+        if (fresh.empty() || index + 1 != entry["cards"].size())
+            continue;
+        const size_t avail = std::min(((share > own_bytes) ? share - own_bytes : 0) + extra, global_left);
+        size_t segments = 0;
+        long long new_cursor = 0;
+        const std::string body = (kind == "index")
+            ? BuildCardIndex(fresh, avail, true, segments, new_cursor)
+            : BuildCardSegments(fresh, avail, segments, new_cursor);
+        if (segments == 0)
+            continue;
+        std::vector<std::pair<long long, std::string>> new_covered;
+        for (const auto& l : lines) {
+            if (l.first <= new_cursor)
+                new_covered.push_back(l);
+        }
+        existing["text"] = existing.value("text", std::string()) + ReplaceInvalidUtf8(body);
+        existing["line_end"] = new_cursor;
+        existing["line_cursor"] = new_cursor;
+        existing["covered_hash"] = std::to_string(std::hash<std::string>{}(
+            kind == "index" ? NormalizeCardIndex(new_covered) : NormalizeCardLines(new_covered)));
+        existing["segments"] = existing.value("segments", (size_t) 0) + segments;
+        used += body.size();
+    }
+
+    My_Log{My_Log::Level::kInfo}
+        << "[TaskMemo] Cards: sources=" << sources.size()
+        << ", triggered=" << triggered.size()
+        << ", cards=" << entry["cards"].size()
+        << ", bytes=" << CardBytesOf(entry)
+        << ", budget=" << budget
+        << ", share=" << share
+        << ", trigger_bytes=" << trigger_bytes
+        << ", stable=" << (stable ? 1 : 0)
+        << ", shadow_only=" << (card_cfg.shadow_only ? 1 : 0) << std::endl;
+    return stable;
+}
+
+size_t TaskMemoBuilder::CardBytesOf(const json& entry)
+{
+    if (!entry.is_object() || !entry.contains("cards") || !entry["cards"].is_array())
+        return 0;
+    size_t total = 0;
+    for (const auto& c : entry["cards"]) {
+        if (c.is_object() && c.contains("text") && c["text"].is_string())
+            total += c["text"].get<std::string>().size();
+    }
+    return total;
 }
 
 // ── ExtractGoalAnchor（原始目标锚点鲁棒抓取）───────────────────────────────────
@@ -746,6 +1381,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         res.confidence = prev_confidence;
         res.refresh_count = prev_refresh;
         res.pages_total = (prev->contains("pages") && (*prev)["pages"].is_array()) ? (*prev)["pages"].size() : 0;
+        res.card_bytes = CardBytesOf(*prev);
         res.compact_render = RenderCompact(*prev);
         return res;
     }
@@ -753,6 +1389,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
                                                     dropped_messages.end());
 
     json entry = BuildRuleLayer(has_prev ? *prev : json::object(), new_dropped);
+    const bool cards_stable = UpdateCards(entry, raw_messages);
 
     // 原始目标锚点：只在尚未捕获过时抓取一次；一旦捕获，后续轮次通过 entry/prev 透传，
     // 永不被规则层或模型层的后续更新覆盖（BuildRuleLayer 已经把 prev 的既有字段原样
@@ -781,7 +1418,9 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
             model_entry["_next_page_id"] = entry["_next_page_id"];
             // read_files（已读文件索引）同理：模型层不感知、不生成，必须显式透传。
             model_entry["read_files"] = entry["read_files"];
-            for (const char* k : {"hard_rules", "_hard_rule_files", "artifacts", "last_success"})
+            for (const char* k : {"hard_rules", "_hard_rule_files", "artifacts", "last_success",
+                                   "cards", "_cards_render", "_cards_before_memo", "_card_budget_bytes", "_card_bytes_per_token",
+                                   "_read_merge", "_read_page_lines"})
                 if (entry.contains(k))
                     model_entry[k] = entry[k];
             // original_goal_raw/confidence 权威兜底，从 entry 显式透传，不允许模型层输出覆盖。
@@ -831,11 +1470,26 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
     res.confidence = entry.value("confidence", 0.0);
     res.refresh_count = entry.value("refresh_count", (size_t)0);
     res.pages_total = (entry.contains("pages") && entry["pages"].is_array()) ? entry["pages"].size() : 0;
+    res.card_bytes = CardBytesOf(entry);
+    res.card_stable = cards_stable;
     res.compact_render = RenderCompact(entry);
     return res;
 }
 
 // ── Render / RenderCompact ────────────────────────────────────────────────────
+
+std::string TaskMemoBuilder::RenderCards(const json& entry)
+{
+    if (!entry.is_object() || !entry.value("_cards_render", false) || !entry.contains("cards")
+            || !entry["cards"].is_array())
+        return "";
+    std::string out;
+    for (const auto& c : entry["cards"]) {
+        if (c.is_object() && c.contains("text") && c["text"].is_string())
+            out += c["text"].get<std::string>();
+    }
+    return out;
+}
 
 std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
 {
@@ -912,12 +1566,63 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         std::ostringstream oss;
         oss << "Files already read whose content has left the context (summary only; re-read a "
                "file only if you need details not in its summary, preferably a specific line range):\n";
-        for (auto it = entry["read_files"].begin(); it != entry["read_files"].end(); ++it) {
-            oss << "- " << it.key() << ": "
-                << (it.value().is_string() ? it.value().get<std::string>() : it.value().dump()) << "\n";
+        if (entry.value("_read_merge", false)) {
+            std::vector<std::string> order;
+            std::unordered_map<std::string, std::vector<std::pair<long long, std::string>>> spans;
+            std::unordered_map<std::string, std::pair<long long, std::string>> first_preview;
+            for (auto it = entry["read_files"].begin(); it != entry["read_files"].end(); ++it) {
+                const std::string key = it.key();
+                const size_t sep = key.rfind('#');
+                const std::string path = (sep == std::string::npos) ? key : key.substr(0, sep);
+                long long begin = 1;
+                if (sep != std::string::npos) {
+                    try {
+                        begin = std::stoll(key.substr(sep + 1));
+                    } catch (...) {
+                        begin = 1;
+                    }
+                }
+                long long end = begin;
+                if (entry.contains("_read_page_lines") && entry["_read_page_lines"].is_object()
+                        && entry["_read_page_lines"].contains(key)
+                        && entry["_read_page_lines"][key].is_number()) {
+                    end = entry["_read_page_lines"][key].get<long long>();
+                }
+                if (end < begin)
+                    end = begin;
+                std::ostringstream span;
+                span << begin << "-" << end;
+                if (spans.find(path) == spans.end())
+                    order.push_back(path);
+                spans[path].emplace_back(begin, span.str());
+                const std::string preview = it.value().is_string() ? it.value().get<std::string>()
+                                                                   : it.value().dump();
+                auto fp = first_preview.find(path);
+                if (fp == first_preview.end() || begin < fp->second.first)
+                    first_preview[path] = { begin, preview };
+            }
+            for (const auto& path : order) {
+                auto& pages = spans[path];
+                std::stable_sort(pages.begin(), pages.end(),
+                                 [](const std::pair<long long, std::string>& a,
+                                    const std::pair<long long, std::string>& b) { return a.first < b.first; });
+                oss << "- " << path << " (lines ";
+                for (size_t i = 0; i < pages.size(); ++i)
+                    oss << (i ? ", " : "") << pages[i].second;
+                oss << "): " << first_preview[path].second << "\n";
+            }
+        } else {
+            for (auto it = entry["read_files"].begin(); it != entry["read_files"].end(); ++it) {
+                oss << "- " << it.key() << ": "
+                    << (it.value().is_string() ? it.value().get<std::string>() : it.value().dump()) << "\n";
+            }
         }
         read_files_block = oss.str();
     }
+
+    std::string cards_block;
+    if (!entry.value("_cards_before_memo", false))
+        cards_block = RenderCards(entry);
 
     std::string last_success_block;
     if (entry.contains("last_success") && entry["last_success"].is_object() && !entry["last_success"].empty()) {
@@ -948,6 +1653,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     // 由高到低优先级排列；预算不足时跳过放不下的块，不做块内截断。
     const std::string blocks[] = {
         render_list("Rules from documents you read (still in force)", "hard_rules"),
+        cards_block,
         render_list("Artifacts already produced (confirmed by tool output; do not redo these steps)", "artifacts"),
         last_success_block,
         render_list("Completed", "completed"),
@@ -959,8 +1665,13 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         page_directory_block,
     };
     static const char* kBlockNames[] = {
-        "hard_rules", "artifacts", "last_success", "completed", "next_actions", "facts_constraints", "open_questions",
-        "read_files", "tool_state", "page_directory",
+        "hard_rules", "cards", "artifacts", "last_success", "completed", "next_actions", "facts_constraints",
+        "open_questions", "read_files", "tool_state", "page_directory",
+    };
+    const bool merged_reads = entry.value("_read_merge", false);
+    const bool kBlockLineTruncatable[] = {
+        false, false, false, false, false, false, false,
+        false, merged_reads, false, false,
     };
 
     std::string out = header;
@@ -975,10 +1686,37 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     }
     size_t block_index = 0;
     for (const auto& block : blocks) {
-        const char* block_name = kBlockNames[block_index++];
+        const size_t slot = block_index++;
+        const char* block_name = kBlockNames[slot];
         if (block.empty())
             continue;
         if (max_chars > 0 && out.size() + block.size() > max_chars) {
+            std::string kept;
+            if (kBlockLineTruncatable[slot]) {
+                const size_t remaining = max_chars - out.size();
+                const size_t head_end = block.find('\n');
+                size_t take = 0;
+                size_t pos = 0;
+                while (true) {
+                    const size_t nl = block.find('\n', pos);
+                    if (nl == std::string::npos || nl + 1 > remaining)
+                        break;
+                    take = nl + 1;
+                    pos = nl + 1;
+                }
+                if (head_end != std::string::npos && take > head_end + 1)
+                    kept = block.substr(0, take);
+            }
+            if (!kept.empty()) {
+                My_Log{My_Log::Level::kWarning}
+                    << "[TaskMemo] Render block truncated: name=" << block_name
+                    << ", block_chars=" << block.size()
+                    << ", kept_chars=" << kept.size()
+                    << ", used_chars=" << out.size()
+                    << ", max_chars=" << max_chars << std::endl;
+                out += kept;
+                continue;
+            }
             My_Log{My_Log::Level::kWarning}
                 << "[TaskMemo] Render block skipped: name=" << block_name
                 << ", block_chars=" << block.size()
