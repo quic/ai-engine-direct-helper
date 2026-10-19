@@ -88,9 +88,6 @@ GgufModelShape ReadGgufModelShape(const std::string &gguf_path)
 }
 
 // K+V 两份、f16（2 字节/元素）：2 * n_layer * ctx * n_head_kv * key_length * 2。
-// n_layer 直接取 GGUF 的 block_count，不识别混合架构（如 qwen35 的 full_attention_interval），
-// 对本项目目前唯一的混合架构模型（Qwen3.8-27B）是明显高估（真实 KV 远小于此），但更简单、
-// 更保守，调研阶段已确认该简化方案依然有效。
 uint64_t EstimateKvCacheBytes(const GgufModelShape &shape, uint64_t context_size)
 {
     if (!shape.ok)
@@ -217,14 +214,35 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
     return result;
 }
 
+std::string FindMainGguf(const std::string &model_dir, const std::string &draft_gguf_path)
+{
+    std::vector<std::string> gguf_files;
+    File::MatchFileInDir(model_dir, ".gguf", &gguf_files);
+    std::error_code ec;
+    std::string main_gguf_path;
+    uint64_t main_size = 0;
+    for (const auto &f: gguf_files)
+    {
+        if (std::filesystem::equivalent(f, draft_gguf_path, ec))
+        {
+            continue;
+        }
+        const uint64_t size = File::get_file_size(f, std::ios::binary);
+        if (size > main_size)
+        {
+            main_size = size;
+            main_gguf_path = f;
+        }
+    }
+    return main_gguf_path;
+}
+
 uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
                                                const std::string &draft_relative_path,
                                                uint64_t context_size)
 {
-    std::vector<std::string> main_gguf_files;
-    File::MatchFileInDir(model_dir, ".gguf", &main_gguf_files);
-    std::string main_gguf_path = main_gguf_files.empty() ? "" : main_gguf_files.front();
     std::string draft_gguf_path = (std::filesystem::path(model_dir) / draft_relative_path).string();
+    std::string main_gguf_path = FindMainGguf(model_dir, draft_gguf_path);
 
     uint64_t total = 0;
     if (!main_gguf_path.empty())
@@ -237,8 +255,8 @@ uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
     }
 
 #ifdef USE_GGUF
-    total += EstimateKvCacheBytes(ReadGgufModelShape(main_gguf_path), context_size);
-    total += EstimateKvCacheBytes(ReadGgufModelShape(draft_gguf_path), context_size);
+    total += EstimateAttentionKvCacheBytes(ReadGgufModelShape(main_gguf_path), context_size);
+    total += EstimateAttentionKvCacheBytes(ReadGgufModelShape(draft_gguf_path), context_size);
 #endif
     total += kSpeculativeMemoryEstimateMarginBytes;
     return total;
@@ -267,13 +285,12 @@ bool SpeculativeFitsFullGpu(const std::string &model_dir, const std::string &dra
                             uint64_t context_size, uint64_t *required_out, uint64_t *available_out)
 {
 #ifdef USE_GGUF
-    std::vector<std::string> main_gguf_files;
-    File::MatchFileInDir(model_dir, ".gguf", &main_gguf_files);
-    if (main_gguf_files.empty())
+    const std::string draft_gguf_path = (std::filesystem::path(model_dir) / draft_relative_path).string();
+    const std::string main_gguf_path = FindMainGguf(model_dir, draft_gguf_path);
+    if (main_gguf_path.empty())
     {
         return false;
     }
-    const std::string draft_gguf_path = (std::filesystem::path(model_dir) / draft_relative_path).string();
 
     ggml_backend_load_all();
     ggml_backend_dev_t gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
@@ -285,12 +302,12 @@ bool SpeculativeFitsFullGpu(const std::string &model_dir, const std::string &dra
     size_t total = 0;
     ggml_backend_dev_memory(gpu, &free, &total);
 
-    uint64_t required = File::get_file_size(main_gguf_files.front(), std::ios::binary);
+    uint64_t required = File::get_file_size(main_gguf_path, std::ios::binary);
     if (File::IsFileExist(draft_gguf_path))
     {
         required += File::get_file_size(draft_gguf_path, std::ios::binary);
     }
-    required += EstimateAttentionKvCacheBytes(ReadGgufModelShape(main_gguf_files.front()), context_size);
+    required += EstimateAttentionKvCacheBytes(ReadGgufModelShape(main_gguf_path), context_size);
     required += EstimateAttentionKvCacheBytes(ReadGgufModelShape(draft_gguf_path), context_size);
     required += kFullGpuComputeReserveBytes;
 
