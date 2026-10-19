@@ -33,6 +33,19 @@ from qai.model_builder.domain import ExportPackCommand
 pytestmark = [pytest.mark.system, pytest.mark.npu, pytest.mark.slow]
 
 WORKDIR = os.environ.get("MB_REAL_WORKDIR")
+_REPO = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(autouse=True)
+def _child_uses_repo_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the exporter's smoke-test child import THIS checkout's ``qai`` package.
+
+    The child is a separate interpreter that inherits only ``PYTHONPATH`` (not the ``sys.path`` edits conftest makes
+    for pytest itself). Without this it imports whatever ``qai`` is installed in site-packages - on a developer
+    machine that can be an older build - so this test would pass or fail on code that is not the code under test.
+    """
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(p for p in (str(_REPO / "src"), str(_REPO), existing) if p))
 
 
 @pytest.mark.skipif(not WORKDIR, reason="MB_REAL_WORKDIR not set")
