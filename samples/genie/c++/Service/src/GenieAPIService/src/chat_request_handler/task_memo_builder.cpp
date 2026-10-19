@@ -124,7 +124,8 @@ namespace {
     constexpr size_t kMaxHardRuleChars = 220;
     constexpr size_t kMaxArtifacts = 8;
     constexpr size_t kMaxArtifactLinesPerResult = 3;
-    constexpr size_t kMaxLastSuccessChars = 900;
+    constexpr size_t kMaxLastSuccessChars = 600;
+    constexpr size_t kMaxLastSuccessArgChars = 240;
 
     std::string FullToolCall(const std::string& assistant_content) {
         std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
@@ -135,7 +136,13 @@ namespace {
         std::string body = visible.substr(tc + 11, end == std::string::npos ? std::string::npos : end - tc - 11);
         try {
             json j = json::parse(body);
-            return j.value("name", "") + " " + (j.contains("arguments") ? j["arguments"].dump() : std::string("{}"));
+            json args = j.contains("arguments") ? j["arguments"] : json::object();
+            if (args.is_object())
+                for (auto& v : args)
+                    if (v.is_string() && v.get<std::string>().size() > kMaxLastSuccessArgChars)
+                        v = safe_utf8_truncate(v.get<std::string>(), kMaxLastSuccessArgChars, "...") +
+                            " [" + std::to_string(v.get<std::string>().size()) + " chars]";
+            return j.value("name", "") + " " + args.dump();
         } catch (...) {
             for (char& c : body)
                 if (c == '\n' || c == '\r') c = ' ';
