@@ -2441,6 +2441,14 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::initializePerformance() {
     // under the same lock to avoid races with concurrent Set/Rel calls.
     {
         std::lock_guard<std::mutex> lock(sg_perf_mutex);
+        // Cache the HTP infrastructure together with the ids, unconditionally: Set/Rel
+        // must not query it later through sg_qnnInterface, which is overwritten by every
+        // model load and points at the CPU/GPU backend once such a model is loaded
+        // (their deviceGetInfrastructure returns QNN_DEVICE_ERROR_UNSUPPORTED_FEATURE).
+        // Invariant: sg_powerConfigIds non-empty => gs_htpInfra != nullptr.
+        if (nullptr == gs_htpInfra) {
+            gs_htpInfra = htpInfra;
+        }
         for (uint32_t cfgId : m_powerConfigIds) {
             sg_powerConfigIds.insert(cfgId);
         }
@@ -2448,10 +2456,6 @@ qnn_app::StatusCode qnn_app::QnnInferenceEngine::initializePerformance() {
             if (boostPerformance(m_perfInfra, sg_perf_profile_value, m_powerConfigIds)) {
                 QNN_INFO("Applied global perf profile '%s' to newly initialized context.\n",
                          sg_perf_profile_value.c_str());
-                // Ensure gs_htpInfra is set so RelPerfProfileGlobal can reset later.
-                if (nullptr == gs_htpInfra) {
-                    gs_htpInfra = htpInfra;
-                }
             }
         }
     }

@@ -476,16 +476,20 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
     // does not apply, and any value is accepted. gs_isGpu/gs_isCpu only describe the LAST
     // loaded model, so also require that no HTP context has published a power-config id;
     // otherwise an HTP model loaded earlier in the same process would be skipped.
-    if (sg_proc_info_map.empty() && (gs_isGpu || gs_isCpu) && getAllPowerConfigIds().empty()) {
-        // Still record a valid intent, so an HTP context loaded later in this process
-        // (or in this Svc child) picks it up on init.
-        if (perf_profile == "burst" || perf_profile == "high_performance") {
-            std::lock_guard<std::mutex> lock(sg_perf_mutex);
-            sg_perf_profile_value = perf_profile;
-            sg_perf_global = true;
+    // Check the ids and record the intent under ONE lock: an HTP context initializing in
+    // between would otherwise miss the intent.
+    if (sg_proc_info_map.empty() && (gs_isGpu || gs_isCpu)) {
+        std::lock_guard<std::mutex> lock(sg_perf_mutex);
+        if (getAllPowerConfigIdsLocked().empty()) {
+            // Still record a valid intent, so an HTP context loaded later in this process
+            // (or in this Svc child) picks it up on init.
+            if (perf_profile == "burst" || perf_profile == "high_performance") {
+                sg_perf_profile_value = perf_profile;
+                sg_perf_global = true;
+            }
+            QNN_DEBUG("Skipping HTP performance profile for GPU/CPU backend");
+            return true;
         }
-        QNN_DEBUG("Skipping HTP performance profile for GPU/CPU backend");
-        return true;
     }
     if (perf_profile != "burst" && perf_profile != "high_performance") {
         QNN_ERR("SetPerfProfileGlobal: invalid perf profile '%s'.\n", perf_profile.c_str());
@@ -525,9 +529,18 @@ bool SetPerfProfileGlobal(const std::string& perf_profile) {
         return ok;  // no in-process HTP context yet (or a GPU/CPU one): applied on its init
     }
     // Non-empty ids mean at least one in-process HTP context exists. Apply to it even if
-    // the most recently loaded model is GPU/CPU (gs_isGpu/gs_isCpu only track the last load).
+    // the most recently loaded model is GPU/CPU (gs_isGpu/gs_isCpu only track the last load),
+    // through the gs_htpInfra cached by initializePerformance together with the ids.
 
     if (nullptr == gs_htpInfra) {
+        // Not expected (initializePerformance caches it before publishing ids). Never query
+        // through sg_qnnInterface when the last loaded model is GPU/CPU: it then points at
+        // that backend, whose deviceGetInfrastructure returns UNSUPPORTED_FEATURE. Keep the
+        // release behaviour instead: the intent is recorded, report success.
+        if (gs_isGpu || gs_isCpu) {
+            QNN_DEBUG("SetPerfProfileGlobal: no cached HTP infrastructure, intent recorded");
+            return ok;
+        }
         QnnDevice_Infrastructure_t deviceInfra = nullptr;
         Qnn_ErrorHandle_t devErr = sg_qnnInterface.deviceGetInfrastructure(&deviceInfra);
 
