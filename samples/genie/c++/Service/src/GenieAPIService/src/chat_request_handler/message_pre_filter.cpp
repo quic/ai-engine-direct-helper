@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <mutex>
 #include <functional>
+#include <limits>
 
 using json = nlohmann::ordered_json;
 
@@ -198,6 +199,256 @@ void StripRawIdx(json& messages)
     for (auto& m : messages) {
         if (m.is_object()) m.erase(kRawIdxKey);
     }
+}
+
+constexpr size_t kResourceValueMaxBytes = 1024;
+constexpr size_t kWritePayloadMinBytes = 24;
+
+json ParseToolCallArgs(const json& tool_call)
+{
+    if (!tool_call.is_object() || !tool_call.contains("function") || !tool_call["function"].is_object())
+        return json();
+    const json& fn = tool_call["function"];
+    if (!fn.contains("arguments")) return json();
+    json a = fn["arguments"];
+    if (a.is_string()) {
+        try { a = json::parse(a.get<std::string>()); } catch (...) { return json(); }
+    }
+    return a.is_object() ? a : json();
+}
+
+bool IsResourceLikeValue(const std::string& v)
+{
+    if (v.empty() || v.size() > kResourceValueMaxBytes) return false;
+    if (v.find_first_of(" \t\r\n") != std::string::npos) return false;
+    return v.find('/') != std::string::npos || v.find('\\') != std::string::npos;
+}
+
+std::string ResourceArgKey(const json& args)
+{
+    if (!args.is_object()) return std::string();
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (!it.value().is_string()) continue;
+        if (IsResourceLikeValue(it.value().get<std::string>())) return it.key();
+    }
+    return std::string();
+}
+
+void ScanStringPayload(const json& v, size_t& max_len, size_t& nonempty)
+{
+    if (v.is_string()) {
+        const size_t n = v.get<std::string>().size();
+        if (n == 0) return;
+        ++nonempty;
+        if (n > max_len) max_len = n;
+        return;
+    }
+    if (!v.is_array() && !v.is_object()) return;
+    for (auto it = v.begin(); it != v.end(); ++it) ScanStringPayload(it.value(), max_len, nonempty);
+}
+
+bool IsWriteLikeArgs(const json& args, const std::string& resource_key)
+{
+    size_t max_len = 0;
+    size_t nonempty = 0;
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (it.key() == resource_key) continue;
+        ScanStringPayload(it.value(), max_len, nonempty);
+    }
+    return max_len >= kWritePayloadMinBytes || nonempty >= 2;
+}
+
+bool IsWriteLikeCall(const json& assistant_msg)
+{
+    if (!assistant_msg.is_object() || !assistant_msg.contains("tool_calls") ||
+        !assistant_msg["tool_calls"].is_array()) return false;
+    for (const auto& tc : assistant_msg["tool_calls"]) {
+        const json args = ParseToolCallArgs(tc);
+        const std::string resource_key = ResourceArgKey(args);
+        if (resource_key.empty()) continue;
+        if (IsWriteLikeArgs(args, resource_key)) return true;
+    }
+    return false;
+}
+
+json PairedToolCall(const json& msgs, size_t tool_idx)
+{
+    const std::string call_id = msgs[tool_idx].value("tool_call_id", std::string());
+    for (size_t j = tool_idx; j-- > 0;) {
+        if (!msgs[j].is_object()) continue;
+        const std::string role = msgs[j].value("role", std::string());
+        if (role == "tool") continue;
+        if (role != "assistant" || !msgs[j].contains("tool_calls") || !msgs[j]["tool_calls"].is_array())
+            return json();
+        for (const auto& tc : msgs[j]["tool_calls"]) {
+            if (!tc.is_object()) continue;
+            if (!call_id.empty() && tc.value("id", std::string()) != call_id) continue;
+            return tc;
+        }
+        return json();
+    }
+    return json();
+}
+
+std::string ResourceKeyOfToolResult(const json& msgs, size_t tool_idx)
+{
+    const json args = ParseToolCallArgs(PairedToolCall(msgs, tool_idx));
+    const std::string resource_key = ResourceArgKey(args);
+    if (resource_key.empty() || IsWriteLikeArgs(args, resource_key)) return std::string();
+    return args.at(resource_key).get<std::string>();
+}
+
+long long ArgsInt(const json& args, const char* key, long long fallback)
+{
+    if (!args.is_object() || !args.contains(key)) return fallback;
+    const json& v = args.at(key);
+    if (v.is_number_integer()) return v.get<long long>();
+    if (v.is_number_float()) return static_cast<long long>(v.get<double>());
+    if (v.is_string()) {
+        try { return std::stoll(v.get<std::string>()); } catch (...) { return fallback; }
+    }
+    return fallback;
+}
+
+void ReadSpanOfArgs(const json& args, long long& span_begin, long long& span_end)
+{
+    span_begin = std::max<long long>(1, ArgsInt(args, "offset", ArgsInt(args, "start_line", 1)));
+    span_end = std::numeric_limits<long long>::max();
+    const long long limit = ArgsInt(args, "limit", -1);
+    const long long end_line = ArgsInt(args, "end_line", -1);
+    if (limit > 0) span_end = span_begin + limit - 1;
+    else if (end_line >= span_begin) span_end = end_line;
+}
+
+bool HasErrorSignal(const std::string& content)
+{
+    size_t pos = 0;
+    while (pos <= content.size()) {
+        size_t nl = content.find('\n', pos);
+        if (nl == std::string::npos) nl = content.size();
+        if (IsErrorLine(content.substr(pos, nl - pos))) return true;
+        if (nl >= content.size()) break;
+        pos = nl + 1;
+    }
+    return false;
+}
+
+size_t MessagePayloadBytes(const json& m)
+{
+    size_t n = 0;
+    if (m.contains("content") && m["content"].is_string()) n += m["content"].get<std::string>().size();
+    if (m.contains("tool_calls") && !m["tool_calls"].is_null()) n += m["tool_calls"].dump().size();
+    return n;
+}
+
+size_t PruneSupersededReads(const json& msgs, size_t confirmation_max_bytes,
+                            const std::unordered_set<size_t>& protected_raw,
+                            std::unordered_set<size_t>& dropped_raw_idx, size_t& bytes_freed,
+                            json& pruned)
+{
+    struct ToolBlock {
+        size_t assistant_pos = 0;
+        std::vector<size_t> tool_pos;
+    };
+    std::vector<ToolBlock> blocks;
+    for (size_t i = 0; i < msgs.size(); ++i) {
+        if (!msgs[i].is_object() || msgs[i].value("role", std::string()) != "assistant") continue;
+        if (!msgs[i].contains("tool_calls") || !msgs[i]["tool_calls"].is_array() ||
+            msgs[i]["tool_calls"].empty()) continue;
+        ToolBlock b;
+        b.assistant_pos = i;
+        size_t k = i + 1;
+        while (k < msgs.size() && msgs[k].is_object() && msgs[k].value("role", std::string()) == "tool") {
+            b.tool_pos.push_back(k);
+            ++k;
+        }
+        if (!b.tool_pos.empty()) blocks.push_back(std::move(b));
+        i = k - 1;
+    }
+    if (blocks.empty()) return 0;
+
+    size_t last_assistant_pos = std::string::npos;
+    for (size_t i = msgs.size(); i-- > 0;) {
+        if (msgs[i].is_object() && msgs[i].value("role", std::string()) == "assistant") {
+            last_assistant_pos = i;
+            break;
+        }
+    }
+
+    struct SeenSpan {
+        long long begin = 1;
+        long long end = 0;
+        size_t slot = 0;
+    };
+    std::unordered_map<std::string, std::vector<SeenSpan>> seen;
+    std::vector<bool> slot_superseded;
+    std::vector<std::vector<size_t>> block_slots(blocks.size());
+    std::vector<bool> eligible(blocks.size(), false);
+    std::vector<bool> confirmation(blocks.size(), false);
+
+    for (size_t bi = 0; bi < blocks.size(); ++bi) {
+        const ToolBlock& b = blocks[bi];
+        bool all_read = true;
+        bool all_small_ok = true;
+        for (size_t p : b.tool_pos) {
+            const std::string resource = ResourceKeyOfToolResult(msgs, p);
+            if (resource.empty()) {
+                all_read = false;
+                break;
+            }
+            long long span_begin = 1;
+            long long span_end = 0;
+            ReadSpanOfArgs(ParseToolCallArgs(PairedToolCall(msgs, p)), span_begin, span_end);
+            const size_t slot = slot_superseded.size();
+            slot_superseded.push_back(false);
+            block_slots[bi].push_back(slot);
+            auto& history = seen[resource];
+            for (const auto& e : history) {
+                if (span_begin <= e.begin && span_end >= e.end) slot_superseded[e.slot] = true;
+            }
+            history.push_back(SeenSpan{span_begin, span_end, slot});
+            const std::string content = msgs[p].value("content", std::string());
+            if (content.size() > confirmation_max_bytes || HasErrorSignal(content)) all_small_ok = false;
+        }
+        if (!all_read) continue;
+        if (last_assistant_pos == std::string::npos || b.tool_pos.back() >= last_assistant_pos) continue;
+        if (IsWriteLikeCall(msgs[b.assistant_pos])) continue;
+        bool guarded = false;
+        auto check_raw = [&](size_t pos) {
+            if (!msgs[pos].contains(kRawIdxKey)) { guarded = true; return; }
+            if (protected_raw.count(msgs[pos][kRawIdxKey].get<size_t>())) guarded = true;
+        };
+        check_raw(b.assistant_pos);
+        for (size_t p : b.tool_pos) check_raw(p);
+        if (guarded) continue;
+        eligible[bi] = true;
+        confirmation[bi] = (confirmation_max_bytes > 0 && all_small_ok);
+    }
+
+    std::unordered_set<size_t> erase_pos;
+    for (size_t bi = 0; bi < blocks.size(); ++bi) {
+        if (!eligible[bi]) continue;
+        bool all_superseded = !block_slots[bi].empty();
+        for (size_t s : block_slots[bi]) {
+            if (!slot_superseded[s]) { all_superseded = false; break; }
+        }
+        if (!all_superseded && !confirmation[bi]) continue;
+        erase_pos.insert(blocks[bi].assistant_pos);
+        for (size_t p : blocks[bi].tool_pos) erase_pos.insert(p);
+    }
+    if (erase_pos.empty()) return 0;
+
+    json kept = json::array();
+    for (size_t i = 0; i < msgs.size(); ++i) {
+        if (erase_pos.count(i)) {
+            bytes_freed += MessagePayloadBytes(msgs[i]);
+            dropped_raw_idx.insert(msgs[i][kRawIdxKey].get<size_t>());
+            continue;
+        }
+        kept.push_back(msgs[i]);
+    }
+    pruned = std::move(kept);
+    return erase_pos.size();
 }
 
 const char kRepeatStubPrefix[] = "[Note: this ";
@@ -2749,6 +3000,78 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         const size_t floor_tokens = static_cast<size_t>(static_cast<float>(available_tokens) * kEvictionLowWaterFloorRatio);
         const size_t adaptive = evict_high_water > reserve ? evict_high_water - reserve : 0;
         evict_low_water = std::max(floor_tokens, std::min(evict_low_water, adaptive));
+    }
+    const auto& sediment_cfg = cfg.task_memo.sediment;
+    if (sediment_cfg.enabled) {
+        const double sediment_bytes_per_token = EstimateCjkAwareBytesPerToken(
+            BLANK_STRING, fidelity_cfg.cjk_bytes_per_token, fidelity_cfg.ascii_bytes_per_token);
+        My_Log{My_Log::Level::kInfo}
+            << "[PreFilter] Sediment budgets: context_budget=" << contextSize
+            << " tok, bytes_per_token=" << sediment_bytes_per_token
+            << ", card=" << ResolveSedimentBudget(sediment_cfg.card.max_ratio,
+                                                  sediment_cfg.card.max_bytes,
+                                                  contextSize, sediment_bytes_per_token)
+            << " B, card_trigger=" << ResolveSedimentThreshold(sediment_cfg.card.trigger_result_ratio,
+                                                              contextSize, sediment_bytes_per_token)
+            << " B, registry=" << ResolveSedimentBudget(sediment_cfg.registry.max_ratio,
+                                                        sediment_cfg.registry.max_bytes,
+                                                        contextSize, sediment_bytes_per_token)
+            << " B, volatile_notes=" << ResolveSedimentBudget(sediment_cfg.volatile_notes.max_ratio,
+                                                              sediment_cfg.volatile_notes.max_tokens,
+                                                              contextSize)
+            << " tok, confirmation_max=" << sediment_cfg.confirmation_result_max_bytes << " B" << std::endl;
+    }
+    if (sediment_cfg.enabled && sediment_cfg.prune_superseded &&
+        (!budget_satisfied || compress_current_tokens > evict_high_water) && !evict_key.empty()) {
+        std::unordered_set<size_t> prune_protected = repeat_protected_raw_;
+        prune_protected.insert(repeat_must_keep_raw_.begin(), repeat_must_keep_raw_.end());
+        std::unordered_set<size_t> pruned_raw;
+        size_t bytes_freed = 0;
+        json prune_candidate;
+        const size_t pruned = PruneSupersededReads(filtered_msg, sediment_cfg.confirmation_result_max_bytes,
+                                                   prune_protected, pruned_raw, bytes_freed, prune_candidate);
+        if (pruned > 0) {
+            const size_t tokens_after_prune = calc_msg_tokens(prune_candidate);
+            const size_t freed_tokens = compress_current_tokens > tokens_after_prune
+                                        ? compress_current_tokens - tokens_after_prune : 0;
+            json head_before = json::array();
+            for (const auto& m : filtered_msg) {
+                if (m.is_object() && m.contains(kRawIdxKey) &&
+                    pruned_raw.count(m[kRawIdxKey].get<size_t>())) break;
+                head_before.push_back(m);
+            }
+            const size_t head_tokens = calc_msg_tokens(head_before);
+            const size_t invalidated_tokens = compress_current_tokens > head_tokens
+                                              ? compress_current_tokens - head_tokens : 0;
+            const size_t min_freed_tokens = ResolveSedimentThreshold(sediment_cfg.prune_min_freed_ratio,
+                                                                     contextSize);
+            const size_t min_net_gain_tokens = static_cast<size_t>(
+                static_cast<double>(invalidated_tokens) * sediment_cfg.prune_min_net_gain_ratio);
+            const char* prune_skip = nullptr;
+            if (freed_tokens < min_freed_tokens) prune_skip = "below_min_freed";
+            else if (freed_tokens < min_net_gain_tokens) prune_skip = "below_min_net_gain";
+            if (prune_skip == nullptr) {
+                My_Log{My_Log::Level::kInfo} << "[PreFilter] Superseded prune: dropped=" << pruned
+                                              << " bytes_freed=" << bytes_freed
+                                              << " tokens=" << freed_tokens
+                                              << " invalidated=" << invalidated_tokens
+                                              << " min_freed=" << min_freed_tokens
+                                              << " min_net_gain=" << min_net_gain_tokens << std::endl;
+                prefilter_stats_.pruned_superseded_count += pruned_raw.size();
+                filtered_msg = std::move(prune_candidate);
+                compress_current_tokens = tokens_after_prune;
+                budget_satisfied = (compress_current_tokens <= available_tokens);
+                current_prot_idx = compute_protection_indices(filtered_msg);
+            } else {
+                My_Log{My_Log::Level::kInfo} << "[PreFilter] Superseded prune: skipped=" << prune_skip
+                                              << " candidates=" << pruned
+                                              << " bytes_freed=" << bytes_freed
+                                              << " tokens=" << freed_tokens
+                                              << " invalidated=" << invalidated_tokens
+                                              << " min_freed=" << min_freed_tokens
+                                              << " min_net_gain=" << min_net_gain_tokens << std::endl;
+            }
+        }
     }
     if ((!budget_satisfied || compress_current_tokens > evict_high_water) && !evict_key.empty()) {
         const MessageCategoryStats stats_before = prefilter_stats_;

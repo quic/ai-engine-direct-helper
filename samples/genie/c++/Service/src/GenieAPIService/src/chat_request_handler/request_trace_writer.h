@@ -25,6 +25,7 @@
 
 #include "prompt_ledger.h"
 #include "../model/model_config.h"
+#include "task_memo_builder.h"
 
 using json = nlohmann::ordered_json;
 
@@ -357,7 +358,12 @@ public:
         j["read_sources"] = std::move(read_sources);
         j["reread_class"] = std::move(reread);
 
-        std::string &prev = prev_prompt_[rec.model_name];
+        std::string session_bucket = rec.model_name;
+        if (body.is_object() && body.contains("messages"))
+        {
+            session_bucket += "|" + TaskMemoBuilder::ComputeFirstMsgKey(body.at("messages"));
+        }
+        std::string &prev = prev_prompt_[session_bucket];
         size_t lcp_tokens = 0, recomputed_tokens = 0;
         if (rec.token_length)
         {
@@ -374,7 +380,8 @@ public:
         j["card_stable"] = false;
         j["registry_bytes"] = 0;
         j["l2_tokens"] = 0;
-        j["pruned_superseded_count"] = 0;
+        j["pruned_superseded_count"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("pruned_superseded_count"))
+            ? rec.prompt_ledger.at("pruned_superseded_count") : json(0);
 
         const json &m = rec.backend_metrics;
         auto field = [&m](const char *key) -> json {

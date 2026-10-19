@@ -11,6 +11,7 @@
 
 #include "def.h"
 #include <nlohmann/json.hpp>
+#include <limits>
 #include <mutex>
 #include <memory>
 
@@ -777,24 +778,30 @@ struct PromptOptimizationConfig {
             std::string mode = "hybrid";
             std::string placement = "before_memo";
             bool shadow_only = true;
+            double max_ratio = 0.02;
             size_t max_bytes = 1200;
+            double trigger_result_ratio = 0.05;
             double min_compression_ratio = 0.10;
             bool verbatim_commands = true;
         };
 
         struct SedimentRegistryConfig {
             bool enabled = false;
+            double max_ratio = 0.015;
             size_t max_bytes = 800;
             size_t command_tail_lines = 2;
         };
 
         struct SedimentVolatileNotesConfig {
+            double max_ratio = 0.004;
             size_t max_tokens = 64;
         };
 
         struct SedimentConfig {
             bool enabled = false;
             bool prune_superseded = false;
+            double prune_min_freed_ratio = 0.05;
+            double prune_min_net_gain_ratio = 1.0;
             size_t confirmation_result_max_bytes = 200;
             bool merge_paged_reads = false;
             size_t stall_rounds = 3;
@@ -807,6 +814,31 @@ struct PromptOptimizationConfig {
         TaskMemoStoreConfig store;
     } task_memo;
 };
+
+inline size_t ResolveSedimentBudget(double ratio, size_t absolute_cap,
+                                   size_t context_budget_tokens,
+                                   double bytes_per_token = 1.0)
+{
+    if (ratio <= 0.0 || context_budget_tokens == 0 || bytes_per_token <= 0.0) {
+        return 0;
+    }
+    const double scaled = ratio * static_cast<double>(context_budget_tokens) * bytes_per_token;
+    if (scaled < 1.0) {
+        return 0;
+    }
+    const size_t from_ratio = static_cast<size_t>(scaled);
+    if (absolute_cap == 0) {
+        return from_ratio;
+    }
+    return (from_ratio < absolute_cap) ? from_ratio : absolute_cap;
+}
+
+inline size_t ResolveSedimentThreshold(double ratio, size_t context_budget_tokens,
+                                      double bytes_per_token = 1.0)
+{
+    const size_t resolved = ResolveSedimentBudget(ratio, 0, context_budget_tokens, bytes_per_token);
+    return resolved > 0 ? resolved : std::numeric_limits<size_t>::max();
+}
 
 // ============================================================
 // Skill 映射配置
