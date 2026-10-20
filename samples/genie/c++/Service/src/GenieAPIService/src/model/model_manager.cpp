@@ -1486,66 +1486,18 @@ bool ModelManager::InitializeConfig()
                         {
                             const auto &sd = tm["sediment"];
                             auto &sed_cfg = memo_cfg.sediment;
-                            sed_cfg.enabled = sd.value("enabled", false);
                             sed_cfg.prune_superseded = sd.value("prune_superseded", false);
                             sed_cfg.prune_min_freed_ratio = sd.value("prune_min_freed_ratio", 0.05);
                             sed_cfg.prune_min_net_gain_ratio = sd.value("prune_min_net_gain_ratio", 1.0);
                             sed_cfg.confirmation_result_max_bytes =
                                     sd.value("confirmation_result_max_bytes", (size_t) 200);
-                            sed_cfg.merge_paged_reads = sd.value("merge_paged_reads", false);
-                            sed_cfg.stall_rounds = sd.value("stall_rounds", (size_t) 3);
-
-                            if (sd.contains("card") && sd["card"].is_object())
-                            {
-                                const auto &cd = sd["card"];
-                                sed_cfg.card.mode = cd.value("mode", std::string("index_only"));
-                                sed_cfg.card.placement = cd.value("placement", std::string("before_memo"));
-                                sed_cfg.card.shadow_only = cd.value("shadow_only", false);
-                                sed_cfg.card.max_ratio = cd.value("max_ratio", 0.02);
-                                sed_cfg.card.max_bytes = cd.value("max_bytes", (size_t) 1200);
-                                sed_cfg.card.trigger_result_ratio = cd.value("trigger_result_ratio", 0.05);
-                                sed_cfg.card.min_compression_ratio = cd.value("min_compression_ratio", 0.10);
-                                sed_cfg.card.verbatim_commands = cd.value("verbatim_commands", true);
-                            }
-
-                            if (sd.contains("registry") && sd["registry"].is_object())
-                            {
-                                const auto &rg = sd["registry"];
-                                sed_cfg.registry.enabled = rg.value("enabled", false);
-                                sed_cfg.registry.max_ratio = rg.value("max_ratio", 0.015);
-                                sed_cfg.registry.max_bytes = rg.value("max_bytes", (size_t) 800);
-                                sed_cfg.registry.command_tail_lines = rg.value("command_tail_lines", (size_t) 2);
-                            }
-
-                            if (sd.contains("volatile_notes") && sd["volatile_notes"].is_object())
-                            {
-                                const auto &vn = sd["volatile_notes"];
-                                sed_cfg.volatile_notes.max_ratio = vn.value("max_ratio", 0.004);
-                                sed_cfg.volatile_notes.max_tokens = vn.value("max_tokens", (size_t) 64);
-                            }
 
                             My_Log{My_Log::Level::kInfo}
-                                    << "[TaskMemo] Sediment config loaded: enabled=" << sed_cfg.enabled
-                                    << ", prune_superseded=" << sed_cfg.prune_superseded
+                                    << "[TaskMemo] Sediment config loaded: prune_superseded="
+                                    << sed_cfg.prune_superseded
                                     << ", prune_min_freed_ratio=" << sed_cfg.prune_min_freed_ratio
                                     << ", prune_min_net_gain_ratio=" << sed_cfg.prune_min_net_gain_ratio
                                     << ", confirmation_result_max_bytes=" << sed_cfg.confirmation_result_max_bytes
-                                    << ", merge_paged_reads=" << sed_cfg.merge_paged_reads
-                                    << ", stall_rounds=" << sed_cfg.stall_rounds
-                                    << ", card.mode=" << sed_cfg.card.mode
-                                    << ", card.placement=" << sed_cfg.card.placement
-                                    << ", card.shadow_only=" << sed_cfg.card.shadow_only
-                                    << ", card.max_ratio=" << sed_cfg.card.max_ratio
-                                    << ", card.max_bytes=" << sed_cfg.card.max_bytes
-                                    << ", card.trigger_result_ratio=" << sed_cfg.card.trigger_result_ratio
-                                    << ", card.min_compression_ratio=" << sed_cfg.card.min_compression_ratio
-                                    << ", card.verbatim_commands=" << sed_cfg.card.verbatim_commands
-                                    << ", registry.enabled=" << sed_cfg.registry.enabled
-                                    << ", registry.max_ratio=" << sed_cfg.registry.max_ratio
-                                    << ", registry.max_bytes=" << sed_cfg.registry.max_bytes
-                                    << ", registry.command_tail_lines=" << sed_cfg.registry.command_tail_lines
-                                    << ", volatile_notes.max_ratio=" << sed_cfg.volatile_notes.max_ratio
-                                    << ", volatile_notes.max_tokens=" << sed_cfg.volatile_notes.max_tokens
                                     << std::endl;
                         }
 

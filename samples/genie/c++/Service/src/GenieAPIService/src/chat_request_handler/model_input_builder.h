@@ -520,7 +520,9 @@ private:
         }
 
         if (!chat_history_.IsEmpty()) {
-            std::string memo_notes = BuildTaskMemoNotes();
+            size_t l2_tokens = 0;
+            std::string memo_notes = BuildTaskMemoNotes(&l2_tokens);
+            optimized.memo_l2_tokens = l2_tokens;
             if (!memo_notes.empty()) {
                 chat_history_.PrependToLastMessage(memo_notes);
             }
@@ -747,9 +749,8 @@ private:
                 last_ledger_.memo_confidence = optimized.memo_confidence;
                 last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
                 last_ledger_.memo_pages_total = optimized.memo_pages_total;
-                last_ledger_.memo_card_bytes = optimized.memo_card_bytes;
-                last_ledger_.memo_card_stable = optimized.memo_card_stable;
                 last_ledger_.memo_registry_bytes = optimized.memo_registry_bytes;
+                last_ledger_.memo_l2_tokens = optimized.memo_l2_tokens;
                 last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
                 last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
                 last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -1742,9 +1743,8 @@ private:
             last_ledger_.memo_confidence = optimized.memo_confidence;
             last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
             last_ledger_.memo_pages_total = optimized.memo_pages_total;
-            last_ledger_.memo_card_bytes = optimized.memo_card_bytes;
-            last_ledger_.memo_card_stable = optimized.memo_card_stable;
             last_ledger_.memo_registry_bytes = optimized.memo_registry_bytes;
+            last_ledger_.memo_l2_tokens = optimized.memo_l2_tokens;
             last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
             last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
             last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -2027,9 +2027,7 @@ private:
         }
 
         std::string rendered = TaskMemoBuilder::Render(*memo_entry);
-        const std::string cards = memo_entry->value("_cards_before_memo", false)
-            ? TaskMemoBuilder::RenderCards(*memo_entry) : std::string();
-        if (rendered.empty() && cards.empty()) {
+        if (rendered.empty()) {
             std::string standalone = BuildStandaloneRedundantToolCallNote();
             return !standalone.empty() ? standalone + consecutive_failure_note
                                         : (consecutive_failure_note.empty() ? "" : consecutive_failure_note);
@@ -2046,7 +2044,7 @@ private:
                 rendered = TaskMemoBuilder::Render(*memo_entry, budget_bytes);
             }
         }
-        return "\n\n" + cards + (cards.empty() || rendered.empty() ? "" : "\n") + rendered + consecutive_failure_note;
+        return "\n\n" + rendered + consecutive_failure_note;
     }
 
     std::string BuildTaskMemoBody() const
@@ -2057,9 +2055,7 @@ private:
         if (!memo_entry)
             return "";
         std::string rendered = TaskMemoBuilder::Render(*memo_entry);
-        const std::string cards = memo_entry->value("_cards_before_memo", false)
-            ? TaskMemoBuilder::RenderCards(*memo_entry) : std::string();
-        if (rendered.empty() && cards.empty())
+        if (rendered.empty())
             return "";
         const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
         double ratio = po_cfg.task_memo.token_budget_ratio;
@@ -2072,16 +2068,39 @@ private:
                 rendered = TaskMemoBuilder::Render(*memo_entry, budget_bytes);
             }
         }
-        if (!cards.empty()) {
-            My_Log{My_Log::Level::kDebug} << "[TaskMemo] Cards injected before memo: card_bytes=" << cards.size()
-                                          << ", memo_bytes=" << rendered.size() << std::endl;
-        }
-        return "\n\n" + cards + (cards.empty() || rendered.empty() ? "" : "\n") + rendered;
+        return "\n\n" + rendered;
     }
 
-    std::string BuildTaskMemoNotes() const
+    std::string BuildTaskMemoNotes(size_t* l2_tokens_out = nullptr) const
     {
-        return BuildStandaloneRedundantToolCallNote() + BuildConsecutiveToolFailureNote();
+        const std::string legacy = BuildStandaloneRedundantToolCallNote() + BuildConsecutiveToolFailureNote();
+        if (!request_data_.is_object() || !request_data_.contains("messages") || !request_data_["messages"].is_array())
+            return legacy;
+
+        constexpr double kVolatileNotesMaxRatio = 0.004;
+        constexpr size_t kVolatileNotesMaxTokens = 64;
+        constexpr size_t kVolatileNotesStallRounds = 3;
+        const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
+        const size_t max_tokens = ResolveSedimentBudget(kVolatileNotesMaxRatio, kVolatileNotesMaxTokens,
+                                                        instance_config_->get_context_size(), 1.0);
+        if (max_tokens == 0)
+            return legacy;
+        const double bytes_per_token = po_cfg.fidelity.ascii_bytes_per_token > 0.0
+            ? po_cfg.fidelity.ascii_bytes_per_token : 1.0;
+        const size_t max_bytes = static_cast<size_t>(max_tokens * bytes_per_token);
+
+        auto memo_entry = task_memo_builder_.Lookup(request_data_["messages"]);
+        const std::string notes = TaskMemoBuilder::RenderVolatileNotes(
+            request_data_["messages"], memo_entry ? &(*memo_entry) : nullptr,
+            kVolatileNotesStallRounds, max_bytes);
+        if (notes.empty())
+            return legacy;
+        if (l2_tokens_out)
+            *l2_tokens_out = context_ ? context_->TokenLength(notes) : 0;
+        My_Log{My_Log::Level::kInfo} << "[TaskMemo] Volatile notes: bytes=" << notes.size()
+                                      << ", budget_bytes=" << max_bytes
+                                      << ", max_tokens=" << max_tokens << std::endl;
+        return legacy + "\n" + notes;
     }
 
     // ========== 辅助函数：调用 FitMessagesToContext 并统一处理错误和日志 ==========

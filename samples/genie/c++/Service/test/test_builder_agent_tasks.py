@@ -1235,7 +1235,7 @@ def run_xp_notepad_task(builder, model_name, results, round_num=1,
     gave_up_while_busy = False
     aborted_reason = None
     info = _check_xp_notepad_artifacts(work_dir, task_started)
-    log_probe = _ServiceLogTail(builder.csrf)
+    log_probe = _ServiceLogTail(builder.csrf, transcript_path=transcript_path, transcript=transcript)
     log_probe.start()
     empty_streak = 0
 
@@ -1319,11 +1319,7 @@ def run_xp_notepad_task(builder, model_name, results, round_num=1,
             extra = "\n\n目录里还没有本次编译出的单个 .exe，请先成功编译。"
         prompt = _XP_NOTEPAD_FOLLOWUP_PROMPT_TEMPLATE.format(work_dir=work_dir) + extra
 
-    service_log_text = log_probe.stop()
-    if transcript_path:
-        service_log_path = Path(transcript_path).with_suffix(".genie_service.log")
-        service_log_path.write_text(service_log_text, encoding="utf-8")
-        transcript.append(f"[service_log] {len(service_log_text)} chars -> {service_log_path}")
+    service_log_text = log_probe.persist()
     token_rate_stats = _summarize_token_generation_rates(service_log_text)
     transcript.append(f"[token_generation_rate] {token_rate_stats}")
     elapsed = time.time() - task_started
@@ -1493,16 +1489,27 @@ class _ServiceLogTail:
     """全程持续消费 Builder `GET /api/service/logs` SSE（GenieAPIService stdout），断线即按已收行数重连。
 
     这是任务结束时统计 token 生成速度（见 _summarize_token_generation_rates()）与
-    持久化完整后端日志（见调用方把 stop() 的返回值写入 <transcript_path>.genie_service.log）
+    持久化完整后端日志（见 persist()，落盘到 <transcript_path>.genie_service.log）
     的唯一数据来源，不是调试旁路——R7/R8 两轮诊断（见 docstring 顶部的
     run_inception_precision_compare_task 任务）已经靠这份落盘的 .genie_service.log
-    还原出子代理真实的工具调用序列，证明该机制稳定可用。"""
+    还原出子代理真实的工具调用序列，证明该机制稳定可用。
 
-    def __init__(self, csrf_session):
+    persist() 必须幂等且可被任意路径调用：长链路任务被 Ctrl-C/超时/异常中断时，
+    若只在正常结束处落盘，这一轮的服务日志（含 `--- Token Summary ---`）就彻底
+    拿不到，PP/TG 基线随之缺失。故 start() 会把自己登记进 _active，由 main() 的
+    finally 调 persist_all() 兜底。"""
+
+    _active = []
+
+    def __init__(self, csrf_session, transcript_path=None, transcript=None):
         self.csrf = csrf_session
         self.lines = []
+        self.transcript_path = transcript_path
+        self.transcript = transcript if transcript is not None else []
         self._stop = threading.Event()
         self._thread = None
+        self._persisted = False
+        self._text = ""
 
     def _worker(self):
         while not self._stop.is_set():
@@ -1528,12 +1535,39 @@ class _ServiceLogTail:
     def start(self):
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
+        if self not in _ServiceLogTail._active:
+            _ServiceLogTail._active.append(self)
 
     def stop(self):
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
         return "\n".join(self.lines)
+
+    def persist(self):
+        if self._persisted:
+            return self._text
+        self._persisted = True
+        self._text = self.stop()
+        if self in _ServiceLogTail._active:
+            _ServiceLogTail._active.remove(self)
+        if self.transcript_path:
+            service_log_path = Path(self.transcript_path).with_suffix(".genie_service.log")
+            try:
+                service_log_path.write_text(self._text, encoding="utf-8")
+                self.transcript.append(f"[service_log] {len(self._text)} chars -> {service_log_path}")
+                print(f"  [STAGE] 服务日志已落盘: {len(self._text)} chars -> {service_log_path}", flush=True)
+            except OSError as exc:
+                self.transcript.append(f"[service_log] 落盘失败: {exc}")
+        return self._text
+
+    @classmethod
+    def persist_all(cls):
+        for probe in list(cls._active):
+            try:
+                probe.persist()
+            except Exception as exc:
+                print(f"  [WARN] 服务日志兜底落盘失败: {exc}", flush=True)
 
 
 def _wait_background_subagents(builder, conversation_id, deadline, poll_seconds=60):
@@ -1635,7 +1669,8 @@ def run_inception_precision_compare_task(builder, model_name, results, round_num
             detail=f"后端未就绪，跳过任务: {ready_err}", crashed=True))
         return False
 
-    log_probe = _ServiceLogTail(builder.csrf)
+    transcript = []
+    log_probe = _ServiceLogTail(builder.csrf, transcript_path=transcript_path, transcript=transcript)
     log_probe.start()
     # per_turn_timeout 省略时必须跟随 total_deadline_seconds，而不是各自独立取
     # 默认值：call_timeout = min(per_turn_timeout, max(30, remaining))，一旦
@@ -1651,7 +1686,6 @@ def run_inception_precision_compare_task(builder, model_name, results, round_num
     prompt = initial_prompt or (_INCEPTION_FP16_ONLY_PROMPT if fp16_only
                                 else _INCEPTION_PRECISION_COMPARE_PROMPT)
     conversation_id = None
-    transcript = []
     real_turns_used = 0
     attempts_used = 0
     gave_up_while_busy = False
@@ -1753,11 +1787,7 @@ def run_inception_precision_compare_task(builder, model_name, results, round_num
                            f"按设计原则不主动追加续问，任务到此为止")
         break
 
-    service_log_text = log_probe.stop()
-    if transcript_path:
-        service_log_path = Path(transcript_path).with_suffix(".genie_service.log")
-        service_log_path.write_text(service_log_text, encoding="utf-8")
-        transcript.append(f"[service_log] {len(service_log_text)} chars -> {service_log_path}")
+    service_log_text = log_probe.persist()
     token_rate_stats = _summarize_token_generation_rates(service_log_text)
     transcript.append(f"[token_generation_rate] {token_rate_stats}")
     _append_transcript_summary(
@@ -1986,6 +2016,7 @@ def main():
     except RuntimeError as e:
         print(f"  ✗ {e}")
     finally:
+        _ServiceLogTail.persist_all()
         violations = snapshot.verify()
         for v in violations:
             all_crash_events.append(CrashEvent(

@@ -376,15 +376,10 @@ public:
         j["lcp_tokens"] = lcp_tokens;
         j["recomputed_tokens"] = recomputed_tokens;
 
-        const json card_bytes = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_card_bytes"))
-            ? rec.prompt_ledger.at("memo_card_bytes") : json(0);
-        const bool has_card = card_bytes.is_number() && card_bytes.get<long long>() > 0;
-        j["card_bytes"] = card_bytes;
-        j["card_stable"] = (has_card && rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_card_stable"))
-            ? rec.prompt_ledger.at("memo_card_stable") : json(nullptr);
         j["registry_bytes"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_registry_bytes"))
             ? rec.prompt_ledger.at("memo_registry_bytes") : json(0);
-        j["l2_tokens"] = 0;
+        j["l2_tokens"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_l2_tokens"))
+            ? rec.prompt_ledger.at("memo_l2_tokens") : json(0);
         j["pruned_superseded_count"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("pruned_superseded_count"))
             ? rec.prompt_ledger.at("pruned_superseded_count") : json(0);
 

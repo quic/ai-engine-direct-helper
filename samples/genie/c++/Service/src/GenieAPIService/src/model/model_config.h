@@ -774,41 +774,11 @@ struct PromptOptimizationConfig {
             size_t max_entries = 20;             // 环形缓冲上限，超出按 FIFO 淘汰最旧条目
         } page_directory;
 
-        struct SedimentCardConfig {
-            std::string mode = "index_only";
-            std::string placement = "before_memo";
-            bool shadow_only = false;
-            double max_ratio = 0.02;
-            size_t max_bytes = 1200;
-            double trigger_result_ratio = 0.05;
-            double min_compression_ratio = 0.10;
-            bool verbatim_commands = true;
-        };
-
-        struct SedimentRegistryConfig {
-            bool enabled = false;
-            double max_ratio = 0.015;
-            size_t max_bytes = 800;
-            size_t command_tail_lines = 2;
-        };
-
-        struct SedimentVolatileNotesConfig {
-            double max_ratio = 0.004;
-            size_t max_tokens = 64;
-        };
-
         struct SedimentConfig {
-            bool enabled = false;
             bool prune_superseded = false;
             double prune_min_freed_ratio = 0.05;
             double prune_min_net_gain_ratio = 1.0;
             size_t confirmation_result_max_bytes = 200;
-            bool merge_paged_reads = false;
-            size_t stall_rounds = 3;
-
-            SedimentCardConfig card;
-            SedimentRegistryConfig registry;
-            SedimentVolatileNotesConfig volatile_notes;
         } sediment;
 
         TaskMemoStoreConfig store;

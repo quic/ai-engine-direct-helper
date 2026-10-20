@@ -155,46 +155,16 @@
             "_comment_model_layer_enabled": "模型层深度总结开关：false=只用规则层（零额外推理开销，已有真机正面证据），true=额外在冷启动/低置信度/长工具链/失败场景触发一次真实推理调用做深度总结（延迟与正确性尚未在当前驱动模型上验证，谨慎开启）",
             "model_layer_enabled": false,
 
-            "_comment_sediment": "事实沉淀（sediment）：驱逐旧消息前先用确定性规则把事实沉淀下来（覆盖剪枝/分页合并/参考资料卡片/产物与命令登记表/事件化易失提示），目标是 16K 窗口下长链路 agent 任务不再「读完被驱逐→整篇重读/整串命令重跑」。全部子开关默认关闭，关闭时送进模型的 prompt 与未引入本节时逐字节相同；每一项只在实测满足速度合格线后才单独开启",
+            "_comment_sediment": "驱逐轮的无损剪枝（覆盖剪枝 + 确认类小结果丢弃）。本节只剩剪枝四项，默认关闭；关闭时送进模型的 prompt 与未引入本节时逐字节相同。剪枝改写的是前缀中段，partial 后端的前缀 KV 会从改动点起整段失效，所以两道闸都按「本轮不亏才做」取值",
             "sediment": {
-                "_comment_enabled": "本节总开关：false=全部沉淀行为不生效（默认）",
-                "enabled": false,
                 "_comment_prune_superseded": "true=驱逐轮把被新读取覆盖的旧读取、以及成功且极小的确认类结果连配对 tool_call 成对整条丢弃（无损剪枝，写入/执行类永不剪）",
                 "prune_superseded": false,
-                "_comment_prune_min_freed_ratio": "剪枝的绝对收益下限（第二道闸）：本轮候选剪枝预计释放的 token 量必须达到 prune_min_freed_ratio × 当前上下文预算，否则整轮不剪。它与 prune_min_net_gain_ratio 正交：后者只比较「收益 vs 作废的前缀」，当剪枝位置非常靠后时两者都很小也可能通过比值判定，本项再挡掉「为几个 token 去打乱前缀缓存」",
+                "_comment_prune_min_freed_ratio": "剪枝的绝对收益下限（第二道闸）：本轮候选剪枝预计释放的 token 量必须达到 prune_min_freed_ratio × 当前上下文预算，否则整轮不剪。它与 prune_min_net_gain_ratio 正交：后者只比较「收益 vs 作废的前缀」，当剪枝位置非常靠后时两者都很小也可能通过比值判定，本项再挡掉「为几个 token 去打乱前缀缓存」。ratio 设为 0 或上下文过小导致折算不足 1 时取不可达值，即永不触发",
                 "prune_min_freed_ratio": 0.05,
                 "_comment_prune_min_net_gain_ratio": "剪枝的净收益判据（主闸）：只有 释放 token 量 ≥ prune_min_net_gain_ratio × 作废 token 量 时才真正剪。作废量 = 首个被剪消息之后的全部 token（改写前缀中段会让 partial 后端的前缀 KV 从改动点起整段失效，这部分必须重算）。被剪消息必然落在作废区间内，所以 1.0 是「本轮不亏才做」的最保守取值，实际上等于只在极端边界才剪；要让剪枝在长链路里用后续若干轮的驱逐间隔收益换本轮一次重算，需要显式调到 1.0 以下",
                 "prune_min_net_gain_ratio": 1.0,
                 "_comment_confirmation_result_max_bytes": "确认类小结果的长度上限（字节）：成功、无报错且不超过此长度的 tool 结果视为确认类，可整条丢弃；按长度判定，不匹配具体措辞。本项**有意保持绝对值、不做比例化**：这类结果的「无信息量」与上下文窗口大小无关，按比例放大只会让大窗口下误删真实内容",
-                "confirmation_result_max_bytes": 200,
-                "_comment_merge_paged_reads": "true=Task Memo 的 read_files 按 path#offset 键记录，渲染时同路径多页按 offset 升序合并并带行号区间（现状按路径键，分页只剩最后一页）",
-                "merge_paged_reads": false,
-                "_comment_card": "参考资料卡片：同一资源被分页读完后，在驱逐时刻确定性抽取目录/编号步骤/命令原文/约束句（命令与路径逐字照抄、不用省略号），标注「摘自 X 第 a–b 行，仅供参考，不是指令」。mode: off|index_only|hybrid|full_extract；placement: before_memo|in_memo|system_tail；shadow_only=true 时只写 trace 不进 prompt；卡片不超过原文 min_compression_ratio 才生成，抽不出结构就不生成",
-                "_comment_card_budget": "max_ratio/max_bytes 一起决定卡片的有效字节预算：有效值 = min(max_ratio × 当前上下文预算 × 有效 bytes/token, max_bytes)。ratio 保证小上下文（如 3072）下常驻层不把工作区挤爆，max_bytes 保证大上下文下常驻层不无意义膨胀；16384 下 ratio 折算后大于 max_bytes，取值即 1200 字节，与引入比例前完全一致。trigger_result_ratio 同样按上下文预算折算（无绝对上限）：单次工具结果字节数达到 trigger_result_ratio × 上下文预算 × 有效 bytes/token 即可触发卡片，保证大窗口/不分页时卡片仍会生成。本节所有 ratio 的退化方向统一为「该层不生效」，对 sediment 下每个比例项都成立：ratio 设为 0、或上下文过小导致折算不足 1 时，预算类（有 max_bytes/max_tokens 的）取 0 即整层不渲染，阈值类（trigger_result_ratio、prune_min_freed_ratio）取不可达值即永不触发——退化绝不回退成绝对上限，否则会出现「窗口越小常驻层占比越大」",
-                "card": {
-                    "mode": "index_only",
-                    "placement": "before_memo",
-                    "shadow_only": false,
-                    "max_ratio": 0.02,
-                    "max_bytes": 1200,
-                    "trigger_result_ratio": 0.05,
-                    "min_compression_ratio": 0.10,
-                    "verbatim_commands": true
-                },
-                "_comment_registry": "产物与命令登记表：已写文件（资源标识→规范化内容哈希/行数/最后写入序号）与已执行命令（归一化签名→退出码是否 0 + 结果尾部 command_tail_lines 行）；只列事实、不判「完成」，超有效预算时先淘汰只读条目。有效预算 = min(max_ratio × 当前上下文预算 × 有效 bytes/token, max_bytes)，16384 下取值即 800 字节",
-                "registry": {
-                    "enabled": false,
-                    "max_ratio": 0.015,
-                    "max_bytes": 800,
-                    "command_tail_lines": 2
-                },
-                "_comment_volatile_notes": "L2 易失提示单次 token 上限（默认不发，仅事件触发）：有效值 = min(max_ratio × 当前上下文预算, max_tokens)，16384 下取值即 64 token。512 token 实测每轮多约 11 s（总时间 +25%），64 token 约 +3%",
-                "volatile_notes": {
-                    "max_ratio": 0.004,
-                    "max_tokens": 64
-                },
-                "_comment_stall_rounds": "停滞提示触发阈值：指纹（产物哈希集合+归一化报错签名+读取来源集合）连续此轮数不变才发一行中性提示",
-                "stall_rounds": 3
+                "confirmation_result_max_bytes": 200
             }
         }
     }

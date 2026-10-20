@@ -1414,8 +1414,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         result.memo_confidence = memo_result.confidence;
         result.memo_refresh_count = memo_result.refresh_count;
         result.memo_pages_total = memo_result.pages_total;
-        result.memo_card_bytes = memo_result.card_bytes;
-        result.memo_card_stable = memo_result.card_stable;
         result.memo_registry_bytes = memo_result.registry_bytes;
     }
 
@@ -2913,26 +2911,7 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         evict_low_water = std::max(floor_tokens, std::min(evict_low_water, adaptive));
     }
     const auto& sediment_cfg = cfg.task_memo.sediment;
-    if (sediment_cfg.enabled) {
-        const double sediment_bytes_per_token = EstimateCjkAwareBytesPerToken(
-            BLANK_STRING, fidelity_cfg.cjk_bytes_per_token, fidelity_cfg.ascii_bytes_per_token);
-        My_Log{My_Log::Level::kInfo}
-            << "[PreFilter] Sediment budgets: context_budget=" << contextSize
-            << " tok, bytes_per_token=" << sediment_bytes_per_token
-            << ", card=" << ResolveSedimentBudget(sediment_cfg.card.max_ratio,
-                                                  sediment_cfg.card.max_bytes,
-                                                  contextSize, sediment_bytes_per_token)
-            << " B, card_trigger=" << ResolveSedimentThreshold(sediment_cfg.card.trigger_result_ratio,
-                                                              contextSize, sediment_bytes_per_token)
-            << " B, registry=" << ResolveSedimentBudget(sediment_cfg.registry.max_ratio,
-                                                        sediment_cfg.registry.max_bytes,
-                                                        contextSize, sediment_bytes_per_token)
-            << " B, volatile_notes=" << ResolveSedimentBudget(sediment_cfg.volatile_notes.max_ratio,
-                                                              sediment_cfg.volatile_notes.max_tokens,
-                                                              contextSize)
-            << " tok, confirmation_max=" << sediment_cfg.confirmation_result_max_bytes << " B" << std::endl;
-    }
-    if (sediment_cfg.enabled && sediment_cfg.prune_superseded &&
+    if (sediment_cfg.prune_superseded &&
         (!budget_satisfied || compress_current_tokens > evict_high_water) && !evict_key.empty()) {
         std::unordered_set<size_t> prune_protected = repeat_protected_raw_;
         prune_protected.insert(repeat_must_keep_raw_.begin(), repeat_must_keep_raw_.end());
