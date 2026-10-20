@@ -31,7 +31,6 @@ port and forwards every connection to the stand-in; the backend is a throw-away 
 
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import socketserver
@@ -129,7 +128,6 @@ def tls() -> Iterator[tuple[StandInLLM, TlsFront]]:
     llm = _fake_llm.start()
     front = None
     try:
-        py = os.environ.get("QAI_E2E_PYTHON") or ""
         from tests.e2e.conftest import _python_executable
 
         r = subprocess.run([_python_executable(), "-W", "ignore", "-c", MINT, str(certdir)], capture_output=True, text=True, timeout=120)

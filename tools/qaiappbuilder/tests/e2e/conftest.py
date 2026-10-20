@@ -175,11 +175,17 @@ class Backend:
 def _python_executable() -> str:
     """Interpreter that runs the backend.
 
-    ``QAI_E2E_PYTHON`` overrides it; otherwise the interpreter running pytest.
-    The product venv (``.venv_arm64_313``) is the realistic choice on
-    win_arm64; the suite itself only needs pytest + httpx.
+    ``run_e2e.py`` always sets ``QAI_E2E_PYTHON`` to the product venv.  Without it (plain
+    ``pytest tests/e2e``) the interpreter running pytest is used, which is usually NOT the
+    product venv - a warning is emitted so a green run is not mistaken for a product-venv run.
     """
-    return os.environ.get("QAI_E2E_PYTHON") or sys.executable
+    py = os.environ.get("QAI_E2E_PYTHON")
+    if not py:
+        import warnings
+        warnings.warn("QAI_E2E_PYTHON is not set: the backend runs on the pytest interpreter, not the product venv. "
+                      "Use tests/e2e/run_e2e.py (or set QAI_E2E_PYTHON) to test the real runtime environment.",
+                      stacklevel=2)
+    return py or sys.executable
 
 
 def _backend_env(data_dir: Path, *, auth_enabled: bool, pycache: Path) -> dict[str, str]:

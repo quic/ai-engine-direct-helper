@@ -3,16 +3,27 @@
 # Copyright (c) 2026 Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 # ---------------------------------------------------------------------
-"""Unified launcher for the ``tests/e2e`` suite: run by feature category, get a report.
+"""Unified launcher for ``tests/e2e`` and ``tests/system``: run by feature category, get a report.
 
-Standard library only, so it can be started by any Python 3.9+.  The tests
-themselves run in a separate "test-side" interpreter (needs pytest, pytest-asyncio,
-httpx, psutil, keyring; websockets for the event-stream tests).
+Standard library only, so it can be started by any Python 3.9+.
+
+Which Python runs what (the point: test in the SAME environment users run in):
+
+* the backend, and every child process the tests start, run on the PRODUCT venv
+  (``%LOCALAPPDATA%\\QAIModelBuilder\\envs\\.venv_*``), which is never modified;
+* the pytest process itself ALSO runs on the product venv's interpreter, so the library
+  versions under test are the product's.  The product venv has no pytest, so pytest and
+  pytest-asyncio live in a separate runner venv (``data/e2e-runner-venv``, created on first
+  use from the product venv's base interpreter) whose site-packages is only APPENDED to
+  ``sys.path``: the product venv always wins, and a library it lacks is never masked.
+  The packages actually borrowed are printed and recorded in the report.
+* ``--python`` / ``$QAI_E2E_TEST_PYTHON`` replace the test-side interpreter (then it needs
+  pytest, pytest-asyncio, httpx, psutil, keyring, websockets itself).
 
 Why one pytest process PER CATEGORY (not one for everything, not in parallel):
 
 * every backend binds port 8989 (and aria2c 6810), so two cannot coexist ->
-  strictly serial;
+  strictly serial (``mb_system`` never starts a backend, but is still run serially);
 * a category that crashes or hangs (we kill its whole process tree) does not
   take the others down, and each gets its own junit xml + log.
 
@@ -22,6 +33,7 @@ Examples::
     run_e2e.py                              # everything, serial
     run_e2e.py -c chat,security             # only these categories
     run_e2e.py -x model_builder,cli         # everything except these
+    run_e2e.py -c mb_system                 # tests/system/model_builder (no backend needed)
     run_e2e.py -c settings -- -k proxy      # args after "--" go to pytest
     run_e2e.py --dry-run                    # show what would run
 
@@ -34,8 +46,8 @@ Exit code: 0 = no failures/errors (skips are fine), 1 = failures/errors,
 2 = usage / pre-flight problem (nothing was run).
 
 The category table below is the ONLY place that maps test files to features.
-A ``test_*.py`` that matches no category (or two) aborts the run, so a new test
-module cannot silently drop out of the report.
+A ``test_*.py`` under tests/e2e or tests/system that matches no category (or two) aborts
+the run, so a new test module cannot silently drop out of the report.
 """
 
 from __future__ import annotations
@@ -57,7 +69,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent            # .../tests/e2e
-PROJECT = HERE.parent.parent                      # .../tools/qaiappbuilder
+TESTS = HERE.parent                               # .../tests
+PROJECT = TESTS.parent                            # .../tools/qaiappbuilder
+# Directories scanned for test_*.py, relative to tests/.  Every file is identified by its path
+# below tests/ (e.g. ``e2e/test_cli.py``, ``system/model_builder/test_entrypoints.py``).
+TEST_ROOTS = ("e2e", "system")
 PORTS = {8989: "backend", 6810: "aria2c RPC"}     # must be free (see conftest.py)
 # Managed apps started by test_app_builder_apps.py; that module SKIPS itself if any of these is busy.
 APP_PORTS = {p: "app_builder managed app" for p in (18420, 18421, 18422, 18423, 18555)}
@@ -65,7 +81,8 @@ WATCHED = {**PORTS, **APP_PORTS}                  # checked for leftovers after 
 
 # ---------------------------------------------------------------------------
 # Feature categories  (ordered; follows FEATURE-INVENTORY.md section 3)
-# name -> (description, [file globs relative to tests/e2e])
+# name -> (description, [globs]).  A glob without "/" matches the file NAME (any root);
+# a glob with "/" matches the path below tests/ (e.g. ``system/model_builder/test_*.py``).
 # ---------------------------------------------------------------------------
 CATEGORIES: dict[str, tuple[str, list[str]]] = {
     "system": ("System & startup (/api/system/*, harness self-tests)",
@@ -96,7 +113,16 @@ CATEGORIES: dict[str, tuple[str, list[str]]] = {
                ["test_events*.py"]),
     "cli": ("qai.bat command line",
             ["test_cli.py"]),
+    "mb_system": ("Model Builder system tests (tests/system: adapters, pack export, HTTP bridge, NPU)",
+                  ["system/model_builder/test_*.py"]),
 }
+
+# Categories whose tests never start the backend: no need for the backend / aria2c ports to be free.
+NO_BACKEND = {"mb_system"}
+
+
+def needs_backend_ports(cats: list[str]) -> bool:
+    return any(c not in NO_BACKEND for c in cats)
 
 # Modules needed on the TEST side, as (import name, pip name).
 TEST_SIDE_MODULES = [("pytest", "pytest"), ("pytest_asyncio", "pytest-asyncio"),
@@ -108,17 +134,29 @@ TEST_SIDE_MODULES = [("pytest", "pytest"), ("pytest_asyncio", "pytest-asyncio"),
 # Category <-> file mapping and self-check
 # ---------------------------------------------------------------------------
 def all_test_files() -> list[str]:
-    return sorted(p.name for p in HERE.glob("test_*.py"))
+    """Every test module as a posix path below tests/ (``e2e/test_x.py``)."""
+    return sorted(p.relative_to(TESTS).as_posix() for r in TEST_ROOTS for p in (TESTS / r).rglob("test_*.py"))
+
+
+def _match(rel: str, pat: str) -> bool:
+    return fnmatch.fnmatch(rel if "/" in pat else rel.rsplit("/", 1)[-1], pat)
 
 
 def files_of(cat: str) -> list[str]:
     pats = CATEGORIES[cat][1]
-    return [f for f in all_test_files() if any(fnmatch.fnmatch(f, p) for p in pats)]
+    return [f for f in all_test_files() if any(_match(f, p) for p in pats)]
 
 
 def check_mapping() -> list[str]:
     """Return problems: unclassified files, files in two categories, dead patterns."""
     problems: list[str] = []
+    names: dict[str, list[str]] = {}
+    for f in all_test_files():
+        names.setdefault(f.rsplit("/", 1)[-1], []).append(f)
+    for n, fs in names.items():
+        if len(fs) > 1:
+            problems.append(f"{n}: same file name in several places {fs} - rename one (reports and counts key on the path, "
+                            "but pytest module names would collide)")
     owner: dict[str, list[str]] = {}
     for cat in CATEGORIES:
         for f in files_of(cat):
@@ -131,7 +169,7 @@ def check_mapping() -> list[str]:
             problems.append(f"{f}: matched by several categories {cats}")
     for cat, (_d, pats) in CATEGORIES.items():
         for p in pats:
-            if not any(fnmatch.fnmatch(f, p) for f in all_test_files()):
+            if not any(_match(f, p) for f in all_test_files()):
                 problems.append(f"category '{cat}': pattern '{p}' matches no file")
     return problems
 
@@ -139,8 +177,102 @@ def check_mapping() -> list[str]:
 # ---------------------------------------------------------------------------
 # Interpreters
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Runner venv: where pytest lives.
+#
+# The tests run on the PRODUCT venv's interpreter, so the library set under test
+# is exactly what users get.  The product venv ships no pytest and must stay
+# clean, so pytest (+ pytest-asyncio) is installed in a SEPARATE venv
+# (data/e2e-runner-venv, git-ignored).  That venv is built from the product
+# venv's own base interpreter (same Python / ABI) and its site-packages is only
+# APPENDED to sys.path of the test process: whatever the product venv has always
+# wins, and a library the product venv lacks can never be masked by a copy in the
+# runner venv.  The backend (and every other child the tests start) runs on the
+# plain product venv and never sees the runner venv.
+# ---------------------------------------------------------------------------
+RUNNER_VENV = Path(os.environ.get("QAI_E2E_RUNNER_VENV") or PROJECT / "data" / "e2e-runner-venv")
+RUNNER_REQS = ["pytest>=8.3,<10.0", "pytest-asyncio>=0.23,<2.0"]   # same pins as pyproject [dev]
+_BOOT = ("import os,sys,runpy;p=os.environ.get('QAI_E2E_DEPS');"
+         "p and os.path.isdir(p) and sys.path.append(p);"
+         "runpy.run_module('pytest',run_name='__main__',alter_sys=True)")
+BACKEND_PY: str | None = None      # set in main(); the runner venv is used iff the test python IS this interpreter
+OVERLAY: Path | None = None        # the runner venv's site-packages, once it exists
+
+
+def _same(a: str | None, b: str | None) -> bool:
+    return bool(a and b and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)))
+
+
+def pytest_cmd(py: str) -> list[str]:
+    """argv prefix that runs pytest on ``py`` (runner-venv packages appended when ``py`` is the product venv)."""
+    return [py, "-c", _BOOT] if _same(py, BACKEND_PY) else [py, "-m", "pytest"]
+
+
+def _runner_python() -> Path:
+    return RUNNER_VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _purelib(py: Path) -> Path | None:
+    try:
+        r = subprocess.run([str(py), "-c", "import sysconfig;print(sysconfig.get_paths()['purelib'])"],
+                           capture_output=True, text=True, timeout=60)
+        return Path(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return None
+
+
+def _base_python(venv_py: str) -> str:
+    """The interpreter the product venv was created from (pyvenv.cfg 'home'); falls back to this one."""
+    cfg = Path(venv_py).resolve().parent.parent / "pyvenv.cfg"
+    try:
+        for line in cfg.read_text(encoding="utf-8").splitlines():
+            k, _, v = line.partition("=")
+            if k.strip().lower() == "home":
+                for n in ("python.exe", "python3", "python"):
+                    if (Path(v.strip()) / n).exists():
+                        return str(Path(v.strip()) / n)
+    except OSError:
+        pass
+    return sys.executable
+
+
+def ensure_runner_venv(product_py: str) -> bool:
+    """Create/refresh the runner venv (idempotent: nothing is reinstalled when pytest is already importable)."""
+    global OVERLAY
+    rp = _runner_python()
+    if rp.exists():
+        OVERLAY = _purelib(rp)
+        if OVERLAY and (OVERLAY / "pytest").is_dir() and (OVERLAY / "pytest_asyncio").is_dir():
+            return True
+    print(f"preparing the test-runner venv {RUNNER_VENV} (pytest lives here; the product venv is not touched)")
+    for cmd in ([_base_python(product_py), "-m", "venv", str(RUNNER_VENV)],
+                [str(rp), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *RUNNER_REQS]):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            print((r.stdout + r.stderr)[-1500:], file=sys.stderr)
+            return False
+    OVERLAY = _purelib(rp)
+    return bool(OVERLAY and (OVERLAY / "pytest").is_dir())
+
+
+def borrowed_packages(py: str) -> list[str]:
+    """Runner-venv distributions that the product venv itself does NOT provide (what the tests borrow)."""
+    if not OVERLAY:
+        return []
+    code = ("import sys,os,json,importlib.metadata as m;o=sys.argv[1];"
+            "n=lambda d:(d.metadata['Name'] or '').lower().replace('_','-');"
+            "have={n(d) for d in m.distributions(path=[p for p in sys.path if os.path.abspath(p)!=os.path.abspath(o)])};"
+            "print(json.dumps(sorted(n(d)+'=='+d.version for d in m.distributions(path=[o]) if n(d) not in have)))")
+    try:
+        r = subprocess.run([py, "-c", code, str(OVERLAY)], capture_output=True, text=True, timeout=60)
+        return json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return []
+
+
 def _probe(py: str, modules: list[str]) -> dict[str, bool] | None:
-    code = ("import importlib.util as u,json;"
+    pre = (f"import sys;sys.path.append({str(OVERLAY)!r});" if _same(py, BACKEND_PY) and OVERLAY else "")
+    code = (pre + "import importlib.util as u,json;"
             f"print(json.dumps({{m: bool(u.find_spec(m)) for m in {modules!r}}}))")
     try:
         r = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=60)
@@ -150,8 +282,10 @@ def _probe(py: str, modules: list[str]) -> dict[str, bool] | None:
 
 
 def find_test_python(explicit: str | None) -> str | None:
-    """--python > $QAI_E2E_TEST_PYTHON > this interpreter > %TEMP%\\qai-e2e-venv."""
-    cands = [explicit, os.environ.get("QAI_E2E_TEST_PYTHON"), sys.executable,
+    """--python > $QAI_E2E_TEST_PYTHON > the product venv (+ runner venv) > this interpreter > %TEMP%\\qai-e2e-venv."""
+    if BACKEND_PY and Path(BACKEND_PY).exists() and not explicit and not os.environ.get("QAI_E2E_TEST_PYTHON"):
+        ensure_runner_venv(BACKEND_PY)
+    cands = [explicit, os.environ.get("QAI_E2E_TEST_PYTHON"), BACKEND_PY, sys.executable,
              str(Path(os.environ.get("TEMP", "")) / "qai-e2e-venv" / "Scripts" / "python.exe"),
              str(Path(os.environ.get("TMPDIR", "/tmp")) / "qai-e2e-venv" / "bin" / "python")]
     for c in cands:
@@ -163,7 +297,6 @@ def find_test_python(explicit: str | None) -> str | None:
         if c == explicit or c == os.environ.get("QAI_E2E_TEST_PYTHON"):
             return c                      # user asked for it: let preflight say what is missing
     return None
-
 
 def find_backend_python(explicit: str | None) -> str | None:
     """--backend-python > $QAI_E2E_PYTHON > product venv for this CPU."""
@@ -209,7 +342,7 @@ def preflight(test_py: str | None, backend_py: str | None, selected: list[str]) 
     elif not Path(backend_py).exists():
         errs.append(f"backend Python does not exist: {backend_py}")
     for port, what in PORTS.items():
-        if port_busy(port):
+        if needs_backend_ports(selected) and port_busy(port):
             errs.append(f"port {port} ({what}) is already in use - stop whatever owns it; "
                         "the suite aborts rather than killing it")
     if "app_builder" in selected:
@@ -246,24 +379,79 @@ def wait_ports_free(ports, timeout: float = 30.0) -> list[int]:
     return busy
 
 
-def port_owner(port: int) -> dict:
-    """Best-effort owner of a listening port (needs psutil in THIS interpreter; else just the port)."""
-    info = {"port": port, "what": WATCHED.get(port, "?"), "pid": None, "cmd": "", "cwd": "", "from_pytest": None}
-    try:
-        import psutil  # optional: the launcher itself stays stdlib-only
-        for c in psutil.net_connections("inet"):
-            if c.laddr and c.laddr.port == port and c.status == "LISTEN" and c.pid:
-                p = psutil.Process(c.pid)
-                info["pid"] = c.pid
-                info["cmd"] = " ".join(p.cmdline())[:200]
-                try:
-                    info["cwd"] = p.cwd()
-                    info["from_pytest"] = "PYTEST_CURRENT_TEST" in p.environ()
-                except Exception:  # noqa: BLE001 - access denied etc.
-                    pass
+# psutil lives in the test-side interpreter (product venv), not necessarily in the launcher's, and the launcher
+# stays stdlib-only: owner lookup and cleanup run in a tiny helper process on ``HELPER_PY``.
+HELPER_PY: str | None = None       # set in main() to the test-side interpreter
+
+_PS_HELPER = r'''
+import json, os, sys
+import psutil
+mode, arg, me = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+
+def owner(port):
+    info = {"pid": None, "cmd": "", "cwd": "", "from_pytest": None}
+    for c in psutil.net_connections("inet"):
+        if c.laddr and c.laddr.port == port and c.status == "LISTEN" and c.pid:
+            p = psutil.Process(c.pid)
+            info.update(pid=c.pid, cmd=" ".join(p.cmdline())[:200])
+            try:
+                info["cwd"] = p.cwd()
+                info["from_pytest"] = "PYTEST_CURRENT_TEST" in p.environ()
+            except Exception:
+                pass
+            break
+    return info
+
+def kill(pid):
+    p = psutil.Process(pid)
+    if "PYTEST_CURRENT_TEST" not in p.environ():
+        return f"pid {p.pid} was not started by a test run; not killed"
+    chain = [p]
+    while True:
+        par = chain[-1].parent()
+        if par is None or par.pid in (me, os.getpid()):
+            break
+        try:
+            if "PYTEST_CURRENT_TEST" not in par.environ():
                 break
-    except Exception:  # noqa: BLE001 - psutil missing or net_connections denied
-        pass
+        except Exception:
+            break
+        chain.append(par)
+    victims = {x for c in chain for x in [c, *c.children(recursive=True)]}
+    for v in victims:
+        try:
+            v.kill()
+        except Exception:
+            pass
+    psutil.wait_procs(list(victims), timeout=8)
+    return f"killed {len(victims)} process(es): " + ", ".join(str(v.pid) for v in sorted(victims, key=lambda v: v.pid))
+
+print(json.dumps(owner(arg) if mode == "owner" else {"action": kill(arg)}))
+'''
+
+
+def _psutil_helper(mode: str, arg: int) -> dict | None:
+    """Run ``_PS_HELPER`` on an interpreter that has psutil; None if there is none or it failed."""
+    for py in dict.fromkeys(p for p in (HELPER_PY, sys.executable) if p):
+        try:
+            r = subprocess.run([py, "-c", _PS_HELPER, mode, str(arg), str(os.getpid())],
+                               capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                return json.loads(r.stdout.strip().splitlines()[-1])
+            except ValueError:
+                continue
+    return None
+
+
+def port_owner(port: int) -> dict:
+    """Best-effort owner of a listening port (pid / command line / whether a test run started it)."""
+    info = {"port": port, "what": WATCHED.get(port, "?"), "pid": None, "cmd": "", "cwd": "", "from_pytest": None}
+    got = _psutil_helper("owner", port)
+    if got:
+        info.update(got)
     return info
 
 
@@ -285,13 +473,13 @@ def run_category(cat: str, test_py: str, env: dict, out: Path, extra: list[str],
                  timeout: int, quiet: bool) -> dict:
     junit = out / "junit" / f"{cat}.xml"
     log = out / "logs" / f"{cat}.log"
-    files = [str(HERE / f) for f in files_of(cat)]
-    cmd = [test_py, "-m", "pytest", *files, f"--junitxml={junit}", *extra]
+    files = [str(TESTS / f) for f in files_of(cat)]
+    cmd = [*pytest_cmd(test_py), *files, f"--junitxml={junit}", *extra]
     res = {"name": cat, "description": CATEGORIES[cat][0], "files": files_of(cat),
            "command": cmd, "returncode": None, "status": "ERROR", "duration": 0.0,
            "note": "", "log": str(log), "junit": str(junit), "leaks": []}
 
-    busy = wait_ports_free(list(PORTS) + (list(APP_PORTS) if cat == "app_builder" else []))
+    busy = wait_ports_free(([] if cat in NO_BACKEND else list(PORTS)) + (list(APP_PORTS) if cat == "app_builder" else []))
     if busy:
         res["note"] = f"ports still busy before start: {busy}; category not run"
         return res
@@ -339,38 +527,12 @@ def kill_leak(o: dict) -> str:
     That variable is inherited from the pytest process, so it proves the process was started by a
     test run; anything without it (e.g. a real product instance) is never touched.
     """
-    try:
-        import psutil
-    except ImportError:
-        return "psutil not available in the launcher interpreter; not killed"
     if not o.get("pid"):
         return "owner unknown; not killed"
-    try:
-        p = psutil.Process(o["pid"])
-        if "PYTEST_CURRENT_TEST" not in p.environ():
-            return f"pid {p.pid} was not started by a test run; not killed"
-        chain = [p]
-        while True:
-            par = chain[-1].parent()
-            if par is None or par.pid == os.getpid():
-                break
-            try:
-                if "PYTEST_CURRENT_TEST" not in par.environ():
-                    break
-            except Exception:  # noqa: BLE001
-                break
-            chain.append(par)
-        victims = {x for c in chain for x in [c, *c.children(recursive=True)]}
-        for v in victims:
-            try:
-                v.kill()
-            except Exception:  # noqa: BLE001
-                pass
-        psutil.wait_procs(list(victims), timeout=8)
-        return f"killed {len(victims)} process(es): " + ", ".join(str(v.pid) for v in sorted(victims, key=lambda v: v.pid))
-    except Exception as ex:  # noqa: BLE001
-        return f"could not kill: {type(ex).__name__}: {ex}"
-
+    got = _psutil_helper("kill", int(o["pid"]))
+    if got is None:
+        return "no interpreter with psutil available to inspect the process; not killed"
+    return got.get("action", "could not kill")
 
 # ---------------------------------------------------------------------------
 # junit -> results
@@ -496,7 +658,8 @@ code{{background:#f6f8fa;padding:1px 4px}}</style></head><body>
 <p>{e(meta['started'])} &middot; platform <b>{e(meta['platform'])}</b> ({e(meta['machine'])}) &middot;
 total time {fmt_dur(meta['duration'])}<br>
 test python: <code>{e(str(meta['test_python']))}</code> ({e(str(meta['pytest']))})<br>
-backend python: <code>{e(str(meta['backend_python']))}</code><br>
+backend python: <code>{e(str(meta['backend_python']))}</code>
+(test side = product venv: {meta.get('test_side_is_product_venv')}; test-only packages borrowed: {e(', '.join(meta.get('borrowed_from_runner_venv') or []) or '-')})<br>
 git: {e(str(meta['git']))} &middot; real-JWT tests: {'on' if meta['real_jwt'] else 'off (skipped)'} &middot;
 extra pytest args: <code>{e(' '.join(meta['pytest_args']) or '-')}</code></p>
 <h2>Totals</h2><p>{tot['total']} tests: <b style="color:#1a7f37">{tot['passed']} passed</b>,
@@ -513,23 +676,61 @@ extra pytest args: <code>{e(' '.join(meta['pytest_args']) or '-')}</code></p>
 # Main
 # ---------------------------------------------------------------------------
 def collect_counts(test_py: str, env: dict) -> dict[str, int] | None:
-    """Per-file test counts via one ``--collect-only`` (no backend is started)."""
+    """Per-file test counts (key: path below tests/) via one ``--collect-only`` (no backend is started)."""
     try:
-        r = subprocess.run([test_py, "-m", "pytest", str(HERE), "--collect-only", "-q", "-p", "no:cacheprovider"],
+        r = subprocess.run([*pytest_cmd(test_py), *(str(TESTS / d) for d in TEST_ROOTS),
+                            "--collect-only", "-q", "-p", "no:cacheprovider"],
                            cwd=str(PROJECT), env=env, capture_output=True, text=True, timeout=300,
                            encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
     counts: dict[str, int] = {}
     for line in r.stdout.splitlines():
-        m = re.match(r"^(?:.*[\\/])?(test_\w+\.py)::", line)
+        m = re.match(r"^(?:.*?tests[\\/])?((?:%s)[\\/].*?test_\w+\.py)::" % "|".join(TEST_ROOTS), line)
         if m:
-            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+            k = m.group(1).replace("\\", "/")
+            counts[k] = counts.get(k, 0) + 1
     return counts or None
 
 
 def split_args(argv: list[str]) -> tuple[list[str], list[str]]:
     return (argv[:argv.index("--")], argv[argv.index("--") + 1:]) if "--" in argv else (argv, [])
+
+
+def acquire_run_lock():
+    """Take the single-instance lock; returns ``(handle, holder_description)``, handle None if someone else holds it.
+
+    An OS-level lock on ``data/e2e-reports/.run_e2e.lock``: it vanishes with the process, however it dies (kill,
+    crash, power loss), so a stale lock file can never block the next run.  The holder writes its pid + start time
+    into the file for the message.
+    """
+    path = PROJECT / "data" / "e2e-reports" / ".run_e2e.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(1 << 20)   # lock a byte far beyond the text so the holder line stays readable by others
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.seek(0)
+        try:
+            holder = fh.read().decode("utf-8", "replace").strip() or "holder unknown"
+        except OSError:
+            holder = "holder unknown"
+        fh.close()
+        return None, holder
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"pid {os.getpid()} since {_dt.datetime.now():%Y-%m-%d %H:%M:%S}".encode())
+    fh.flush()
+    return fh, ""
+
+
+_LOCK_FH = None   # kept open for the life of the process; closing it (or exiting) releases the lock
 
 
 def main(argv: list[str]) -> int:
@@ -539,14 +740,14 @@ def main(argv: list[str]) -> int:
         except (AttributeError, ValueError):
             pass
     own, pytest_args = split_args(argv)
-    ap = argparse.ArgumentParser(description="Run tests/e2e by feature category and write a report. "
+    ap = argparse.ArgumentParser(description="Run tests/e2e and tests/system by feature category and write a report. "
                                              "Arguments after '--' are passed to pytest.")
     ap.add_argument("-c", "--category", action="append", default=[],
                     help="comma-separated categories to run (default: all)")
     ap.add_argument("-x", "--exclude", action="append", default=[], help="comma-separated categories to skip")
     ap.add_argument("--list", action="store_true", help="list categories, files and test counts, then exit")
     ap.add_argument("--dry-run", action="store_true", help="print the pytest commands, run nothing")
-    ap.add_argument("--python", help="test-side Python (default: $QAI_E2E_TEST_PYTHON, this one, %%TEMP%%\\qai-e2e-venv)")
+    ap.add_argument("--python", help="test-side Python (default: the product venv + runner venv; see the module docstring)")
     ap.add_argument("--backend-python", help="Python that runs the backend (default: $QAI_E2E_PYTHON or product venv)")
     ap.add_argument("--real-jwt", action="store_true",
                     help="also run e2e_real_jwt tests (sets QAI_E2E_REAL_JWT=1; consumes real account quota)")
@@ -554,6 +755,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--keep-leaks", action="store_true",
                     help="report leftover test servers but do not kill them (default: kill, only if they carry PYTEST_CURRENT_TEST)")
     ap.add_argument("--fail-fast", action="store_true", help="stop after the first category that does not pass")
+    ap.add_argument("--reverse", action="store_true",
+                    help="run the selected categories in reverse order (tells order-dependent failures from category-dependent ones)")
     ap.add_argument("--out", help="report directory (default: data/e2e-reports/<timestamp>)")
     ap.add_argument("-q", "--quiet", action="store_true", help="do not echo pytest output (still logged)")
     args = ap.parse_args(own)
@@ -574,13 +777,18 @@ def main(argv: list[str]) -> int:
         print(f"Unknown category: {', '.join(unknown)}\nValid: {', '.join(CATEGORIES)}", file=sys.stderr)
         return 2
     selected = [c for c in (wanted or CATEGORIES) if c not in skipped]
+    if args.reverse:
+        selected.reverse()
     if not selected:
         print("Nothing selected.", file=sys.stderr)
         return 2
 
+    global BACKEND_PY
+    backend_py = BACKEND_PY = find_backend_python(args.backend_python)
     test_py = find_test_python(args.python)
-    backend_py = find_backend_python(args.backend_python)
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    global HELPER_PY
+    HELPER_PY = test_py
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", QAI_E2E_DEPS=str(OVERLAY or ''))
     if backend_py:
         env["QAI_E2E_PYTHON"] = backend_py
     if args.real_jwt:
@@ -623,9 +831,15 @@ def main(argv: list[str]) -> int:
             print(f"[{cat}] {test_py} -m pytest {' '.join(files_of(cat))} --junitxml=... {' '.join(pytest_args)}")
         return 0
     (out / "junit").mkdir(parents=True, exist_ok=True)
+    global _LOCK_FH
+    _LOCK_FH, holder = acquire_run_lock()
+    if _LOCK_FH is None:
+        print(f"Another run_e2e is already running ({holder}). Two runs would fight over ports 8989/6810 and "
+              "corrupt each other's results - wait for it to finish (or stop it) and start again.", file=sys.stderr)
+        return 2
     (out / "logs").mkdir(parents=True, exist_ok=True)
 
-    ver = subprocess.run([test_py, "-m", "pytest", "--version"], capture_output=True, text=True)
+    ver = subprocess.run([*pytest_cmd(test_py), "--version"], capture_output=True, text=True)
     git = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(PROJECT), capture_output=True, text=True)
     dirty = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=str(PROJECT),
                            capture_output=True, text=True).stdout.strip()
@@ -633,10 +847,16 @@ def main(argv: list[str]) -> int:
             "platform": platform.system().lower() + "-" + platform.machine().lower(),
             "machine": platform.platform(), "test_python": test_py, "backend_python": backend_py,
             "pytest": (ver.stdout or ver.stderr).strip(),
+            "test_side_is_product_venv": _same(test_py, backend_py),
+            "borrowed_from_runner_venv": borrowed_packages(test_py) if _same(test_py, backend_py) else [],
             "git": (git.stdout.strip() or "?") + (" (+uncommitted changes)" if dirty else ""),
             "real_jwt": args.real_jwt, "pytest_args": pytest_args, "categories": selected}
 
-    print(f"Report dir: {out}\nCategories: {', '.join(selected)}\n")
+    print(f"Report dir: {out}\nCategories: {', '.join(selected)}")
+    print(f"Test python: {test_py}  ({'product venv' if meta['test_side_is_product_venv'] else 'NOT the product venv'})")
+    if meta["borrowed_from_runner_venv"]:
+        print("Borrowed from the runner venv (absent from the product venv): " + ", ".join(meta["borrowed_from_runner_venv"]))
+    print()
     env["QAI_E2E_KEEP_DIR"] = str(out / "backend-logs")   # failed tests leave the backend log + process state here
     baseline = {p for p in WATCHED if port_busy(p)}   # busy before we start: not ours, never reported
     results: list[dict] = []
