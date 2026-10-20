@@ -520,9 +520,7 @@ private:
         }
 
         if (!chat_history_.IsEmpty()) {
-            size_t l2_tokens = 0;
-            std::string memo_notes = BuildTaskMemoNotes(&l2_tokens);
-            optimized.memo_l2_tokens = l2_tokens;
+            std::string memo_notes = BuildTaskMemoNotes();
             if (!memo_notes.empty()) {
                 chat_history_.PrependToLastMessage(memo_notes);
             }
@@ -749,8 +747,6 @@ private:
                 last_ledger_.memo_confidence = optimized.memo_confidence;
                 last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
                 last_ledger_.memo_pages_total = optimized.memo_pages_total;
-                last_ledger_.memo_registry_bytes = optimized.memo_registry_bytes;
-                last_ledger_.memo_l2_tokens = optimized.memo_l2_tokens;
                 last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
                 last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
                 last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -1743,8 +1739,6 @@ private:
             last_ledger_.memo_confidence = optimized.memo_confidence;
             last_ledger_.memo_refresh_count = optimized.memo_refresh_count;
             last_ledger_.memo_pages_total = optimized.memo_pages_total;
-            last_ledger_.memo_registry_bytes = optimized.memo_registry_bytes;
-            last_ledger_.memo_l2_tokens = optimized.memo_l2_tokens;
             last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
             last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
             last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -2071,36 +2065,9 @@ private:
         return "\n\n" + rendered;
     }
 
-    std::string BuildTaskMemoNotes(size_t* l2_tokens_out = nullptr) const
+    std::string BuildTaskMemoNotes() const
     {
-        const std::string legacy = BuildStandaloneRedundantToolCallNote() + BuildConsecutiveToolFailureNote();
-        if (!request_data_.is_object() || !request_data_.contains("messages") || !request_data_["messages"].is_array())
-            return legacy;
-
-        constexpr double kVolatileNotesMaxRatio = 0.004;
-        constexpr size_t kVolatileNotesMaxTokens = 64;
-        constexpr size_t kVolatileNotesStallRounds = 3;
-        const auto& po_cfg = instance_config_->i_model_config_.GetPromptOptimizationConfig();
-        const size_t max_tokens = ResolveSedimentBudget(kVolatileNotesMaxRatio, kVolatileNotesMaxTokens,
-                                                        instance_config_->get_context_size(), 1.0);
-        if (max_tokens == 0)
-            return legacy;
-        const double bytes_per_token = po_cfg.fidelity.ascii_bytes_per_token > 0.0
-            ? po_cfg.fidelity.ascii_bytes_per_token : 1.0;
-        const size_t max_bytes = static_cast<size_t>(max_tokens * bytes_per_token);
-
-        auto memo_entry = task_memo_builder_.Lookup(request_data_["messages"]);
-        const std::string notes = TaskMemoBuilder::RenderVolatileNotes(
-            request_data_["messages"], memo_entry ? &(*memo_entry) : nullptr,
-            kVolatileNotesStallRounds, max_bytes);
-        if (notes.empty())
-            return legacy;
-        if (l2_tokens_out)
-            *l2_tokens_out = context_ ? context_->TokenLength(notes) : 0;
-        My_Log{My_Log::Level::kInfo} << "[TaskMemo] Volatile notes: bytes=" << notes.size()
-                                      << ", budget_bytes=" << max_bytes
-                                      << ", max_tokens=" << max_tokens << std::endl;
-        return legacy + "\n" + notes;
+        return BuildStandaloneRedundantToolCallNote() + BuildConsecutiveToolFailureNote();
     }
 
     // ========== 辅助函数：调用 FitMessagesToContext 并统一处理错误和日志 ==========

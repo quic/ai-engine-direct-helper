@@ -100,42 +100,6 @@ std::string CapToolResultHeadTail(const std::string& content, size_t content_tok
     return content.substr(0, head_end) + OmittedMarker(content, head_end, tail_begin) + content.substr(tail_begin);
 }
 
-bool ArgsHaveLineRange(const json& args)
-{
-    static const char* kKeys[] = {"offset", "limit", "start_line", "end_line", "line_start", "line_end",
-                                  "startLine", "endLine", "lines", "line_range", "range"};
-    json a = args;
-    if (a.is_string()) {
-        try { a = json::parse(a.get<std::string>()); } catch (...) { return false; }
-    }
-    if (!a.is_object()) return false;
-    for (const char* k : kKeys)
-        if (a.contains(k) && !a[k].is_null()) return true;
-    return false;
-}
-
-bool IsRangedReadResult(const json& msgs, size_t tool_idx)
-{
-    const std::string call_id = msgs[tool_idx].value("tool_call_id", std::string());
-    for (size_t j = tool_idx; j-- > 0;) {
-        if (!msgs[j].is_object()) continue;
-        const std::string role = msgs[j].value("role", std::string());
-        if (role == "tool") continue;
-        if (role != "assistant") return false;
-        if (msgs[j].contains("tool_calls") && msgs[j]["tool_calls"].is_array()) {
-            for (const auto& tc : msgs[j]["tool_calls"]) {
-                if (!tc.is_object()) continue;
-                if (!call_id.empty() && tc.value("id", std::string()) != call_id) continue;
-                if (tc.contains("function") && tc["function"].is_object() &&
-                    tc["function"].contains("arguments") && ArgsHaveLineRange(tc["function"]["arguments"]))
-                    return true;
-            }
-        }
-        return false;
-    }
-    return false;
-}
-
 constexpr size_t kMinSurvivorFloor = 4;
 constexpr size_t kSurvivorCondenseMinShare = 48;
 const char kRawIdxKey[] = "__genie_raw_idx";
@@ -510,7 +474,7 @@ void ApplyRepeatResultStubs(json& msg, const std::string& key, const void* model
 
         auto dit = st.decisions.find(i);
         if (dit != st.decisions.end() && dit->second.content_hash != h) {
-            st.decisions.clear();
+            st.decisions.erase(dit);
             dit = st.decisions.end();
         }
 
@@ -1414,7 +1378,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         result.memo_confidence = memo_result.confidence;
         result.memo_refresh_count = memo_result.refresh_count;
         result.memo_pages_total = memo_result.pages_total;
-        result.memo_registry_bytes = memo_result.registry_bytes;
     }
 
     // 步骤 4: 最终检查
@@ -2440,21 +2403,33 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
     const size_t must_keep_budget_total = static_cast<size_t>(
         static_cast<double>(available_tokens) * kRepeatRetainExceptionRatio);
     bool smart_select_possible = false;
+    double smart_select_pressure = 0.0;
+    size_t smart_select_msgs = 0;
     if (!evict_key.empty()) {
         json pre_select = json::array();
         for (size_t i = 0; i < msg.size(); ++i) {
             if (!prior_dropped_set.count(i)) pre_select.push_back(msg[i]);
         }
+        smart_select_msgs = pre_select.size();
         if (pre_select.size() > cfg.max_messages_limit) {
             smart_select_possible = true;
             if (available_tokens > 0) {
-                smart_select_possible = static_cast<double>(calc_msg_tokens(pre_select)) /
-                    static_cast<double>(available_tokens) >= cfg.token_pressure_trigger_ratio;
+                smart_select_pressure = static_cast<double>(calc_msg_tokens(pre_select)) /
+                    static_cast<double>(available_tokens);
+                smart_select_possible = smart_select_pressure >= cfg.token_pressure_trigger_ratio;
             }
         }
     }
+    const size_t must_keep_budget = smart_select_possible ? 0 : must_keep_budget_total;
+    if (!evict_key.empty()) {
+        My_Log{My_Log::Level::kInfo} << "[PreFilter] Smart select: possible=" << (smart_select_possible ? 1 : 0)
+                                      << " msgs=" << smart_select_msgs << "/" << cfg.max_messages_limit
+                                      << " pressure=" << smart_select_pressure
+                                      << " must_keep_budget=" << must_keep_budget << "/" << must_keep_budget_total
+                                      << std::endl;
+    }
     ApplyRepeatResultStubs(msg, evict_key, handle.get(), prior_dropped_set, eviction_state_unknown,
-                           tool_entry_cap_tokens, smart_select_possible ? 0 : must_keep_budget_total,
+                           tool_entry_cap_tokens, must_keep_budget,
                            [this](const std::string& t) { return CountTokens(t); },
                            repeat_protected_raw_, repeat_must_keep_raw_);
     repeat_retain_budget_ = available_tokens;
@@ -2873,9 +2848,8 @@ nlohmann::ordered_json MessagePreFilter::PreFilterMessages(
         for (size_t i = 0; i < filtered_msg.size(); i++) {
             if (get_json_value(filtered_msg[i], "role", BLANK_STRING) != "tool") continue;
             std::string content = get_json_value(filtered_msg[i], "content", BLANK_STRING);
-            const size_t entry_cap = IsRangedReadResult(filtered_msg, i) ? cap_tokens * 2 : cap_tokens;
-            if (content.size() <= entry_cap) continue;
-            std::string capped = CapToolResultHeadTail(content, CountTokens(content), entry_cap);
+            if (content.size() <= cap_tokens) continue;
+            std::string capped = CapToolResultHeadTail(content, CountTokens(content), cap_tokens);
             if (capped.size() < content.size()) {
                 filtered_msg[i]["content"] = capped;
                 capped_count++;

@@ -48,8 +48,6 @@ struct PromptLedger {
     double memo_confidence = 0.0;
     size_t memo_refresh_count = 0;
     size_t memo_pages_total = 0;
-    size_t memo_registry_bytes = 0;
-    size_t memo_l2_tokens = 0;
     // 单调驱逐边界可观测性：数据源 MessagePreFilter::GetStats() 的
     // messages_dropped_prefix_len/prefix_reset_reason，不新建统计口径。
     size_t messages_dropped_prefix_len = 0;
@@ -83,8 +81,6 @@ struct PromptLedger {
         j["memo_confidence"] = memo_confidence;
         j["memo_refresh_count"] = memo_refresh_count;
         j["memo_pages_total"] = memo_pages_total;
-        j["memo_registry_bytes"] = memo_registry_bytes;
-        j["memo_l2_tokens"] = memo_l2_tokens;
         j["messages_dropped_prefix_len"] = messages_dropped_prefix_len;
         j["prefix_reset_reason"] = prefix_reset_reason;
         j["pruned_superseded_count"] = pruned_superseded_count;

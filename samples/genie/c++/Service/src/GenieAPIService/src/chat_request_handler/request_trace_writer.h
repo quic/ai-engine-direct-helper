@@ -376,10 +376,6 @@ public:
         j["lcp_tokens"] = lcp_tokens;
         j["recomputed_tokens"] = recomputed_tokens;
 
-        j["registry_bytes"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_registry_bytes"))
-            ? rec.prompt_ledger.at("memo_registry_bytes") : json(0);
-        j["l2_tokens"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_l2_tokens"))
-            ? rec.prompt_ledger.at("memo_l2_tokens") : json(0);
         j["pruned_superseded_count"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("pruned_superseded_count"))
             ? rec.prompt_ledger.at("pruned_superseded_count") : json(0);
 

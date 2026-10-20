@@ -176,14 +176,45 @@ inline long long ArgsInt(const json& args, const char* key, long long fallback)
     return fallback;
 }
 
+constexpr const char* kReadSpanBeginKeys[] = {"offset", "start_line", "line_start", "startLine"};
+constexpr const char* kReadSpanEndKeys[] = {"end_line", "line_end", "endLine"};
+constexpr const char* kReadSpanLengthKeys[] = {"limit", "lines"};
+constexpr const char* kReadSpanOpaqueKeys[] = {"line_range", "range"};
+
+template <size_t N>
+inline bool ArgsHaveAnyKey(const json& args, const char* const (&keys)[N])
+{
+    if (!args.is_object()) return false;
+    for (size_t i = 0; i < N; ++i)
+        if (args.contains(keys[i]) && !args.at(keys[i]).is_null()) return true;
+    return false;
+}
+
+template <size_t N>
+inline long long ArgsIntAnyKey(const json& args, const char* const (&keys)[N], long long fallback)
+{
+    for (size_t i = 0; i < N; ++i) {
+        const long long v = ArgsInt(args, keys[i], std::numeric_limits<long long>::min());
+        if (v != std::numeric_limits<long long>::min()) return v;
+    }
+    return fallback;
+}
+
+inline bool ArgsHaveReadSpan(const json& args)
+{
+    return ArgsHaveAnyKey(args, kReadSpanBeginKeys) || ArgsHaveAnyKey(args, kReadSpanEndKeys) ||
+           ArgsHaveAnyKey(args, kReadSpanLengthKeys) || ArgsHaveAnyKey(args, kReadSpanOpaqueKeys);
+}
+
 inline void ReadSpanOfArgs(const json& args, long long& span_begin, long long& span_end)
 {
-    span_begin = std::max<long long>(1, ArgsInt(args, "offset", ArgsInt(args, "start_line", 1)));
-    span_end = std::numeric_limits<long long>::max();
-    const long long limit = ArgsInt(args, "limit", -1);
-    const long long end_line = ArgsInt(args, "end_line", -1);
-    if (limit > 0) span_end = span_begin + limit - 1;
+    span_begin = std::max<long long>(1, ArgsIntAnyKey(args, kReadSpanBeginKeys, 1));
+    const long long length = ArgsIntAnyKey(args, kReadSpanLengthKeys, -1);
+    const long long end_line = ArgsIntAnyKey(args, kReadSpanEndKeys, -1);
+    if (length > 0) span_end = span_begin + length - 1;
     else if (end_line >= span_begin) span_end = end_line;
+    else if (!ArgsHaveAnyKey(args, kReadSpanBeginKeys) && ArgsHaveReadSpan(args)) span_end = span_begin - 1;
+    else span_end = std::numeric_limits<long long>::max();
 }
 
 inline long long ReadBeginOfArgs(const json& args)
