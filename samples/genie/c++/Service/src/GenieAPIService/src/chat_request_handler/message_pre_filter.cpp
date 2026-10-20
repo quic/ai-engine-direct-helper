@@ -1416,6 +1416,7 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         result.memo_pages_total = memo_result.pages_total;
         result.memo_card_bytes = memo_result.card_bytes;
         result.memo_card_stable = memo_result.card_stable;
+        result.memo_registry_bytes = memo_result.registry_bytes;
     }
 
     // 步骤 4: 最终检查

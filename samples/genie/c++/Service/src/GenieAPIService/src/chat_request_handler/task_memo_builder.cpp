@@ -124,6 +124,12 @@ void TaskMemoBuilder::SanitizeSedimentMarkers(json& entry) const
     if (!entry.is_object())
         return;
     const auto& sed = config_.sediment;
+    if (!sed.enabled) {
+        entry.erase("_block_line_truncate");
+    }
+    if (!sed.enabled || !sed.registry.enabled) {
+        entry.erase("_registry_render");
+    }
     if (!sed.enabled || !sed.merge_paged_reads) {
         entry.erase("_read_merge");
         entry.erase("_read_page_lines");
@@ -530,6 +536,332 @@ namespace {
                     slot->pages.push_back(CardPage{ key.second, content });
             }
         }
+    }
+
+    constexpr size_t kMaxRegistryEntries = 10;
+    constexpr size_t kMaxRegistrySignatureChars = 160;
+    constexpr size_t kMaxRegistryTailChars = 180;
+
+    std::string ReplaceInvalidUtf8(const std::string& s);
+
+    std::string Fnv1aHex(const std::string& s) {
+        uint64_t h = 14695981039346656037ULL;
+        const uint64_t p = 1099511628211ULL;
+        for (unsigned char c : s) { h ^= c; h *= p; }
+        std::ostringstream oss;
+        oss << std::hex << std::setfill('0') << std::setw(16) << h;
+        return oss.str();
+    }
+
+    std::string NormalizeWrittenContent(const std::string& content) {
+        std::string out;
+        out.reserve(content.size() + 1);
+        size_t pos = 0;
+        while (pos <= content.size()) {
+            const size_t nl = content.find('\n', pos);
+            const size_t stop = (nl == std::string::npos) ? content.size() : nl;
+            out += RightTrimLine(content.substr(pos, stop - pos));
+            out += '\n';
+            if (nl == std::string::npos)
+                break;
+            pos = nl + 1;
+        }
+        return out;
+    }
+
+    std::string FoldWhitespace(const std::string& s) {
+        std::string out;
+        bool gap = false;
+        for (char c : s) {
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                gap = !out.empty();
+                continue;
+            }
+            if (gap) {
+                out += ' ';
+                gap = false;
+            }
+            out += c;
+        }
+        return out;
+    }
+
+    std::string PlaceholderDigits(const std::string& s) {
+        std::string out;
+        bool run = false;
+        for (char c : s) {
+            if (isdigit((unsigned char) c)) {
+                if (!run) {
+                    out += '#';
+                    run = true;
+                }
+                continue;
+            }
+            run = false;
+            out += c;
+        }
+        return out;
+    }
+
+    std::string PlaceholderPathPrefix(const std::string& token) {
+        const size_t cut = token.find_last_of("/\\");
+        if (cut == std::string::npos || cut + 1 >= token.size())
+            return token;
+        return "*/" + token.substr(cut + 1);
+    }
+
+    std::string NormalizeCommandPayload(const std::string& payload) {
+        const std::string folded = FoldWhitespace(payload);
+        std::string out;
+        size_t pos = 0;
+        while (pos <= folded.size()) {
+            const size_t sp = folded.find(' ', pos);
+            const size_t stop = (sp == std::string::npos) ? folded.size() : sp;
+            const std::string token = folded.substr(pos, stop - pos);
+            if (!token.empty()) {
+                if (!out.empty())
+                    out += ' ';
+                out += PlaceholderDigits(PlaceholderPathPrefix(token));
+            }
+            if (sp == std::string::npos)
+                break;
+            pos = sp + 1;
+        }
+        return out;
+    }
+
+    std::string CommandSignatureOfArgs(const json& args) {
+        const std::string payload = tool_shape::ExecutePayloadOfArgs(args);
+        if (payload.empty())
+            return std::string();
+        std::string sig = NormalizeCommandPayload(payload);
+        if (sig.empty())
+            return std::string();
+        const std::string ctx = tool_shape::ExecuteContextOfArgs(args, payload);
+        if (!ctx.empty())
+            sig += " @" + PlaceholderDigits(FoldWhitespace(ctx));
+        return ReplaceInvalidUtf8(safe_utf8_truncate(sig, kMaxRegistrySignatureChars, "..."));
+    }
+
+    std::string ResultTailOf(const std::string& content, size_t tail_lines) {
+        if (tail_lines == 0)
+            return std::string();
+        std::vector<std::string> lines;
+        size_t pos = 0;
+        while (pos <= content.size()) {
+            const size_t nl = content.find('\n', pos);
+            const size_t stop = (nl == std::string::npos) ? content.size() : nl;
+            const std::string line = RightTrimLine(content.substr(pos, stop - pos));
+            if (!line.empty())
+                lines.push_back(line);
+            if (nl == std::string::npos)
+                break;
+            pos = nl + 1;
+        }
+        std::string out;
+        const size_t start = (lines.size() > tail_lines) ? lines.size() - tail_lines : 0;
+        for (size_t i = start; i < lines.size(); ++i) {
+            if (!out.empty())
+                out += " | ";
+            out += lines[i];
+        }
+        return ReplaceInvalidUtf8(safe_utf8_truncate(out, kMaxRegistryTailChars, "..."));
+    }
+
+    struct PendingCall {
+        int kind = 0;
+        std::string key;
+        std::string payload;
+    };
+
+    bool ClassifyCall(const json& args, PendingCall& out) {
+        if (!args.is_object() || args.empty())
+            return false;
+        const std::string write_res = tool_shape::WriteResourceOfArgs(args);
+        if (!write_res.empty()) {
+            out.kind = 2;
+            out.key = write_res;
+            out.payload = tool_shape::WritePayloadOfArgs(args);
+            return !out.payload.empty();
+        }
+        const std::string read_res = tool_shape::ReadResourceOfArgs(args);
+        if (!read_res.empty()) {
+            out.kind = 1;
+            out.key = read_res;
+            return true;
+        }
+        if (!tool_shape::IsExecuteLikeArgs(args))
+            return false;
+        const std::string sig = CommandSignatureOfArgs(args);
+        if (sig.empty())
+            return false;
+        out.kind = 3;
+        out.key = sig;
+        return true;
+    }
+
+    void CollectRegistryFacts(const json& raw_messages, size_t tail_lines, json& writes, json& commands,
+                              std::unordered_map<std::string, bool>& resource_write_last) {
+        writes = json::object();
+        commands = json::object();
+        if (!raw_messages.is_array())
+            return;
+        std::unordered_map<std::string, PendingCall> pending;
+        std::vector<PendingCall> fifo;
+        size_t call_seq = 0;
+        for (const auto& msg : raw_messages) {
+            if (!msg.is_object())
+                continue;
+            const std::string role = msg.value("role", "");
+            if (role == "assistant") {
+                bool structured = false;
+                if (msg.contains("tool_calls") && msg["tool_calls"].is_array()) {
+                    for (const auto& tc : msg["tool_calls"]) {
+                        if (!tc.is_object())
+                            continue;
+                        const json& fn = (tc.contains("function") && tc["function"].is_object()) ? tc["function"] : tc;
+                        const json args = tool_shape::ParseArgsValue(
+                            fn.contains("arguments") ? fn["arguments"] : json());
+                        PendingCall call;
+                        if (!ClassifyCall(args, call))
+                            continue;
+                        structured = true;
+                        const std::string id = tc.value("id", "");
+                        if (id.empty())
+                            fifo.push_back(call);
+                        else
+                            pending[id] = call;
+                    }
+                }
+                if (!structured) {
+                    const std::string text = get_json_value<std::string>(msg, "content", "");
+                    PendingCall call;
+                    if (ClassifyCall(tool_shape::ParseAnyArgsObjectFromText(text), call))
+                        fifo.push_back(call);
+                }
+            } else if (role == "tool") {
+                PendingCall call;
+                const std::string id = msg.value("tool_call_id", "");
+                if (!id.empty()) {
+                    auto it = pending.find(id);
+                    if (it == pending.end())
+                        continue;
+                    call = it->second;
+                    pending.erase(it);
+                } else if (!fifo.empty()) {
+                    call = fifo.front();
+                    fifo.erase(fifo.begin());
+                } else {
+                    continue;
+                }
+                ++call_seq;
+                const std::string content = get_json_value<std::string>(msg, "content", "");
+                const bool failed = content.empty() || LooksLikeFailure(content);
+                if (call.kind == 1) {
+                    if (!failed)
+                        resource_write_last[call.key] = false;
+                    continue;
+                }
+                if (call.kind == 2) {
+                    if (failed)
+                        continue;
+                    json& dst = writes[call.key];
+                    if (!dst.is_object())
+                        dst = json::object();
+                    dst["hash"] = Fnv1aHex(NormalizeWrittenContent(call.payload));
+                    dst["lines"] = CountLinesOf(call.payload);
+                    dst["seq"] = call_seq;
+                    resource_write_last[call.key] = true;
+                    continue;
+                }
+                json& slot = commands[call.key];
+                if (!slot.is_object())
+                    slot = json::object();
+                slot["runs"] = slot.value("runs", (size_t) 0) + 1;
+                slot["seq"] = call_seq;
+                slot["ok"] = !failed;
+                slot["tail"] = ResultTailOf(content, tail_lines);
+                if (failed && !slot.contains("fail_seq")) {
+                    slot["fail_seq"] = call_seq;
+                    slot["fail_tail"] = slot["tail"];
+                }
+            }
+        }
+    }
+
+    std::string RenderRegistryBlock(const json& reg) {
+        if (!reg.is_object())
+            return std::string();
+        const json* written = (reg.contains("written") && reg["written"].is_object()) ? &reg["written"] : nullptr;
+        const json* commands = (reg.contains("commands") && reg["commands"].is_object()) ? &reg["commands"] : nullptr;
+        const bool has_written = written && !written->empty();
+        const bool has_commands = commands && !commands->empty();
+        if (!has_written && !has_commands)
+            return std::string();
+        std::ostringstream oss;
+        oss << "Recorded facts from earlier tool calls (raw facts only, not a judgement about progress):\n";
+        if (has_written) {
+            for (auto it = written->begin(); it != written->end(); ++it) {
+                if (!it.value().is_object())
+                    continue;
+                oss << "- wrote " << it.key() << " (" << it.value().value("lines", (size_t) 0)
+                    << " line(s), content hash " << it.value().value("hash", std::string())
+                    << ", last write at call #" << it.value().value("seq", (size_t) 0) << ")\n";
+            }
+        }
+        if (has_commands) {
+            for (auto it = commands->begin(); it != commands->end(); ++it) {
+                if (!it.value().is_object())
+                    continue;
+                const json& c = it.value();
+                const size_t seq = c.value("seq", (size_t) 0);
+                const bool ok = c.value("ok", true);
+                oss << "- ran `" << it.key() << "` " << c.value("runs", (size_t) 0)
+                    << " time(s); last run at call #" << seq << " returned "
+                    << (ok ? "no error signal" : "an error signal");
+                const std::string tail = c.value("tail", std::string());
+                if (!tail.empty())
+                    oss << "; result tail: " << tail;
+                oss << "\n";
+                const size_t fail_seq = c.value("fail_seq", (size_t) 0);
+                if (fail_seq != 0 && fail_seq != seq) {
+                    oss << "- (an earlier run of the same signature at call #" << fail_seq
+                        << " returned an error signal";
+                    if (ok)
+                        oss << ", superseded by the run at call #" << seq;
+                    const std::string fail_tail = c.value("fail_tail", std::string());
+                    if (!fail_tail.empty())
+                        oss << "; result tail: " << fail_tail;
+                    oss << ")\n";
+                }
+            }
+        }
+        return oss.str();
+    }
+
+    size_t DropReadFacts(json& entry, const std::string& resource) {
+        size_t dropped = 0;
+        bool first_field = true;
+        for (const char* field : {"read_files", "_read_page_lines"}) {
+            if (entry.contains(field) && entry[field].is_object()) {
+                json kept = json::object();
+                for (auto it = entry[field].begin(); it != entry[field].end(); ++it) {
+                    const std::string key = it.key();
+                    const bool match = (key == resource) ||
+                        (key.size() > resource.size() && key.compare(0, resource.size(), resource) == 0 &&
+                         key[resource.size()] == '#');
+                    if (match) {
+                        if (first_field)
+                            ++dropped;
+                        continue;
+                    }
+                    kept[key] = it.value();
+                }
+                entry[field] = kept;
+            }
+            first_field = false;
+        }
+        return dropped;
     }
 
     std::vector<std::pair<long long, std::string>> NumberedLinesOf(const CardSource& src) {
@@ -1247,6 +1579,93 @@ size_t TaskMemoBuilder::CardBytesOf(const json& entry)
     return total;
 }
 
+// ── UpdateRegistry（产物与命令登记表：只列事实，沿用驱逐时刻改写）─────────────
+
+size_t TaskMemoBuilder::RegistryBytesOf(const json& entry)
+{
+    if (!entry.is_object() || !entry.value("_registry_render", false) || !entry.contains("registry"))
+        return 0;
+    return RenderRegistryBlock(entry["registry"]).size();
+}
+
+size_t TaskMemoBuilder::UpdateRegistry(json& entry, const json& raw_messages) const
+{
+    const auto& reg_cfg = config_.sediment.registry;
+    if (!config_.sediment.enabled || !reg_cfg.enabled) {
+        entry.erase("_registry_render");
+        return 0;
+    }
+
+    json writes = json::object();
+    json commands = json::object();
+    std::unordered_map<std::string, bool> resource_write_last;
+    CollectRegistryFacts(raw_messages, reg_cfg.command_tail_lines, writes, commands, resource_write_last);
+
+    json reg = json::object();
+    reg["written"] = writes;
+    reg["commands"] = commands;
+    CapObjectSize(reg["written"], kMaxRegistryEntries);
+    CapObjectSize(reg["commands"], kMaxRegistryEntries);
+
+    size_t invalidated_reads = 0;
+    for (const auto& kv : resource_write_last) {
+        if (kv.second)
+            invalidated_reads += DropReadFacts(entry, kv.first);
+    }
+
+    size_t budget = entry.value("_registry_budget_bytes", (size_t) 0);
+    if (budget == 0) {
+        const auto& fid = instance_config_.i_model_config_.GetPromptOptimizationConfig().fidelity;
+        double bytes_per_token = entry.value("_card_bytes_per_token", 0.0);
+        if (bytes_per_token <= 0.0) {
+            bytes_per_token = EstimateCjkAwareBytesPerToken(RenderRegistryBlock(reg),
+                                                             fid.cjk_bytes_per_token, fid.ascii_bytes_per_token);
+        }
+        budget = ResolveSedimentBudget(reg_cfg.max_ratio, reg_cfg.max_bytes,
+                                       (size_t) std::max(0, instance_config_.get_context_size()), bytes_per_token);
+        if (budget == 0) {
+            entry.erase("_registry_render");
+            return 0;
+        }
+        entry["_registry_budget_bytes"] = budget;
+    }
+
+    size_t bytes = RenderRegistryBlock(reg).size();
+    size_t evicted = 0;
+    while (bytes > budget) {
+        const char* victim_field = nullptr;
+        std::string victim_key;
+        size_t victim_seq = 0;
+        for (const char* field : {"written", "commands"}) {
+            for (auto it = reg[field].begin(); it != reg[field].end(); ++it) {
+                const size_t seq = it.value().is_object() ? it.value().value("seq", (size_t) 0) : 0;
+                if (victim_field == nullptr || seq < victim_seq) {
+                    victim_field = field;
+                    victim_key = it.key();
+                    victim_seq = seq;
+                }
+            }
+        }
+        if (victim_field == nullptr)
+            break;
+        reg[victim_field].erase(victim_key);
+        bytes = RenderRegistryBlock(reg).size();
+        ++evicted;
+    }
+
+    entry["registry"] = reg;
+    entry["_registry_render"] = true;
+
+    My_Log{My_Log::Level::kInfo}
+        << "[TaskMemo] Registry: written=" << reg["written"].size()
+        << ", commands=" << reg["commands"].size()
+        << ", bytes=" << bytes
+        << ", budget=" << budget
+        << ", evicted=" << evicted
+        << ", invalidated_reads=" << invalidated_reads << std::endl;
+    return bytes;
+}
+
 // ── ExtractGoalAnchor（原始目标锚点鲁棒抓取）───────────────────────────────────
 
 std::pair<std::string, bool> TaskMemoBuilder::ExtractGoalAnchor(const json& raw_messages) const
@@ -1382,6 +1801,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         res.refresh_count = prev_refresh;
         res.pages_total = (prev->contains("pages") && (*prev)["pages"].is_array()) ? (*prev)["pages"].size() : 0;
         res.card_bytes = CardBytesOf(*prev);
+        res.registry_bytes = RegistryBytesOf(*prev);
         res.compact_render = RenderCompact(*prev);
         return res;
     }
@@ -1389,7 +1809,10 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
                                                     dropped_messages.end());
 
     json entry = BuildRuleLayer(has_prev ? *prev : json::object(), new_dropped);
+    if (config_.sediment.enabled)
+        entry["_block_line_truncate"] = true;
     const bool cards_stable = UpdateCards(entry, raw_messages);
+    const size_t registry_bytes = UpdateRegistry(entry, raw_messages);
 
     // 原始目标锚点：只在尚未捕获过时抓取一次；一旦捕获，后续轮次通过 entry/prev 透传，
     // 永不被规则层或模型层的后续更新覆盖（BuildRuleLayer 已经把 prev 的既有字段原样
@@ -1420,7 +1843,8 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
             model_entry["read_files"] = entry["read_files"];
             for (const char* k : {"hard_rules", "_hard_rule_files", "artifacts", "last_success",
                                    "cards", "_cards_render", "_cards_before_memo", "_card_budget_bytes", "_card_bytes_per_token",
-                                   "_read_merge", "_read_page_lines"})
+                                   "_read_merge", "_read_page_lines",
+                                   "registry", "_registry_render", "_registry_budget_bytes", "_block_line_truncate"})
                 if (entry.contains(k))
                     model_entry[k] = entry[k];
             // original_goal_raw/confidence 权威兜底，从 entry 显式透传，不允许模型层输出覆盖。
@@ -1472,6 +1896,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
     res.pages_total = (entry.contains("pages") && entry["pages"].is_array()) ? entry["pages"].size() : 0;
     res.card_bytes = CardBytesOf(entry);
     res.card_stable = cards_stable;
+    res.registry_bytes = registry_bytes;
     res.compact_render = RenderCompact(entry);
     return res;
 }
@@ -1624,8 +2049,14 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     if (!entry.value("_cards_before_memo", false))
         cards_block = RenderCards(entry);
 
+    const bool registry_render = entry.value("_registry_render", false);
+    std::string registry_block;
+    if (registry_render && entry.contains("registry"))
+        registry_block = RenderRegistryBlock(entry["registry"]);
+
     std::string last_success_block;
-    if (entry.contains("last_success") && entry["last_success"].is_object() && !entry["last_success"].empty()) {
+    if (!registry_render && entry.contains("last_success") && entry["last_success"].is_object()
+            && !entry["last_success"].empty()) {
         std::ostringstream oss;
         oss << "Last successful call per tool (reuse instead of re-deriving the syntax):\n";
         for (auto it = entry["last_success"].begin(); it != entry["last_success"].end(); ++it)
@@ -1650,11 +2081,14 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         page_directory_block = oss.str();
     }
 
-    // 由高到低优先级排列；预算不足时跳过放不下的块，不做块内截断。
+    // 由高到低优先级排列；预算不足时优先按条目（整行）截断列表型块，连标题加一条都放不下
+    // 才整块跳过。cards 是逐字摘录、按行切会把「摘自 X 第 a-b 行」的段落腰斩，故不可截断。
     const std::string blocks[] = {
         render_list("Rules from documents you read (still in force)", "hard_rules"),
         cards_block,
-        render_list("Artifacts already produced (confirmed by tool output; do not redo these steps)", "artifacts"),
+        registry_block,
+        registry_render ? std::string()
+            : render_list("Artifacts already produced (confirmed by tool output; do not redo these steps)", "artifacts"),
         last_success_block,
         render_list("Completed", "completed"),
         render_list("Next actions", "next_actions"),
@@ -1665,13 +2099,15 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         page_directory_block,
     };
     static const char* kBlockNames[] = {
-        "hard_rules", "cards", "artifacts", "last_success", "completed", "next_actions", "facts_constraints",
-        "open_questions", "read_files", "tool_state", "page_directory",
+        "hard_rules", "cards", "registry", "artifacts", "last_success", "completed", "next_actions",
+        "facts_constraints", "open_questions", "read_files", "tool_state", "page_directory",
     };
     const bool merged_reads = entry.value("_read_merge", false);
+    const bool list_truncatable = entry.value("_block_line_truncate", false);
     const bool kBlockLineTruncatable[] = {
-        false, false, false, false, false, false, false,
-        false, merged_reads, false, false,
+        list_truncatable, false, list_truncatable, list_truncatable, list_truncatable, list_truncatable,
+        list_truncatable, list_truncatable, list_truncatable, merged_reads || list_truncatable,
+        list_truncatable, list_truncatable,
     };
 
     std::string out = header;

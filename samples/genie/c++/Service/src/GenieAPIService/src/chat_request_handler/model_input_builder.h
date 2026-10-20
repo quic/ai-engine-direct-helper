@@ -749,6 +749,7 @@ private:
                 last_ledger_.memo_pages_total = optimized.memo_pages_total;
                 last_ledger_.memo_card_bytes = optimized.memo_card_bytes;
                 last_ledger_.memo_card_stable = optimized.memo_card_stable;
+                last_ledger_.memo_registry_bytes = optimized.memo_registry_bytes;
                 last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
                 last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
                 last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
@@ -1743,6 +1744,7 @@ private:
             last_ledger_.memo_pages_total = optimized.memo_pages_total;
             last_ledger_.memo_card_bytes = optimized.memo_card_bytes;
             last_ledger_.memo_card_stable = optimized.memo_card_stable;
+            last_ledger_.memo_registry_bytes = optimized.memo_registry_bytes;
             last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
             last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
             last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;

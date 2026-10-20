@@ -103,6 +103,67 @@ inline std::string ReadResourceOfArgs(const json& args)
     return args.at(resource_key).get<std::string>();
 }
 
+inline void ScanLongestString(const json& v, std::string& best)
+{
+    if (v.is_string()) {
+        const std::string s = v.get<std::string>();
+        if (s.size() > best.size()) best = s;
+        return;
+    }
+    if (!v.is_array() && !v.is_object()) return;
+    for (auto it = v.begin(); it != v.end(); ++it) ScanLongestString(it.value(), best);
+}
+
+inline std::string WriteResourceOfArgs(const json& args)
+{
+    const std::string resource_key = ResourceArgKey(args);
+    if (resource_key.empty() || !IsWriteLikeArgs(args, resource_key)) return std::string();
+    return args.at(resource_key).get<std::string>();
+}
+
+inline std::string WritePayloadOfArgs(const json& args)
+{
+    const std::string resource_key = ResourceArgKey(args);
+    std::string best;
+    if (resource_key.empty() || !args.is_object()) return best;
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (it.key() == resource_key) continue;
+        ScanLongestString(it.value(), best);
+    }
+    return best;
+}
+
+inline bool IsExecuteLikeArgs(const json& args)
+{
+    return args.is_object() && !args.empty() && ResourceArgKey(args).empty();
+}
+
+inline std::string ExecutePayloadOfArgs(const json& args)
+{
+    std::string best;
+    if (args.is_object()) ScanLongestString(args, best);
+    return best;
+}
+
+inline std::string ExecuteContextOfArgs(const json& args, const std::string& payload)
+{
+    std::string out;
+    if (!args.is_object()) return out;
+    bool payload_skipped = false;
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (!it.value().is_string()) continue;
+        const std::string v = it.value().get<std::string>();
+        if (v.empty()) continue;
+        if (!payload_skipped && v == payload) {
+            payload_skipped = true;
+            continue;
+        }
+        if (!out.empty()) out += '\x1f';
+        out += v;
+    }
+    return out;
+}
+
 inline long long ArgsInt(const json& args, const char* key, long long fallback)
 {
     if (!args.is_object() || !args.contains(key)) return fallback;
@@ -171,6 +232,26 @@ inline json ParseArgsObjectFromText(const std::string& text)
         if (!parsed.is_object()) continue;
         json args = parsed.contains("arguments") ? ParseArgsValue(parsed["arguments"]) : parsed;
         if (args.is_object() && !ResourceArgKey(args).empty()) return args;
+    }
+    return json();
+}
+
+inline json ParseAnyArgsObjectFromText(const std::string& text)
+{
+    size_t from = 0;
+    size_t tried = 0;
+    while (tried < kArgsTextCandidates) {
+        const size_t open_pos = text.find('{', from);
+        if (open_pos == std::string::npos) break;
+        ++tried;
+        from = open_pos + 1;
+        const size_t end = BalancedObjectEnd(text, open_pos);
+        if (end == std::string::npos) break;
+        json parsed;
+        try { parsed = json::parse(text.substr(open_pos, end - open_pos)); } catch (...) { continue; }
+        if (!parsed.is_object()) continue;
+        json args = parsed.contains("arguments") ? ParseArgsValue(parsed["arguments"]) : parsed;
+        if (args.is_object() && !args.empty()) return args;
     }
     return json();
 }

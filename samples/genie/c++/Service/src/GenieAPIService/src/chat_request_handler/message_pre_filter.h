@@ -47,10 +47,11 @@ struct OptimizedMessages {
     size_t memo_pages_total;  // 轻量分页目录当前条目数（TaskMemoBuilder::UpdateResult::pages_total 透传）
     size_t memo_card_bytes;
     bool memo_card_stable;
+    size_t memo_registry_bytes;
 
     OptimizedMessages() : total_tokens(0), dropped_count(0), success(false), emergency_truncated(false),
                            memo_active(false), memo_confidence(0.0), memo_refresh_count(0), memo_pages_total(0),
-                           memo_card_bytes(0), memo_card_stable(true) {}
+                           memo_card_bytes(0), memo_card_stable(true), memo_registry_bytes(0) {}
 };
 
 // ========== 消息预过滤器 ==========

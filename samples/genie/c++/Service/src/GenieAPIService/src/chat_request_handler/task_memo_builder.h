@@ -48,6 +48,7 @@ public:
         size_t pages_total = 0;  // 轻量分页目录当前条目数（供 PromptLedger/X-Genie-Prompt-Memo-Pages 响应头透传）
         size_t card_bytes = 0;
         bool card_stable = true;
+        size_t registry_bytes = 0;
         std::string compact_render;
     };
 
@@ -81,7 +82,8 @@ public:
     UpdateResult Update(const json& raw_messages, const std::vector<GenieChatMessage>& dropped_messages);
 
     // max_chars=0 表示不限；否则按 Completed/Next actions/Facts/Open questions/Tool state
-    // 优先级从高到低整块保留，预算不足时从最低优先级开始整块丢弃（不做块内截断）。
+    // 优先级从高到低整块保留，预算不足时从最低优先级开始丢弃；列表型块在
+    // _block_line_truncate 为真时先按条目（整行）截断，整块跳过是最后手段。
     static std::string Render(const json& entry, size_t max_chars = 0);
     static std::string RenderCards(const json& entry);
     static std::string RenderCompact(const json& entry);
@@ -92,6 +94,8 @@ private:
     void SanitizeSedimentMarkers(json& entry) const;
     bool UpdateCards(json& entry, const json& raw_messages) const;
     static size_t CardBytesOf(const json& entry);
+    size_t UpdateRegistry(json& entry, const json& raw_messages) const;
+    static size_t RegistryBytesOf(const json& entry);
     bool ShouldTriggerModelLayer(const std::vector<GenieChatMessage>& dropped_messages,
                                   bool has_prev, double prev_confidence) const;
     std::string BuildModelPrompt(const json& prev, const json& rule_layer_result) const;

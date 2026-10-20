@@ -382,7 +382,8 @@ public:
         j["card_bytes"] = card_bytes;
         j["card_stable"] = (has_card && rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_card_stable"))
             ? rec.prompt_ledger.at("memo_card_stable") : json(nullptr);
-        j["registry_bytes"] = 0;
+        j["registry_bytes"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("memo_registry_bytes"))
+            ? rec.prompt_ledger.at("memo_registry_bytes") : json(0);
         j["l2_tokens"] = 0;
         j["pruned_superseded_count"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("pruned_superseded_count"))
             ? rec.prompt_ledger.at("pruned_superseded_count") : json(0);
