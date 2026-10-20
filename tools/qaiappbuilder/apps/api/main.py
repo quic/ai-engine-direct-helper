@@ -41,7 +41,10 @@ from fastapi import FastAPI
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from interfaces.http.error_handlers import register_error_handlers
+from interfaces.http.error_handlers import (
+    add_unexpected_error_middleware,
+    register_error_handlers,
+)
 from interfaces.http.middleware import CsrfMiddleware, RequestContextMiddleware
 from interfaces.http.middleware.auth import AuthMiddleware
 from interfaces.http.middleware.canonical_host import CanonicalHostMiddleware
@@ -259,6 +262,12 @@ def create_app(
     # cookies, popup postMessage, and WebSocket continuity).
     # API calls (fetch/XHR) and WebSocket upgrades are NOT redirected.
     app.add_middleware(CanonicalHostMiddleware)
+
+    # Outermost of all (registered after everything else): answer an unhandled exception
+    # with the 500 envelope itself instead of letting Starlette re-raise it after the
+    # handler ran (uvicorn then drops the connection and the client sometimes gets a
+    # connection reset instead of the 500).  See UnexpectedErrorMiddleware.
+    add_unexpected_error_middleware(app)
 
     # Mount routers — order is purely cosmetic (each router carries its own prefix).
     # SSO login endpoints registered first so /auth/login, /callback,
