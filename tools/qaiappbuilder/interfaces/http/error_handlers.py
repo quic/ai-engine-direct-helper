@@ -51,6 +51,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from qai.platform.errors import (
     ConflictError,
@@ -199,4 +200,50 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(Exception, _handle_unexpected)
 
 
-__all__ = ["register_error_handlers"]
+class UnexpectedErrorMiddleware:
+    """Answer an unhandled exception with the 500 envelope WITHOUT re-raising it.
+
+    ``add_exception_handler(Exception, ...)`` is mounted by Starlette on its outermost
+    ``ServerErrorMiddleware``, which sends the handler's response and then RE-RAISES the
+    exception so the server logs it.  uvicorn reacts to that exception by closing the
+    connection, so a client that is still reading the response sometimes sees
+    ``ConnectionResetError`` / ``ReadError`` instead of the 500 (measured: ~1/3 of requests
+    on a minimal app on Windows, 0 with this middleware).
+
+    This is a pure ASGI middleware (not ``BaseHTTPMiddleware``), mounted OUTERMOST among the
+    user middlewares by ``add_unexpected_error_middleware`` - so it sees every exception that
+    escapes the stack, however the inner ``BaseHTTPMiddleware`` layers wrapped it.  If the
+    response has already started nothing can be answered any more, so the exception is
+    re-raised unchanged.  ``CancelledError`` and other ``BaseException`` pass through.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def _send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        except Exception as exc:
+            if started:
+                raise
+            response = await _handle_unexpected(Request(scope, receive), exc)
+            await response(scope, receive, send)
+
+
+def add_unexpected_error_middleware(app: FastAPI) -> None:
+    """Mount ``UnexpectedErrorMiddleware``.  Call it LAST so it is the outermost user layer."""
+    app.add_middleware(UnexpectedErrorMiddleware)
+
+
+__all__ = ["UnexpectedErrorMiddleware", "add_unexpected_error_middleware", "register_error_handlers"]
