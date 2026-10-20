@@ -15,8 +15,8 @@ Design decisions (see ``FEATURE-INVENTORY.md`` for the evidence behind each):
 * **Isolated data files, shared keyring.** ``QAI_DATA__DATA_DIR`` points at a
   temp directory, so the database / ``_master.key`` / endpoint file are
   throw-away. The OS keyring is NOT isolated (the Windows credential store is
-  keyed by service/key only), which is exactly what lets a test read the real
-  QAI Service JWT. Consequences: never exercise logout, and any test that writes
+  keyed by service/key only). Consequences: never exercise logout (it deletes
+  the user's real QAI Service JWT from the keyring), and any test that writes
   the keyring must create-and-delete its own ``e2e-`` prefixed data.
 * **Platform selectors.** ``win_arm64`` / ``win_x64`` / ``linux_arm64`` markers
   restrict a test to one platform; no marker = every platform.
@@ -40,7 +40,6 @@ import httpx
 import pytest
 
 from tests.e2e import _failure_logs
-from tests.e2e._jwt import JwtStatus, read_real_jwt_status
 
 # tools/qaiappbuilder  (this file: <repo>/tests/e2e/conftest.py)
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -94,14 +93,8 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Skip tests whose platform marker does not match this machine.
-
-    Also: ``e2e_real_jwt`` tests are skipped unless ``QAI_E2E_REAL_JWT=1``
-    (they consume real account quota). Once opted in, a missing JWT is a FAILURE
-    - see :func:`require_real_jwt`.
-    """
+    """Skip tests whose platform marker does not match this machine."""
     here = current_platform()
-    real_jwt_enabled = os.environ.get("QAI_E2E_REAL_JWT") == "1"
     for item in items:
         # Only touch tests under tests/e2e (this conftest is directory-scoped,
         # but be explicit in case it is ever imported more widely).
@@ -112,12 +105,6 @@ def pytest_collection_modifyitems(
             item.add_marker(
                 pytest.mark.skip(
                     reason=f"platform: needs {'/'.join(wanted)}, this is {here}"
-                )
-            )
-        if "e2e_real_jwt" in item.keywords and not real_jwt_enabled:
-            item.add_marker(
-                pytest.mark.skip(
-                    reason="uses real QAI Service quota; set QAI_E2E_REAL_JWT=1 to run"
                 )
             )
 
@@ -346,17 +333,3 @@ def auth_http(auth_backend: Backend) -> Iterator[httpx.Client]:
     """A plain HTTP client bound to the login-gate-ON backend."""
     with httpx.Client(base_url=auth_backend.base_url, timeout=15.0) as client:
         yield client
-
-
-@pytest.fixture(scope="session")
-def require_real_jwt() -> JwtStatus:
-    """Fail (never skip) when the real QAI Service JWT is unusable.
-
-    Request this fixture from any ``e2e_real_jwt`` test. Opt-in is handled by
-    the collection hook (``QAI_E2E_REAL_JWT=1``); once a test runs, an unreadable
-    or expired JWT is a hard failure with the concrete reason.
-    """
-    status = read_real_jwt_status()
-    if not status.ok:
-        pytest.fail(status.explain(), pytrace=False)
-    return status
