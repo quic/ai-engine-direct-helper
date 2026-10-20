@@ -497,7 +497,6 @@ markers = [
   "unit: unit-level tests (no I/O, no network, no fs writes)",
   "integration: integration tests (DB, FS, FastAPI TestClient)",
   "e2e: end-to-end tests (browser, full stack)",
-  "e2e_real_jwt: E2E tests that need the REAL QAI Service JWT from the OS keyring and consume real account quota. Skipped unless QAI_E2E_REAL_JWT=1; a missing/expired JWT is then a FAILURE, not a skip.",
   "ui: E2E tests that drive a browser (Playwright) against the built frontend/dist",
   "install: E2E tests that run Setup.bat / Build.bat / Start.bat (slow, network)",
 

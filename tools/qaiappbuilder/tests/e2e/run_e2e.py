@@ -85,8 +85,8 @@ WATCHED = {**PORTS, **APP_PORTS}                  # checked for leftovers after 
 # a glob with "/" matches the path below tests/ (e.g. ``system/model_builder/test_*.py``).
 # ---------------------------------------------------------------------------
 CATEGORIES: dict[str, tuple[str, list[str]]] = {
-    "system": ("System & startup (/api/system/*, harness self-tests)",
-               ["test_sys_*.py", "test_harness.py"]),
+    "system": ("System & startup (/api/system/*)",
+               ["test_sys_*.py"]),
     "auth": ("Login & access control (auth gate, CSRF)",
              ["test_auth_*.py"]),
     "chat": ("Chat, conversations, MCP, OpenAI-compatible API, uploads",
@@ -660,7 +660,7 @@ total time {fmt_dur(meta['duration'])}<br>
 test python: <code>{e(str(meta['test_python']))}</code> ({e(str(meta['pytest']))})<br>
 backend python: <code>{e(str(meta['backend_python']))}</code>
 (test side = product venv: {meta.get('test_side_is_product_venv')}; test-only packages borrowed: {e(', '.join(meta.get('borrowed_from_runner_venv') or []) or '-')})<br>
-git: {e(str(meta['git']))} &middot; real-JWT tests: {'on' if meta['real_jwt'] else 'off (skipped)'} &middot;
+git: {e(str(meta['git']))} &middot;
 extra pytest args: <code>{e(' '.join(meta['pytest_args']) or '-')}</code></p>
 <h2>Totals</h2><p>{tot['total']} tests: <b style="color:#1a7f37">{tot['passed']} passed</b>,
 <b style="color:#cf222e">{tot['failed']} failed, {tot['error']} errors</b>, {tot['skipped']} skipped</p>
@@ -749,8 +749,6 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--dry-run", action="store_true", help="print the pytest commands, run nothing")
     ap.add_argument("--python", help="test-side Python (default: the product venv + runner venv; see the module docstring)")
     ap.add_argument("--backend-python", help="Python that runs the backend (default: $QAI_E2E_PYTHON or product venv)")
-    ap.add_argument("--real-jwt", action="store_true",
-                    help="also run e2e_real_jwt tests (sets QAI_E2E_REAL_JWT=1; consumes real account quota)")
     ap.add_argument("--timeout", type=int, default=5400, help="seconds per category before it is killed (0 = none)")
     ap.add_argument("--keep-leaks", action="store_true",
                     help="report leftover test servers but do not kill them (default: kill, only if they carry PYTEST_CURRENT_TEST)")
@@ -791,10 +789,6 @@ def main(argv: list[str]) -> int:
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", QAI_E2E_DEPS=str(OVERLAY or ''))
     if backend_py:
         env["QAI_E2E_PYTHON"] = backend_py
-    if args.real_jwt:
-        env["QAI_E2E_REAL_JWT"] = "1"
-    else:
-        env.pop("QAI_E2E_REAL_JWT", None)
 
     if args.list:
         cnt = collect_counts(test_py, env) if test_py else None
@@ -850,7 +844,7 @@ def main(argv: list[str]) -> int:
             "test_side_is_product_venv": _same(test_py, backend_py),
             "borrowed_from_runner_venv": borrowed_packages(test_py) if _same(test_py, backend_py) else [],
             "git": (git.stdout.strip() or "?") + (" (+uncommitted changes)" if dirty else ""),
-            "real_jwt": args.real_jwt, "pytest_args": pytest_args, "categories": selected}
+            "pytest_args": pytest_args, "categories": selected}
 
     print(f"Report dir: {out}\nCategories: {', '.join(selected)}")
     print(f"Test python: {test_py}  ({'product venv' if meta['test_side_is_product_venv'] else 'NOT the product venv'})")
