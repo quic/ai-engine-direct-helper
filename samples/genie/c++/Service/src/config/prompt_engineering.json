@@ -153,19 +153,8 @@
             "_comment_enabled": "总开关：true=启用（本次开启），false=禁用（默认，此前从未配置过）",
             "enabled": true,
             "_comment_model_layer_enabled": "模型层深度总结开关：false=只用规则层（零额外推理开销，已有真机正面证据），true=额外在冷启动/低置信度/长工具链/失败场景触发一次真实推理调用做深度总结（延迟与正确性尚未在当前驱动模型上验证，谨慎开启）",
-            "model_layer_enabled": false,
+            "model_layer_enabled": false
 
-            "_comment_sediment": "驱逐轮的无损剪枝（覆盖剪枝 + 确认类小结果丢弃）。本节只剩剪枝四项，默认关闭；关闭时送进模型的 prompt 与未引入本节时逐字节相同。剪枝改写的是前缀中段，partial 后端的前缀 KV 会从改动点起整段失效，所以两道闸都按「本轮不亏才做」取值",
-            "sediment": {
-                "_comment_prune_superseded": "true=驱逐轮把被新读取覆盖的旧读取、以及成功且极小的确认类结果连配对 tool_call 成对整条丢弃（无损剪枝，写入/执行类永不剪）",
-                "prune_superseded": false,
-                "_comment_prune_min_freed_ratio": "剪枝的绝对收益下限（第二道闸）：本轮候选剪枝预计释放的 token 量必须达到 prune_min_freed_ratio × 当前上下文预算，否则整轮不剪。它与 prune_min_net_gain_ratio 正交：后者只比较「收益 vs 作废的前缀」，当剪枝位置非常靠后时两者都很小也可能通过比值判定，本项再挡掉「为几个 token 去打乱前缀缓存」。ratio 设为 0 或上下文过小导致折算不足 1 时取不可达值，即永不触发",
-                "prune_min_freed_ratio": 0.05,
-                "_comment_prune_min_net_gain_ratio": "剪枝的净收益判据（主闸）：只有 释放 token 量 ≥ prune_min_net_gain_ratio × 作废 token 量 时才真正剪。作废量 = 首个被剪消息之后的全部 token（改写前缀中段会让 partial 后端的前缀 KV 从改动点起整段失效，这部分必须重算）。被剪消息必然落在作废区间内，所以 1.0 是「本轮不亏才做」的最保守取值，实际上等于只在极端边界才剪；要让剪枝在长链路里用后续若干轮的驱逐间隔收益换本轮一次重算，需要显式调到 1.0 以下",
-                "prune_min_net_gain_ratio": 1.0,
-                "_comment_confirmation_result_max_bytes": "确认类小结果的长度上限（字节）：成功、无报错且不超过此长度的 tool 结果视为确认类，可整条丢弃；按长度判定，不匹配具体措辞。本项**有意保持绝对值、不做比例化**：这类结果的「无信息量」与上下文窗口大小无关，按比例放大只会让大窗口下误删真实内容",
-                "confirmation_result_max_bytes": 200
-            }
         }
     }
 }

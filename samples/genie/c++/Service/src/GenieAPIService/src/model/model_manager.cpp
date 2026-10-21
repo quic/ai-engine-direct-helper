@@ -1482,25 +1482,6 @@ bool ModelManager::InitializeConfig()
                             memo_cfg.store.ttl_minutes = st.value("ttl_minutes", 120);
                         }
 
-                        if (tm.contains("sediment") && tm["sediment"].is_object())
-                        {
-                            const auto &sd = tm["sediment"];
-                            auto &sed_cfg = memo_cfg.sediment;
-                            sed_cfg.prune_superseded = sd.value("prune_superseded", false);
-                            sed_cfg.prune_min_freed_ratio = sd.value("prune_min_freed_ratio", 0.05);
-                            sed_cfg.prune_min_net_gain_ratio = sd.value("prune_min_net_gain_ratio", 1.0);
-                            sed_cfg.confirmation_result_max_bytes =
-                                    sd.value("confirmation_result_max_bytes", (size_t) 200);
-
-                            My_Log{My_Log::Level::kInfo}
-                                    << "[TaskMemo] Sediment config loaded: prune_superseded="
-                                    << sed_cfg.prune_superseded
-                                    << ", prune_min_freed_ratio=" << sed_cfg.prune_min_freed_ratio
-                                    << ", prune_min_net_gain_ratio=" << sed_cfg.prune_min_net_gain_ratio
-                                    << ", confirmation_result_max_bytes=" << sed_cfg.confirmation_result_max_bytes
-                                    << std::endl;
-                        }
-
                         My_Log{My_Log::Level::kInfo}
                                 << "[TaskMemo] Config loaded: enabled=" << memo_cfg.enabled
                                 << ", model_layer_enabled=" << memo_cfg.model_layer_enabled

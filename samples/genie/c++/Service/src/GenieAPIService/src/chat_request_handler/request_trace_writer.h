@@ -1,4 +1,4 @@
-﻿//==============================================================================
+//==============================================================================
 //
 // Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
 //
@@ -376,8 +376,6 @@ public:
         j["lcp_tokens"] = lcp_tokens;
         j["recomputed_tokens"] = recomputed_tokens;
 
-        j["pruned_superseded_count"] = (rec.prompt_ledger.is_object() && rec.prompt_ledger.contains("pruned_superseded_count"))
-            ? rec.prompt_ledger.at("pruned_superseded_count") : json(0);
 
         const json &m = rec.backend_metrics;
         auto field = [&m](const char *key) -> json {

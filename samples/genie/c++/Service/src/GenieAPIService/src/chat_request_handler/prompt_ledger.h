@@ -1,4 +1,4 @@
-﻿//==============================================================================
+//==============================================================================
 //
 // Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
 //
@@ -52,7 +52,6 @@ struct PromptLedger {
     // messages_dropped_prefix_len/prefix_reset_reason，不新建统计口径。
     size_t messages_dropped_prefix_len = 0;
     std::string prefix_reset_reason = "none";
-    size_t pruned_superseded_count = 0;
 
     // 真实 JSON 类型（bool 用真实 bool，数字用真实数字），供流式 status 帧
     // （status="prompt_optimized"）payload 复用，与响应头字段口径完全一致。
@@ -83,7 +82,6 @@ struct PromptLedger {
         j["memo_pages_total"] = memo_pages_total;
         j["messages_dropped_prefix_len"] = messages_dropped_prefix_len;
         j["prefix_reset_reason"] = prefix_reset_reason;
-        j["pruned_superseded_count"] = pruned_superseded_count;
         return j;
     }
 

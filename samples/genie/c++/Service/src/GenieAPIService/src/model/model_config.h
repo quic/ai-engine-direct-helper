@@ -1,4 +1,4 @@
-﻿//==============================================================================
+//==============================================================================
 //
 // Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
 //
@@ -774,41 +774,9 @@ struct PromptOptimizationConfig {
             size_t max_entries = 20;             // 环形缓冲上限，超出按 FIFO 淘汰最旧条目
         } page_directory;
 
-        struct SedimentConfig {
-            bool prune_superseded = false;
-            double prune_min_freed_ratio = 0.05;
-            double prune_min_net_gain_ratio = 1.0;
-            size_t confirmation_result_max_bytes = 200;
-        } sediment;
-
         TaskMemoStoreConfig store;
     } task_memo;
 };
-
-inline size_t ResolveSedimentBudget(double ratio, size_t absolute_cap,
-                                   size_t context_budget_tokens,
-                                   double bytes_per_token = 1.0)
-{
-    if (ratio <= 0.0 || context_budget_tokens == 0 || bytes_per_token <= 0.0) {
-        return 0;
-    }
-    const double scaled = ratio * static_cast<double>(context_budget_tokens) * bytes_per_token;
-    if (scaled < 1.0) {
-        return 0;
-    }
-    const size_t from_ratio = static_cast<size_t>(scaled);
-    if (absolute_cap == 0) {
-        return from_ratio;
-    }
-    return (from_ratio < absolute_cap) ? from_ratio : absolute_cap;
-}
-
-inline size_t ResolveSedimentThreshold(double ratio, size_t context_budget_tokens,
-                                      double bytes_per_token = 1.0)
-{
-    const size_t resolved = ResolveSedimentBudget(ratio, 0, context_budget_tokens, bytes_per_token);
-    return resolved > 0 ? resolved : std::numeric_limits<size_t>::max();
-}
 
 // ============================================================
 // Skill 映射配置

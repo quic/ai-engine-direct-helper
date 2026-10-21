@@ -1,4 +1,4 @@
-﻿//==============================================================================
+//==============================================================================
 //
 // Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
 //
@@ -749,7 +749,6 @@ private:
                 last_ledger_.memo_pages_total = optimized.memo_pages_total;
                 last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
                 last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
-                last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
             }
 
             std::ostringstream log_stream;
@@ -1741,7 +1740,6 @@ private:
             last_ledger_.memo_pages_total = optimized.memo_pages_total;
             last_ledger_.messages_dropped_prefix_len = pf_stats.messages_dropped_prefix_len;
             last_ledger_.prefix_reset_reason = pf_stats.prefix_reset_reason;
-            last_ledger_.pruned_superseded_count = pf_stats.pruned_superseded_count;
         }
 
         return result;

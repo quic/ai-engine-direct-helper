@@ -1,4 +1,4 @@
-﻿//==============================================================================
+//==============================================================================
 //
 // Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
 //
@@ -52,7 +52,6 @@ struct MessageCategoryStats {
     // message_shrink=上一轮边界超出本轮消息数，安全退回全量重算）。
     size_t messages_dropped_prefix_len = 0;
     std::string prefix_reset_reason = "none";
-    size_t pruned_superseded_count = 0;
 
     void Reset() {
         system_tokens = 0;
@@ -72,7 +71,6 @@ struct MessageCategoryStats {
         total_dropped = 0;
         messages_dropped_prefix_len = 0;
         prefix_reset_reason = "none";
-        pruned_superseded_count = 0;
     }
 };
 
