@@ -1532,9 +1532,9 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // 命令行参数，交给 common_params_parse 走与 CLI 工具完全相同的解析/后处理路径——避免手动
     // 逐字段赋值遗漏只在参数解析时才生效的设置（如 --device），GPU/CPU 取值均已用
     // llama-completion.exe 反复 A/B 实测验证为最快组合。
-    // -fa 默认值：主模型 on、草稿模型 off，两者分别取值（见同名文档 llama_cpp.md）。主模型由
-    // draft_model.flash_attn 覆盖，草稿由 draft_model.draft_flash_attn 覆盖；非投机模型两字段都
-    // 解析不到，恒为主模型默认 on，与改动前一致。
+    // -fa 不再有本服务自己的默认值：两侧都留给 llama.cpp 自己的 LLAMA_FLASH_ATTN_TYPE_AUTO
+    // （运行期探测后端是否支持，支持则启用）。主模型仅在 draft_model.flash_attn 显式给出时才拼
+    // -fa，草稿仅在 draft_model.draft_flash_attn 显式给出时才覆盖，两者仍可分别取值。
     auto parse_flash_attn = [](const std::string &value, llama_flash_attn_type fallback) {
         if (value == "on")
         {
@@ -1546,10 +1546,8 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         }
         return fallback;
     };
-    const std::string target_flash_attn =
-            !draft_config.flash_attn.empty() ? draft_config.flash_attn : std::string{"on"};
     const llama_flash_attn_type draft_flash_attn =
-            parse_flash_attn(draft_config.draft_flash_attn, LLAMA_FLASH_ATTN_TYPE_DISABLED);
+            parse_flash_attn(draft_config.draft_flash_attn, LLAMA_FLASH_ATTN_TYPE_AUTO);
 
     std::vector<std::string> arg_strings = {
         "GenieService.exe",
@@ -1557,8 +1555,11 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         "--ctx-size", std::to_string(n_ctx),
         "--no-warmup",
         "-s", "42",
-        "-fa", target_flash_attn,
     };
+    if (!draft_config.flash_attn.empty())
+    {
+        arg_strings.insert(arg_strings.end(), {"-fa", draft_config.flash_attn});
+    }
     if (!speculative_requested)
     {
         // --fit（自动显存/上下文拟合）在投机解码分支必须保持 llama.cpp 官方默认值 on：原生
