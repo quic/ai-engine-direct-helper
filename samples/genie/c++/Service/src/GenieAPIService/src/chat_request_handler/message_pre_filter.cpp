@@ -540,6 +540,26 @@ bool ShrinkToolCallEnvelope(const std::string& content,
 
 }  // namespace
 
+void ClearPreFilterSessionStates()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_eviction_mutex);
+        g_eviction_states.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_repeat_mutex);
+        g_repeat_states.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_growth_mutex);
+        g_growth_states.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_trunc_floor_mutex);
+        g_trunc_floor_chars.clear();
+    }
+}
+
 // ============================================================
 // Constructor
 // ============================================================

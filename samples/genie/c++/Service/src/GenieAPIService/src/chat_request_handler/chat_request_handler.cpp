@@ -23,6 +23,11 @@
 #include "../response/response_tools.h"
 #include "../gateway/gateway/gateway.h"
 #include "request_trace_writer.h"
+#include "message_pre_filter.h"
+#include "task_memo_store.h"
+#include "summary_cache.h"
+#include "tool_call_circuit_breaker_store.h"
+#include "tool_call_repetition_store.h"
 
 namespace fs = std::filesystem;
 
@@ -288,8 +293,24 @@ void ChatRequestHandler::ModelStop(const httplib::Request &req, httplib::Respons
 
 void ChatRequestHandler::ClearMessage(const httplib::Request &req, httplib::Response &res)
 {
-    // History is stateless per request now.
-    res.set_content("", ResponseDispatcher::MIMETYPE_JSON);
+    json data = json::parse(req.body, nullptr, false);
+    std::string model_name = data.is_object() ? data.value("model", "") : "";
+
+    auto loaded = model_manager.GetModel(model_name);
+    if (!loaded) {
+        loaded = model_manager.GetDefaultModel();
+    }
+    if (loaded && loaded->context) {
+        loaded->context->ClearConversationState();
+    }
+
+    ClearPreFilterSessionStates();
+    TaskMemoStore::GetInstance().Clear();
+    SummaryCache::GetInstance().Clear();
+    ToolCallCircuitBreakerStore::GetInstance().Clear();
+    ToolCallRepetitionStore::GetInstance().Clear();
+
+    res.set_content(R"({"status":"cleared"})", ResponseDispatcher::MIMETYPE_JSON);
     res.status = 200;
 }
 

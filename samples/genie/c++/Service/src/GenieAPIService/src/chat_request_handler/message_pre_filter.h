@@ -200,5 +200,7 @@ private:
     size_t repeat_retain_budget_{0};
 };
 
+void ClearPreFilterSessionStates();
+
 #endif // MESSAGE_PRE_FILTER_H
 

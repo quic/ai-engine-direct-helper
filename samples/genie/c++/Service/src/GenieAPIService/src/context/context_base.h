@@ -47,6 +47,8 @@ public:
 
     virtual void Reset();
 
+    virtual void ClearConversationState() {}
+
     // 检查模型是否正在执行推理（query_mutex_ 是否被锁定）
     // 用于诊断安全检查与主推理之间的锁竞争
     // 注意：此方法仅用于诊断，不保证原子性（检查后状态可能改变）

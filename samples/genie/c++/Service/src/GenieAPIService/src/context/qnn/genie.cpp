@@ -950,3 +950,9 @@ void GenieContext::Reset()
         wm_state_->vtable->token_hook_reset(wm_state_->hook);
     }
 }
+
+void GenieContext::ClearConversationState()
+{
+    std::lock_guard<std::mutex> lock(query_mutex_);
+    Reset();
+}

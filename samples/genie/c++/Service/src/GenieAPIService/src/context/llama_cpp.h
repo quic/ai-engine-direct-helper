@@ -46,6 +46,8 @@ public:
 
     bool UsesCrossRequestPrefixCache() const override;
 
+    void ClearConversationState() override;
+
 private:
     class Impl;
 

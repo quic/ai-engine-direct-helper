@@ -81,6 +81,8 @@ public:
 
     void Reset() override;
 
+    void ClearConversationState() override;
+
     struct QInterfaceImpl;
 
     class ConfigFixer;

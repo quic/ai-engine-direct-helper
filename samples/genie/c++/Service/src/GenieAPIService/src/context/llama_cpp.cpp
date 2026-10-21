@@ -1173,6 +1173,23 @@ public:
     std::vector<llama_token> prefix_cache_tokens_;
     std::vector<PrefixCheckpoint> prefix_ckpts_;
 
+    void ClearPrefixCache()
+    {
+        prefix_cache_valid_ = false;
+        prefix_cache_tokens_.clear();
+        prefix_ckpts_.clear();
+        n_past = 0;
+        n_consumed = 0;
+        if (llama_init && llama_init->context())
+        {
+            llama_memory_clear(llama_get_memory(llama_init->context()), false);
+        }
+        if (is_speculative_ && params_.speculative.draft.ctx_dft)
+        {
+            llama_memory_clear(llama_get_memory(params_.speculative.draft.ctx_dft), false);
+        }
+    }
+
     json GetLastQueryTraceMetrics() const
     {
         return last_trace_metrics_;
@@ -1912,6 +1929,15 @@ void LLAMACppBuilder::SetPrefixHeadCheckpoints(int n)
 bool LLAMACppBuilder::UsesCrossRequestPrefixCache() const
 {
     return g_llama_prefix_cache_enabled.load();
+}
+
+void LLAMACppBuilder::ClearConversationState()
+{
+    std::lock_guard<std::mutex> lock(query_mutex_);
+    if (impl_)
+    {
+        impl_->ClearPrefixCache();
+    }
 }
 
 json LLAMACppBuilder::GetLastQueryTraceMetrics() const
