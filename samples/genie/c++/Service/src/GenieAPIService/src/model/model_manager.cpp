@@ -655,17 +655,68 @@ struct ModelManager::ModeVerifier
                 int configured_context_size = config_->get_context_size();
                 uint64_t effective_context_size = configured_context_size > 0
                         ? static_cast<uint64_t>(configured_context_size) : 32768ULL;
-                uint64_t gpu_required = 0;
-                uint64_t gpu_available = 0;
-                full_gpu_fits = llama_speculative::SpeculativeFitsFullGpu(
-                        config_->get_model_path(), draft_config.path, effective_context_size,
-                        &gpu_required, &gpu_available);
-                My_Log{} << "[GGUFVerify] full GPU check: required=" << gpu_required
-                          << " bytes, gpu_available=" << gpu_available
-                          << " bytes, fits=" << (full_gpu_fits ? 1 : 0) << std::endl;
-                uint64_t required = llama_speculative::EstimateSpeculativeMemoryRequirement(
-                        config_->get_model_path(), draft_config.path, effective_context_size);
+                uint64_t required = 0;
                 uint64_t available = llama_speculative::GetAvailablePhysicalMemoryBytes();
+
+                // draft_model.planner: "off" 是本阶段的回退开关：走旧的两处各算一遍的口径。
+                // 默认（未配置）走规划器——GGUFVerify 与 LLAMACppBuilder 消费同一份 RuntimePlan。
+                if (draft_config.planner == "off")
+                {
+                    uint64_t gpu_required = 0;
+                    uint64_t gpu_available = 0;
+                    full_gpu_fits = llama_speculative::SpeculativeFitsFullGpu(
+                            config_->get_model_path(), draft_config.path, effective_context_size,
+                            &gpu_required, &gpu_available);
+                    My_Log{} << "[GGUFVerify] full GPU check: required=" << gpu_required
+                              << " bytes, gpu_available=" << gpu_available
+                              << " bytes, fits=" << (full_gpu_fits ? 1 : 0)
+                              << " (planner off, legacy estimate)" << std::endl;
+                    required = llama_speculative::EstimateSpeculativeMemoryRequirement(
+                            config_->get_model_path(), draft_config.path, effective_context_size);
+                }
+                else
+                {
+                    const llama_runtime::RuntimePlan plan = llama_speculative::PlanSpeculativeRuntime(
+                            config_->get_model_path(), draft_config, effective_context_size);
+                    config_->set_runtime_plan(plan);
+                    full_gpu_fits = plan.full_gpu;
+
+                    const llama_runtime::MemoryLedger &led = plan.ledger;
+                    // 逐项打印，不是一个汇总数字：r26 那次 OOM 之所以难定位，正是因为旧日志
+                    // 只有一个 required，看不出是哪一项估错了。
+                    My_Log{} << "[Planner] weights=" << (led.weights_tgt + led.weights_dft)
+                              << " kv=" << (led.kv_attn_tgt + led.kv_attn_dft)
+                              << " rs=" << (led.recurrent_tgt + led.recurrent_dft)
+                              << " compute=" << (led.compute_const + led.compute_kq)
+                              << " peak=" << led.runtime_peak
+                              << " safety=" << led.safety
+                              << " required=" << led.gpu_required()
+                              << " free=" << plan.gpu_free_observed
+                              << std::endl;
+                    My_Log{} << "[Planner] " << plan.rationale << std::endl;
+                    // 保留这一行的原有措辞：调优文档与日志解析脚本都按它判读加载形态。
+                    My_Log{} << "[GGUFVerify] full GPU check: required=" << led.gpu_required()
+                              << " bytes, gpu_available=" << plan.gpu_free_observed
+                              << " bytes, fits=" << (full_gpu_fits ? 1 : 0) << std::endl;
+                    // 本 SoC 的 CPU/GPU 共用同一条 LPDDR，所以 host 门槛与 GPU 账本同量级；
+                    // 另加 host 侧常驻的前缀检查点（见 MemoryLedger::host_checkpoints）。
+                    required = led.gpu_required() + led.host_checkpoints;
+
+                    // 检查点份数按主机可用内存推导；prompt_engineering.json 里显式给出的值优先。
+                    // 必须 #ifdef：LLAMACppBuilder 只在 USE_GGUF 构建里有实现（Linux/Android 是
+                    // QNN-only，llama_cpp.cpp 不参与编译），否则会变成链接错误。
+#ifdef USE_GGUF
+                    const bool applied = LLAMACppBuilder::ApplyPlannedHeadCheckpoints(plan.head_checkpoints);
+#else
+                    const bool applied = false;
+#endif
+                    My_Log{} << "[Planner] head_checkpoints=" << plan.head_checkpoints
+                              << (applied ? " (derived, applied)" : " (explicit config wins, not applied)")
+                              << " ckpt_bytes=" << led.ckpt_bytes
+                              << " host_resident=" << led.host_checkpoints
+                              << " host_avail=" << plan.host_avail_observed << std::endl;
+                }
+
                 if (available != UINT64_MAX && required > available)
                 {
                     std::string detail = "insufficient available physical memory for speculative decoding "
@@ -1216,15 +1267,20 @@ bool ModelManager::InitializeConfig()
                 {
                     bool prefix_cache_enabled = true;
                     int head_checkpoints = 2;
+                    // 区分「显式给了」与「取了默认值」：只有显式给出时才压制规划器按主机
+                    // 可用内存推导出的份数（见 LLAMACppBuilder::ApplyPlannedHeadCheckpoints）。
+                    bool head_checkpoints_explicit = false;
                     if (pe_json.contains("llama_prefix_cache") && pe_json["llama_prefix_cache"].is_object())
                     {
                         prefix_cache_enabled = pe_json["llama_prefix_cache"].value("enabled", true);
                         head_checkpoints = pe_json["llama_prefix_cache"].value("head_checkpoints", 2);
+                        head_checkpoints_explicit = pe_json["llama_prefix_cache"].contains("head_checkpoints");
                     }
                     LLAMACppBuilder::SetPrefixCacheEnabled(prefix_cache_enabled);
-                    LLAMACppBuilder::SetPrefixHeadCheckpoints(head_checkpoints);
+                    LLAMACppBuilder::SetPrefixHeadCheckpoints(head_checkpoints, head_checkpoints_explicit);
                     My_Log{} << "[Config] llama_prefix_cache.enabled=" << prefix_cache_enabled
-                             << " head_checkpoints=" << head_checkpoints << std::endl;
+                             << " head_checkpoints=" << head_checkpoints
+                             << (head_checkpoints_explicit ? " (explicit)" : " (default)") << std::endl;
                 }
 #endif
 
@@ -2723,6 +2779,20 @@ static int ParseContextSizeFromConfigJson(const std::string &config_json_path,
     int config_json_ctx_size = 0;
     if (File::IsFileExist(config_json_path) && !File::IsFileEmpty(config_json_path))
     {
+        {
+            std::error_code abs_ec;
+            fs::path abs_path = fs::weakly_canonical(fs::path(config_json_path), abs_ec);
+            My_Log{My_Log::Level::kInfo}
+                    << log_prefix << " Reading model config file for context_size: "
+                    << (abs_ec ? config_json_path : abs_path.generic_string()) << " (model='" << model_name << "')\n";
+            const fs::path shadowed = fs::path(config_json_path).parent_path() / "config.json";
+            if (fs::path(config_json_path).filename() == "genie_config.json" && File::IsFileExist(shadowed.string()))
+            {
+                My_Log{My_Log::Level::kWarning}
+                        << log_prefix << " genie_config.json takes precedence; sibling config.json is IGNORED: "
+                        << shadowed.generic_string() << "\n";
+            }
+        }
         try
         {
             std::ifstream f(config_json_path);

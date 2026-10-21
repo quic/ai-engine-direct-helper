@@ -32,6 +32,8 @@ namespace fs = std::filesystem;
 
 static std::atomic<bool> g_llama_prefix_cache_enabled{true};
 static std::atomic<int> g_llama_prefix_head_checkpoints{2};
+// prompt_engineering.json 里**显式**给出 head_checkpoints 时置位：此后规划器推导出的值不再覆盖它。
+static std::atomic<bool> g_llama_prefix_head_checkpoints_explicit{false};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 返回自 epoch 以来的毫秒数（用于 prefill/生成速率等性能日志的时间戳计算）
@@ -1528,13 +1530,35 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     std::transform(device.begin(), device.end(), device.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
+    // 运行参数规划结果（GGUFVerify 在加载门槛阶段算好并挂在 ModelInstanceConfig 上）。
+    // 这里**只消费、不重算**：两处各算一遍正是旧代码口径漂移的来源。
+    // 为空的两种情况（非投机模型、或 draft_model.planner: "off"）一律走原有路径，零行为变化。
+    const llama_runtime::RuntimePlan *plan =
+        (speculative_requested && model_config_.has_runtime_plan()) ? &model_config_.runtime_plan()
+                                                                    : nullptr;
+    if (plan)
+    {
+        // ctx 可能被规划器按可行上限钳制过（显存装不下请求的长度时），以它为准。
+        if (plan->ctx_effective > 0 && static_cast<int>(plan->ctx_effective) != n_ctx)
+        {
+            My_Log{My_Log::Level::kWarning}
+                << "[LLAMACppBuilder] context_size clamped by planner: " << n_ctx << " -> "
+                << plan->ctx_effective << std::endl;
+            n_ctx = static_cast<int>(plan->ctx_effective);
+        }
+        My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] [Planner] " << plan->rationale
+                                        << std::endl;
+    }
+
     // 直接构造与 llama-completion.exe（非投机分支）/llama-server.exe（投机分支）完全等价的
     // 命令行参数，交给 common_params_parse 走与 CLI 工具完全相同的解析/后处理路径——避免手动
     // 逐字段赋值遗漏只在参数解析时才生效的设置（如 --device），GPU/CPU 取值均已用
     // llama-completion.exe 反复 A/B 实测验证为最快组合。
-    // -fa 不再有本服务自己的默认值：两侧都留给 llama.cpp 自己的 LLAMA_FLASH_ATTN_TYPE_AUTO
-    // （运行期探测后端是否支持，支持则启用）。主模型仅在 draft_model.flash_attn 显式给出时才拼
-    // -fa，草稿仅在 draft_model.draft_flash_attn 显式给出时才覆盖，两者仍可分别取值。
+    // -fa 的取值由规划器决定（判据：非 FA 的注意力矩阵 kq 是否超过设备单次分配上限；超限时
+    // supports_op 返回 false、算子整段落 CPU，48K 实测 CPU compute buffer 2616 MiB、splits 34）。
+    // 主模型与草稿分开给：草稿只占每轮 7.5% 的时间，而实测草稿开 FA 每条慢 24–33%。
+    // 没有 plan 时退回原有语义：仅在 draft_model.flash_attn / draft_flash_attn 显式给出时才拼/覆盖，
+    // 其余留给 llama.cpp 自己的 LLAMA_FLASH_ATTN_TYPE_AUTO。
     auto parse_flash_attn = [](const std::string &value, llama_flash_attn_type fallback) {
         if (value == "on")
         {
@@ -1547,7 +1571,9 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         return fallback;
     };
     const llama_flash_attn_type draft_flash_attn =
-            parse_flash_attn(draft_config.draft_flash_attn, LLAMA_FLASH_ATTN_TYPE_AUTO);
+            plan ? (llama_runtime::FlashAttnEnabled(plan->fa_draft) ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+                                                                    : LLAMA_FLASH_ATTN_TYPE_DISABLED)
+                 : parse_flash_attn(draft_config.draft_flash_attn, LLAMA_FLASH_ATTN_TYPE_AUTO);
 
     std::vector<std::string> arg_strings = {
         "GenieService.exe",
@@ -1556,7 +1582,12 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         "--no-warmup",
         "-s", "42",
     };
-    if (!draft_config.flash_attn.empty())
+    if (plan)
+    {
+        arg_strings.insert(arg_strings.end(),
+                           {"-fa", llama_runtime::FlashAttnEnabled(plan->fa_target) ? "on" : "off"});
+    }
+    else if (!draft_config.flash_attn.empty())
     {
         arg_strings.insert(arg_strings.end(), {"-fa", draft_config.flash_attn});
     }
@@ -1623,7 +1654,18 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             arg_strings.insert(arg_strings.end(), {"-ngld", std::to_string(draft_n_gpu_layers)});
         }
         int fit_target_mib = draft_config.fit_target_mib;
-        if (fit_target_mib < 0 && device != "cpu" && draft_n_gpu_layers != 0)
+        // -fitt 在两条路径上都是空操作，所以规划器接管后不再自动拼它（D6）：
+        //   - 拆分路径有内置 -ot ⇒ common_fit_params 报 "tensor_buft_overrides already set by
+        //     user, abort"，显存拟合直接放弃（exp3 实测）；
+        //   - 全 GPU 路径显式给 -ngl 99 ⇒ fork 的 fit.cpp 放弃拟合。
+        // 继续拼只会让 ARGV 产生「它在起作用」的误导。显式配置 fit_target_mib 仍然照拼。
+        if (plan && fit_target_mib < 0)
+        {
+            My_Log{My_Log::Level::kWarning}
+                << "[LLAMACppBuilder] -fitt omitted: no-op on both paths (built-in -ot aborts "
+                   "common_fit_params; explicit -ngl makes fit.cpp give up)" << std::endl;
+        }
+        else if (fit_target_mib < 0 && device != "cpu" && draft_n_gpu_layers != 0)
         {
             std::error_code size_ec;
             const auto draft_bytes = fs::file_size(draft_path, size_ec);
@@ -1673,8 +1715,13 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
 
     constexpr int kDefaultBatch = 2048;
     constexpr int kDefaultUbatch = 512;
-    int n_batch = configured_n_batch > 0 ? configured_n_batch : kDefaultBatch;
-    int n_ubatch = configured_n_ubatch > 0 ? configured_n_ubatch : kDefaultUbatch;
+    // 优先级：llama 块里显式配置的 n_batch/n_ubatch > 规划器推导值 > 历史默认值。
+    // 规划器目前对这两项给的就是 2048/512（与历史默认一致），留这条通路是为了让以后按档位调
+    // ubatch（例如长上下文用 -ub 256 把 kq 压回设备单次分配上限内）只改规划器一处。
+    int n_batch = configured_n_batch > 0 ? configured_n_batch
+                  : (plan ? static_cast<int>(plan->n_batch) : kDefaultBatch);
+    int n_ubatch = configured_n_ubatch > 0 ? configured_n_ubatch
+                   : (plan ? static_cast<int>(plan->n_ubatch) : kDefaultUbatch);
     if (configured_n_batch < 0 || configured_n_ubatch < 0)
     {
         My_Log{My_Log::Level::kWarning} << "[LLAMACppBuilder] llama.n_batch=" << configured_n_batch
@@ -1737,7 +1784,8 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
             const uint32_t block_count = llama_speculative::ReadGgufBlockCount(gguf_path);
             const uint32_t cpu_layers = draft_config.ffn_cpu_layers >= 0
                                             ? static_cast<uint32_t>(draft_config.ffn_cpu_layers)
-                                            : llama_speculative::kDflashFfnCpuLayersDefault;
+                                            : (plan ? plan->ffn_cpu_layers
+                                                    : llama_speculative::kDflashFfnCpuLayersDefault);
             const std::string ot = llama_speculative::BuildDflashFfnCpuOverride(block_count, cpu_layers);
             My_Log{My_Log::Level::kWarning}
                 << "[LLAMACppBuilder] ffn cpu layers: " << cpu_layers
@@ -1811,15 +1859,28 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // 线程数：运行时动态获取物理/逻辑核心数，替代旧的硬编码值 10，零配置适配不同机器
     // （已通过专项测试确认：GPU 全量卸载场景下线程数在合理范围内影响很小，CPU 场景下
     // 用满核心数是稳妥的默认策略）。
-    const auto hw_threads = static_cast<int32_t>(std::thread::hardware_concurrency());
-    params.cpuparams.n_threads = hw_threads > 0 ? hw_threads : 4;
-    if (speculative_requested && draft_config.n_threads > 0)
+    // 全 GPU 的投机档不再覆盖它（D6）：CPU 侧没有常驻权重，-t/-tb 实测 6/8/12/18 差 < 2%
+    // （CPU 卡在带宽上），覆盖只会让日志显得「它在调参」。此时留给 llama.cpp 自己的默认值。
+    const bool skip_thread_override = plan && plan->full_gpu && draft_config.n_threads <= 0 &&
+                                      draft_config.n_threads_batch <= 0;
+    if (skip_thread_override)
     {
-        params.cpuparams.n_threads = draft_config.n_threads;
+        My_Log{My_Log::Level::kWarning}
+            << "[LLAMACppBuilder] -t/-tb not set: full GPU placement, no resident CPU weights"
+            << std::endl;
     }
-    params.cpuparams_batch.n_threads = (speculative_requested && draft_config.n_threads_batch > 0)
-                                           ? draft_config.n_threads_batch
-                                           : params.cpuparams.n_threads;
+    else
+    {
+        const auto hw_threads = static_cast<int32_t>(std::thread::hardware_concurrency());
+        params.cpuparams.n_threads = hw_threads > 0 ? hw_threads : 4;
+        if (speculative_requested && draft_config.n_threads > 0)
+        {
+            params.cpuparams.n_threads = draft_config.n_threads;
+        }
+        params.cpuparams_batch.n_threads = (speculative_requested && draft_config.n_threads_batch > 0)
+                                               ? draft_config.n_threads_batch
+                                               : params.cpuparams.n_threads;
+    }
 
     // 生成配置：不设固定上限，交由 SetParams("size", ...) 驱动的 max_length_ 来控制输出长度上限。
     params.n_predict = -1;
@@ -1957,9 +2018,26 @@ void LLAMACppBuilder::SetPrefixCacheEnabled(bool enabled)
     g_llama_prefix_cache_enabled.store(enabled);
 }
 
-void LLAMACppBuilder::SetPrefixHeadCheckpoints(int n)
+void LLAMACppBuilder::SetPrefixHeadCheckpoints(int n, bool from_config)
 {
     g_llama_prefix_head_checkpoints.store(n);
+    if (from_config)
+    {
+        g_llama_prefix_head_checkpoints_explicit.store(true);
+    }
+}
+
+bool LLAMACppBuilder::ApplyPlannedHeadCheckpoints(int n)
+{
+    // 显式配置永远胜出。检查点常驻在 host 侧（prefix_ckpts_ 是 std::vector<uint8_t>，常驻上限
+    // head_checkpoints + 2 份），所以它的份数由主机可用内存推导、而不是显存；r23 实测
+    // head_checkpoints=2 的 prefill 收益测不出（1310 vs 1311 s），即 host 紧张时降档是零代价的。
+    if (g_llama_prefix_head_checkpoints_explicit.load())
+    {
+        return false;
+    }
+    g_llama_prefix_head_checkpoints.store(n);
+    return true;
 }
 
 bool LLAMACppBuilder::UsesCrossRequestPrefixCache() const

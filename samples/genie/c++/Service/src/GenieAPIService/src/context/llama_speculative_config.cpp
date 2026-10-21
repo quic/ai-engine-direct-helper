@@ -215,6 +215,26 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.ffn_cpu_layers = block["ffn_cpu_layers"].get<int>();
     }
 
+    if (block.contains("max_alloc_mib") && block["max_alloc_mib"].is_number_integer())
+    {
+        result.max_alloc_mib = block["max_alloc_mib"].get<int>();
+    }
+
+    if (block.contains("n_ubatch") && block["n_ubatch"].is_number_integer())
+    {
+        result.n_ubatch = block["n_ubatch"].get<int>();
+    }
+
+    if (block.contains("n_batch") && block["n_batch"].is_number_integer())
+    {
+        result.n_batch = block["n_batch"].get<int>();
+    }
+
+    if (block.contains("planner") && block["planner"].is_string())
+    {
+        result.planner = block["planner"].get<std::string>();
+    }
+
     // required 默认 true：drafter 加载失败则整个模型加载失败，不静默降级为纯 target 解码。
     if (block.contains("required") && block["required"].is_boolean())
     {
@@ -356,6 +376,59 @@ std::string BuildDflashFfnCpuOverride(uint32_t block_count, uint32_t cpu_layers)
         layers += (layers.empty() ? "" : "|") + std::to_string(i);
     }
     return "blk\\.(" + layers + ")\\.ffn_(up|gate|down)\\.weight=CPU";
+}
+
+llama_runtime::RuntimePlan PlanSpeculativeRuntime(const std::string &model_dir,
+                                                  const DraftModelConfig &cfg,
+                                                  uint64_t context_size)
+{
+    llama_runtime::PlanInputs in;
+    in.ctx_requested = static_cast<uint32_t>(context_size);
+    in.n_seq_max = 1;   // 投机路径恒 1（llama_cpp.cpp 显式 params.n_parallel = 1、kv_unified = true）
+
+    // 显式配置永远胜出，规划器只填未显式给出的项。
+    if (cfg.flash_attn == "on") in.explicit_fa_target = 1;
+    else if (cfg.flash_attn == "off") in.explicit_fa_target = 0;
+    if (cfg.draft_flash_attn == "on") in.explicit_fa_draft = 1;
+    else if (cfg.draft_flash_attn == "off") in.explicit_fa_draft = 0;
+    if (cfg.spec_draft_n_max > 0) in.explicit_n_max = cfg.spec_draft_n_max;
+    in.explicit_ffn_cpu_layers = cfg.ffn_cpu_layers;
+    if (cfg.n_ubatch > 0) in.explicit_n_ubatch = cfg.n_ubatch;
+    if (cfg.n_batch > 0) in.explicit_n_batch = cfg.n_batch;
+    in.max_alloc_explicit_mib = cfg.max_alloc_mib;
+
+    const std::string draft_gguf_path = (std::filesystem::path(model_dir) / cfg.path).string();
+    const std::string main_gguf_path = FindMainGguf(model_dir, draft_gguf_path);
+
+#ifdef USE_GGUF
+    in.tgt = llama_runtime::ReadGgufModelShape(main_gguf_path);
+    in.dft = llama_runtime::ReadGgufModelShape(draft_gguf_path);
+#endif
+    if (!main_gguf_path.empty())
+    {
+        in.tgt.weight_bytes = File::get_file_size(main_gguf_path, std::ios::binary);
+    }
+    if (File::IsFileExist(draft_gguf_path))
+    {
+        in.dft.weight_bytes = File::get_file_size(draft_gguf_path, std::ios::binary);
+    }
+
+    in.host_avail = GetAvailablePhysicalMemoryBytes();
+#ifdef USE_GGUF
+    ggml_backend_load_all();
+    ggml_backend_dev_t gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    if (gpu)
+    {
+        size_t free = 0;
+        size_t total = 0;
+        ggml_backend_dev_memory(gpu, &free, &total);
+        in.gpu_free = free;
+    }
+    // 必须在 ggml_backend_load_all() 之后查：OpenCL 运行时此时已被加载进本进程。
+    in.max_alloc_device = llama_runtime::QueryDeviceMaxAllocBytes();
+#endif
+
+    return llama_runtime::PlanRuntime(in);
 }
 
 } // namespace llama_speculative

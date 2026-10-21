@@ -11,6 +11,8 @@
 
 #include "model_config.h"
 
+#include "../context/llama_runtime_planner.h"
+
 using json = nlohmann::ordered_json;
 
 // ============================================================
@@ -55,6 +57,18 @@ public:
 
     bool is_speculative_full_gpu() const { return speculative_full_gpu_; }
     void set_speculative_full_gpu(bool full_gpu) { speculative_full_gpu_ = full_gpu; }
+
+    // GGUF 投机解码的运行参数规划结果。存在这里而不是让两边各自计算，是因为
+    // GGUFVerify（加载门槛）与 LLAMACppBuilder（argv 拼装）必须消费**同一份** RuntimePlan；
+    // 旧代码两处各算一遍，口径已经漂移。has_runtime_plan() 为 false 时（非投机模型、
+    // 或 draft_model.planner: "off"）所有消费方必须走原有路径，不得读这份 plan。
+    bool has_runtime_plan() const { return has_runtime_plan_; }
+    const llama_runtime::RuntimePlan &runtime_plan() const { return runtime_plan_; }
+    void set_runtime_plan(const llama_runtime::RuntimePlan &plan)
+    {
+        runtime_plan_ = plan;
+        has_runtime_plan_ = true;
+    }
 
     // LoRA 配置
     const std::string &getloraAdapter() const { return loraAdapter_; }
@@ -110,6 +124,8 @@ private:
     bool speculative_draft_forced_cpu_{false};
     bool speculative_reduced_ubatch_{false};
     bool speculative_full_gpu_{false};
+    bool has_runtime_plan_{false};
+    llama_runtime::RuntimePlan runtime_plan_{};
     PromptType prompt_type_{};
     ModelFormat model_format_{};
 

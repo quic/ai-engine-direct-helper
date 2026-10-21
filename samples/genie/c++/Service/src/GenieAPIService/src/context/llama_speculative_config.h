@@ -13,6 +13,8 @@
 #include <string>
 #include <nlohmann/json.hpp>
 
+#include "llama_runtime_planner.h"
+
 using json = nlohmann::ordered_json;
 
 // GGUF/llama.cpp 专属：投机解码（speculative decoding，Qwen3.8-27B + DFlash2）相关的 config.json
@@ -51,6 +53,10 @@ struct DraftModelConfig
     int n_threads = -1;                // 对应 -t（decode 线程数）；<=0 = 未配置，保持 hardware_concurrency()
     int n_threads_batch = -1;          // 对应 -tb（prefill 线程数）；<=0 = 未配置，跟随 n_threads 的最终值
     int ffn_cpu_layers = -1;           // 内置 -ot 下放到 CPU 的后段 FFN 层数；<0 = 用 kDflashFfnCpuLayersDefault
+    int max_alloc_mib = -1;            // 设备单次分配上限覆盖值；<0 = 先问设备，问不到再退回 2048 MiB
+    int n_ubatch = -1;                 // 对应 -ub；<=0 = 由规划器推导（默认 512）。显式值会进规划器，FA 判据按它重算 kq
+    int n_batch = -1;                  // 对应 -b；<=0 = 由规划器推导（默认 2048）
+    std::string planner;               // "off" = 回退到旧的 SpeculativeFitsFullGpu 门槛；其余值沉默忽略（默认走规划器）
 
     // 从模型 config.json 解析出的 json 对象中提取 draft_model 字段块。
     // 不含该字段块、字段类型不匹配、或传入的 json 本身为空/非 object 时，均返回 present=false
@@ -58,14 +64,14 @@ struct DraftModelConfig
     static DraftModelConfig ParseFrom(const json &model_config_json);
 };
 
-// 投机解码模型（Qwen3.8-27B + DFlash2）加载所需内存的动态估算：主模型/草稿模型权重文件字节数之和
-// + 按配置的 context_size 估算的合并 KV cache（主模型/草稿模型各自的 GGUF block_count 直接当
-// n_layer，不识别混合架构的 full_attention_interval，更简单也更保守）+ 固定安全余量。
-// model_dir 为模型所在目录（内部通过 File::MatchFileInDir 查找其下的 .gguf 主模型文件，与
-// LLAMACppBuilder 构造函数里的 directory_iterator 扫描等效），draft_relative_path 为
-// draft_model.path 字段原值（相对 model_dir）。比较对象为可用物理内存
-// （GetAvailablePhysicalMemoryBytes()）而非总物理内存，见 GGUFVerify::CreateIfVerifiedImpl()
-// （model_manager.cpp）。
+// 投机解码模型（Qwen3.8-27B + DFlash2）加载所需内存的动态估算。
+// ⚠️ 这是 **`draft_model.planner: "off"` 的回退路径**，默认路径已改走
+// `PlanSpeculativeRuntime()`（单一真相源）。它的口径是：主/草稿模型权重文件字节数之和
+// + 按 context_size 估算的 attention KV（经 `EstimateAttentionKvCacheBytes()`，**该函数确实
+// 识别 `full_attention_interval`**）+ 固定 2 GiB 余量。它漏了 recurrent 状态与 compute buffer。
+// model_dir 为模型所在目录，draft_relative_path 为 draft_model.path 字段原值（相对 model_dir）。
+// 比较对象为可用物理内存（GetAvailablePhysicalMemoryBytes()）而非总物理内存，见
+// GGUFVerify::CreateIfVerifiedImpl()（model_manager.cpp）。
 uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
                                                const std::string &draft_relative_path,
                                                uint64_t context_size);
@@ -75,8 +81,18 @@ uint64_t EstimateSpeculativeMemoryRequirement(const std::string &model_dir,
 uint64_t GetAvailablePhysicalMemoryBytes();
 
 // 主模型 + 草稿权重 + attention 层 KV + 计算余量是否装得进 GPU 设备报告的可用显存。
+// ⚠️ 同上：这是 `draft_model.planner: "off"` 的回退路径，默认路径走 PlanSpeculativeRuntime()。
 bool SpeculativeFitsFullGpu(const std::string &model_dir, const std::string &draft_relative_path,
                             uint64_t context_size, uint64_t *required_out, uint64_t *available_out);
+
+// 单一真相源：把「磁盘上的 GGUF 形状 + 设备显存/主机内存/单次分配上限 + 显式配置」汇成
+// 一次 PlanRuntime() 调用。GGUFVerify 的加载门槛与 LLAMACppBuilder 的 argv 拼装必须消费
+// **同一份** RuntimePlan，不得各算一遍（旧代码两处口径已经漂移，这正是本模块存在的理由）。
+// 内部做两件有副作用的事：读 GGUF 文件头与文件大小；调 ggml_backend_load_all() +
+// ggml_backend_dev_memory() + QueryDeviceMaxAllocBytes() 各一次。其余全是纯函数。
+llama_runtime::RuntimePlan PlanSpeculativeRuntime(const std::string &model_dir,
+                                                  const DraftModelConfig &cfg,
+                                                  uint64_t context_size);
 
 // 主模型 GGUF 的 block_count；读不到返回 0。
 uint32_t ReadGgufBlockCount(const std::string &gguf_path);

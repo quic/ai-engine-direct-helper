@@ -31,6 +31,7 @@ list(APPEND SERVICE_SOURCES
         src/chat_history/chat_history.cpp
         src/model/model_manager.cpp
         src/context/llama_speculative_config.cpp
+        src/context/llama_runtime_planner.cpp
         src/context/qnn/genie.cpp
         src/context/qnn/genie_interface.cpp
         src/context/qnn/phi4mm/phi4mm.cpp
