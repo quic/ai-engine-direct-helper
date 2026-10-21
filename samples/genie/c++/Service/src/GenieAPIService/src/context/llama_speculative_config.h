@@ -50,6 +50,7 @@ struct DraftModelConfig
     int fit_target_mib = -1;           // 对应 -fitt（每设备显存预留）；<0 = 未配置，不拼进 argv
     int n_threads = -1;                // 对应 -t（decode 线程数）；<=0 = 未配置，保持 hardware_concurrency()
     int n_threads_batch = -1;          // 对应 -tb（prefill 线程数）；<=0 = 未配置，跟随 n_threads 的最终值
+    int ffn_cpu_layers = -1;           // 内置 -ot 下放到 CPU 的后段 FFN 层数；<0 = 用 kDflashFfnCpuLayersDefault
 
     // 从模型 config.json 解析出的 json 对象中提取 draft_model 字段块。
     // 不含该字段块、字段类型不匹配、或传入的 json 本身为空/非 object 时，均返回 present=false
@@ -80,8 +81,14 @@ bool SpeculativeFitsFullGpu(const std::string &model_dir, const std::string &dra
 // 主模型 GGUF 的 block_count；读不到返回 0。
 uint32_t ReadGgufBlockCount(const std::string &gguf_path);
 
-// DFlash 投机模型内置的 -ot 规则：后段 FFN 权重留 CPU，attention 上 GPU。block_count 为 0 时返回空串。
-std::string BuildDflashFfnCpuOverride(uint32_t block_count);
+// 内置 -ot 下放到 CPU 的后段 FFN 层数的默认值：本模型（65/66 层）长期使用、唯一有完整长任务实测
+// 背书的值，等价于历史的 blk 35-64。不要凭显存估算去调小它，原因见同目录 llama_cpp.cpp.notes.md
+// 「-ot 层数按显存反算（B1）已判死」一节。
+constexpr uint32_t kDflashFfnCpuLayersDefault = 30;
+
+// DFlash 投机模型内置的 -ot 规则：最后 cpu_layers 层 FFN 权重留 CPU，attention 上 GPU。
+// block_count 为 0、cpu_layers 为 0 或超过 block_count 时返回空串。
+std::string BuildDflashFfnCpuOverride(uint32_t block_count, uint32_t cpu_layers);
 
 } // namespace llama_speculative
 

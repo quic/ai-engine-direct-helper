@@ -1730,8 +1730,18 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         }
         else if (speculative_requested && !user_ot && draft_config.spec_type.find("dflash") != std::string::npos)
         {
-            const std::string ot = llama_speculative::BuildDflashFfnCpuOverride(
-                    llama_speculative::ReadGgufBlockCount(gguf_path));
+            // 层数只有两个来源：配置显式给的 ffn_cpu_layers，或内置默认值。不要在这里按显存余量反算
+            // ——该路径已被真机实测判死（28 层能加载、前 4 个请求正常，第 5 个请求存前缀检查点时
+            // clCreateBuffer err=-5 直接 GGML_ASSERT 崩溃），依据见 llama_cpp.cpp.notes.md 对应章节。
+            const uint32_t block_count = llama_speculative::ReadGgufBlockCount(gguf_path);
+            const uint32_t cpu_layers = draft_config.ffn_cpu_layers >= 0
+                                            ? static_cast<uint32_t>(draft_config.ffn_cpu_layers)
+                                            : llama_speculative::kDflashFfnCpuLayersDefault;
+            const std::string ot = llama_speculative::BuildDflashFfnCpuOverride(block_count, cpu_layers);
+            My_Log{My_Log::Level::kWarning}
+                << "[LLAMACppBuilder] ffn cpu layers: " << cpu_layers
+                << (draft_config.ffn_cpu_layers >= 0 ? " (from config)" : " (default)")
+                << ", blocks=" << block_count << std::endl;
             if (!ot.empty())
             {
                 arg_strings.insert(arg_strings.end(), {"-ot", ot});

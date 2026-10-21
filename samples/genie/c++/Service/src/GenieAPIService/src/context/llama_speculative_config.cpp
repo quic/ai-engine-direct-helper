@@ -210,6 +210,11 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.n_threads_batch = block["n_threads_batch"].get<int>();
     }
 
+    if (block.contains("ffn_cpu_layers") && block["ffn_cpu_layers"].is_number_integer())
+    {
+        result.ffn_cpu_layers = block["ffn_cpu_layers"].get<int>();
+    }
+
     // required 默认 true：drafter 加载失败则整个模型加载失败，不静默降级为纯 target 解码。
     if (block.contains("required") && block["required"].is_boolean())
     {
@@ -339,14 +344,14 @@ uint32_t ReadGgufBlockCount(const std::string &gguf_path)
 #endif
 }
 
-std::string BuildDflashFfnCpuOverride(uint32_t block_count)
+std::string BuildDflashFfnCpuOverride(uint32_t block_count, uint32_t cpu_layers)
 {
-    if (block_count != 65 && block_count != 66)
+    if (block_count == 0 || cpu_layers == 0 || cpu_layers > block_count)
     {
         return {};
     }
     std::string layers;
-    for (uint32_t i = 35; i <= 64; ++i)
+    for (uint32_t i = block_count - cpu_layers; i < block_count; ++i)
     {
         layers += (layers.empty() ? "" : "|") + std::to_string(i);
     }
