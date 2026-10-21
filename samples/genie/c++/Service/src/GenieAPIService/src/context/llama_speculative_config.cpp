@@ -150,6 +150,11 @@ DraftModelConfig DraftModelConfig::ParseFrom(const json &model_config_json)
         result.flash_attn = block["flash_attn"].get<std::string>();
     }
 
+    if (block.contains("draft_flash_attn") && block["draft_flash_attn"].is_string())
+    {
+        result.draft_flash_attn = block["draft_flash_attn"].get<std::string>();
+    }
+
     if (block.contains("samplers") && block["samplers"].is_string())
     {
         result.samplers = block["samplers"].get<std::string>();

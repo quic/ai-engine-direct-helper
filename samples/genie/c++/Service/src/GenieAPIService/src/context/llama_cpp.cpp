@@ -145,7 +145,8 @@ static llama_sampler* create_watermark_sampler(const GenieWatermarkProviderVTabl
 class LLAMACppBuilder::Impl
 {
 public:
-    explicit Impl(common_params &&params) : params_{std::move(params)}
+    explicit Impl(common_params &&params, llama_flash_attn_type draft_flash_attn = LLAMA_FLASH_ATTN_TYPE_AUTO)
+            : params_{std::move(params)}, draft_flash_attn_{draft_flash_attn}
     {
         params_.warmup = false;
 
@@ -268,6 +269,12 @@ public:
         if (is_speculative_)
         {
             common_params params_dft = common_base_params_to_speculative(params_);
+            // common_base_params_to_speculative() 整份复制主模型 params（含 flash_attn_type），
+            // 草稿 context 由本服务自己创建，故在此单独覆盖，使主模型/草稿的 FA 可以分别取值。
+            params_dft.flash_attn_type = draft_flash_attn_;
+            My_Log{} << "[LLAMACpp] draft flash_attn: "
+                     << llama_flash_attn_type_name(params_dft.flash_attn_type)
+                     << " (target: " << llama_flash_attn_type_name(params_.flash_attn_type) << ")\n";
             draft_init_ = common_speculative_init_from_params(params_dft, model, ctx);
             if (!draft_init_ || !draft_init_->model() || !draft_init_->context())
             {
@@ -1121,6 +1128,7 @@ public:
     }
 
     common_params params_;
+    llama_flash_attn_type draft_flash_attn_ = LLAMA_FLASH_ATTN_TYPE_AUTO;
     common_init_result_ptr llama_init;
 
     // 投机解码双 context 生命周期契约见同名文档 llama_cpp.md（draft 必须先于 target 析构）
@@ -1524,15 +1532,32 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     // 命令行参数，交给 common_params_parse 走与 CLI 工具完全相同的解析/后处理路径——避免手动
     // 逐字段赋值遗漏只在参数解析时才生效的设置（如 --device），GPU/CPU 取值均已用
     // llama-completion.exe 反复 A/B 实测验证为最快组合。
+    // -fa 默认值：主模型 on、草稿模型 off，两者分别取值（见同名文档 llama_cpp.md）。主模型由
+    // draft_model.flash_attn 覆盖，草稿由 draft_model.draft_flash_attn 覆盖；非投机模型两字段都
+    // 解析不到，恒为主模型默认 on，与改动前一致。
+    auto parse_flash_attn = [](const std::string &value, llama_flash_attn_type fallback) {
+        if (value == "on")
+        {
+            return LLAMA_FLASH_ATTN_TYPE_ENABLED;
+        }
+        if (value == "off")
+        {
+            return LLAMA_FLASH_ATTN_TYPE_DISABLED;
+        }
+        return fallback;
+    };
+    const std::string target_flash_attn =
+            !draft_config.flash_attn.empty() ? draft_config.flash_attn : std::string{"on"};
+    const llama_flash_attn_type draft_flash_attn =
+            parse_flash_attn(draft_config.draft_flash_attn, LLAMA_FLASH_ATTN_TYPE_DISABLED);
+
     std::vector<std::string> arg_strings = {
         "GenieService.exe",
         "--model", gguf_path,
         "--ctx-size", std::to_string(n_ctx),
         "--no-warmup",
         "-s", "42",
-        "-fa",
-        (speculative_requested && !draft_config.flash_attn.empty()) ? draft_config.flash_attn
-                                                                    : (speculative_requested ? "off" : "on"),
+        "-fa", target_flash_attn,
     };
     if (!speculative_requested)
     {
@@ -1815,7 +1840,7 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
              << ", kv_unified=" << params.kv_unified
              << "\n";
 
-    impl_ = new Impl{std::move(params)};
+    impl_ = new Impl{std::move(params), draft_flash_attn};
 }
 
 int LLAMACppBuilder::SetParams(const std::string &key, const std::string &value)

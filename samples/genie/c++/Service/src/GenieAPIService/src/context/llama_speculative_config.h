@@ -37,7 +37,8 @@ struct DraftModelConfig
     int spec_draft_n_max = 0;          // 每轮投机验证最多产出的 draft token 数（对应 --spec-draft-n-max）
     double spec_draft_p_min = 0.0;     // 投机接受概率下限（对应 --spec-draft-p-min）
     bool required = true;              // drafter 加载失败时是否导致整体模型加载失败（默认 true，不静默降级）
-    std::string flash_attn;            // "on"/"off"；空 = 未配置，保持现状（投机 off）
+    std::string flash_attn;            // 主模型 -fa："on"/"off"；空 = 未配置，用默认 on
+    std::string draft_flash_attn;      // 草稿模型专属 FA："on"/"off"；空/其余值 = 未配置，用默认 off
     std::string samplers;              // 对应 --samplers；空 = 未配置，不拼进 argv
     float temp = 0.0f;                 // 对应 --temp；默认 0（greedy）；<0 = 不拼进 argv
     int top_k = 1;                     // 对应 --top-k；默认 1（greedy）；<0 = 不拼进 argv
