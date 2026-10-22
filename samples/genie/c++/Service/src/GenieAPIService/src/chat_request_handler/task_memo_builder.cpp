@@ -125,6 +125,9 @@ namespace {
     constexpr size_t kMaxArtifacts = 8;
     constexpr size_t kMaxArtifactLinesPerResult = 3;
     constexpr size_t kMaxLastSuccessChars = 900;
+    // 已尝试查询索引：资源数、每个资源下保留的查询条数上限，避免长链路里自身无限增长。
+    constexpr size_t kMaxTriedQueryResources = 10;
+    constexpr size_t kMaxTriedQueriesPerResource = 6;
 
     std::string FullToolCall(const std::string& assistant_content) {
         std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
@@ -263,13 +266,12 @@ namespace {
         return lower.find("read") != std::string::npos && lower.find("exec") == std::string::npos;
     }
 
-    // 从承载 tool_call 的 assistant 消息文本里抽取 read 类工具调用的路径参数；兼容 Harmony
-    // （to=functions.NAME ... {"path":"..."}）与 general 格式（<tool_call>{"name":"NAME",
-    // "arguments":{"path":"..."}}</tool_call>）两种拼接方式。只用子串朴素扫描，不引入 <regex>，
-    // 与本文件其余解析风格一致；误判的代价只是漏报/多报一次提示，不影响正确性。
-    std::string ExtractReadToolPathImpl(const std::string& assistant_content) {
-        std::string name;
-        size_t search_from = 0;
+    // 从承载 tool_call 的 assistant 消息文本里抽取工具名与参数扫描起点；兼容 Harmony
+    // （to=functions.NAME ...）与 general 格式（<tool_call>{"name":"NAME", ...}</tool_call>）
+    // 两种拼接方式。只用子串朴素扫描，不引入 <regex>，与本文件其余解析风格一致；误判的
+    // 代价只是漏报/多报一次提示，不影响正确性。供 ExtractReadToolPathImpl 与
+    // ExtractAnyToolPathArg 共用，避免重复实现同一段扫描逻辑。
+    bool ExtractToolNameAndSearchFrom(const std::string& assistant_content, std::string& name_out, size_t& search_from_out) {
         size_t name_pos = assistant_content.find("to=functions.");
         if (name_pos != std::string::npos) {
             size_t start = name_pos + strlen("to=functions.");
@@ -277,23 +279,25 @@ namespace {
             while (end < assistant_content.size() &&
                    (isalnum((unsigned char) assistant_content[end]) || assistant_content[end] == '_'))
                 ++end;
-            name = assistant_content.substr(start, end - start);
-            search_from = end;
-        } else {
-            size_t np = assistant_content.find("\"name\"");
-            if (np != std::string::npos) {
-                size_t colon = assistant_content.find(':', np);
-                size_t q1 = (colon == std::string::npos) ? std::string::npos : assistant_content.find('"', colon + 1);
-                size_t q2 = (q1 == std::string::npos) ? std::string::npos : assistant_content.find('"', q1 + 1);
-                if (q1 != std::string::npos && q2 != std::string::npos) {
-                    name = assistant_content.substr(q1 + 1, q2 - q1 - 1);
-                    search_from = q2;
-                }
+            name_out = assistant_content.substr(start, end - start);
+            search_from_out = end;
+            return !name_out.empty();
+        }
+        size_t np = assistant_content.find("\"name\"");
+        if (np != std::string::npos) {
+            size_t colon = assistant_content.find(':', np);
+            size_t q1 = (colon == std::string::npos) ? std::string::npos : assistant_content.find('"', colon + 1);
+            size_t q2 = (q1 == std::string::npos) ? std::string::npos : assistant_content.find('"', q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos) {
+                name_out = assistant_content.substr(q1 + 1, q2 - q1 - 1);
+                search_from_out = q2;
+                return !name_out.empty();
             }
         }
-        if (name.empty() || !IsReadLikeToolName(name))
-            return "";
+        return false;
+    }
 
+    std::string ExtractPathArgFrom(const std::string& assistant_content, size_t search_from) {
         static const char* kPathKeys[] = { "\"path\"", "\"file\"", "\"file_path\"", "\"filename\"" };
         for (const char* key : kPathKeys) {
             size_t kp = assistant_content.find(key, search_from);
@@ -306,6 +310,27 @@ namespace {
                 return assistant_content.substr(q1 + 1, q2 - q1 - 1);
         }
         return "";
+    }
+
+    std::string ExtractReadToolPathImpl(const std::string& assistant_content) {
+        const std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
+        std::string name;
+        size_t search_from = 0;
+        if (!ExtractToolNameAndSearchFrom(visible, name, search_from) || !IsReadLikeToolName(name))
+            return "";
+        return ExtractPathArgFrom(visible, search_from);
+    }
+
+    // 已尝试查询索引专用：与 ExtractReadToolPathImpl 唯一区别是不做 IsReadLikeToolName
+    // 过滤——任意工具（典型如 grep 这类按 pattern 检索的工具）只要带路径类参数就提取,
+    // 不需要在这里硬编码具体工具名。
+    std::string ExtractAnyToolPathArg(const std::string& assistant_content) {
+        const std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
+        std::string name;
+        size_t search_from = 0;
+        if (!ExtractToolNameAndSearchFrom(visible, name, search_from))
+            return "";
+        return ExtractPathArgFrom(visible, search_from);
     }
 
     std::string ReplaceInvalidUtf8(const std::string& s) {
@@ -542,6 +567,33 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             if (!failed && !call.empty() && !reads_content)
                 for (const auto& a : ExtractArtifactLines(m.content))
                     AppendCapped(entry["artifacts"], ReplaceInvalidUtf8(a), kMaxArtifacts);
+
+            // 已尝试查询索引：对同一资源（如同一文件路径）用不同参数反复调用非 read 类工具
+            // 时（如 grep 的 pattern 每次不同），现有去重机制（CanonicalToolCallKey，
+            // message_pre_filter.cpp）因参数不同判定为全新调用、不会打重复标；这里不做
+            // "内容是否已被覆盖"的推断（该路已判死，69% 误判率，见 message_pre_filter.cpp.notes.md），
+            // 只如实记录模型自己发出过的调用，交给模型自己判断要不要换个角度，不代为丢弃
+            // 或合并任何内容——这与"去重/占位"是两条独立的路，互不替代。
+            if (!call.empty() && !reads_content) {
+                const std::string query_path = ExtractAnyToolPathArg(last_assistant_content);
+                if (!query_path.empty()) {
+                    if (!entry.contains("tried_queries") || !entry["tried_queries"].is_object())
+                        entry["tried_queries"] = json::object();
+                    json& bucket = entry["tried_queries"][query_path];
+                    const std::string item = (failed ? "失败: " : "") +
+                        ReplaceInvalidUtf8(safe_utf8_truncate(call, kMaxHardRuleChars, "..."));
+                    AppendCapped(bucket, item, kMaxTriedQueriesPerResource);
+                    CapObjectSize(entry["tried_queries"], kMaxTriedQueryResources);
+                    // 总尝试次数单独计数、不随 FIFO 截断而丢失：即便早期的具体 pattern 文本已被
+                    // 淘汰出数组，模型仍能看到"这个资源已经被查询过多少次"这个常量大小的信号,
+                    // 不需要为此保留全部历史文本,也不会破坏非驱逐轮的字节稳定性。
+                    if (!entry.contains("tried_queries_count") || !entry["tried_queries_count"].is_object())
+                        entry["tried_queries_count"] = json::object();
+                    size_t prev_count = entry["tried_queries_count"].value(query_path, (size_t) 0);
+                    entry["tried_queries_count"][query_path] = prev_count + 1;
+                    CapObjectSize(entry["tried_queries_count"], kMaxTriedQueryResources);
+                }
+            }
 
             // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
             // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。
@@ -781,7 +833,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
             model_entry["_next_page_id"] = entry["_next_page_id"];
             // read_files（已读文件索引）同理：模型层不感知、不生成，必须显式透传。
             model_entry["read_files"] = entry["read_files"];
-            for (const char* k : {"hard_rules", "_hard_rule_files", "artifacts", "last_success"})
+            for (const char* k : {"hard_rules", "_hard_rule_files", "artifacts", "last_success", "tried_queries", "tried_queries_count"})
                 if (entry.contains(k))
                     model_entry[k] = entry[k];
             // original_goal_raw/confidence 权威兜底，从 entry 显式透传，不允许模型层输出覆盖。
@@ -919,6 +971,33 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         read_files_block = oss.str();
     }
 
+    // 已尝试查询索引：对同一资源（如同一文件路径）用不同参数反复调用非 read 类工具时
+    // （如 grep 的 pattern 每次不同），现有去重机制因参数不同不会判重；这里只如实呈现
+    // 模型自己发出过的调用，不做任何"内容是否已被覆盖"的推断，交给模型自己判断是否
+    // 要换个角度，而不是代为丢弃或合并。总尝试次数单独计数、不随 FIFO 截断而丢失，
+    // 即便早期的具体查询文本已被淘汰，模型依然能看到这个资源被反复查询过多少次。
+    std::string tried_queries_block;
+    if (entry.contains("tried_queries") && entry["tried_queries"].is_object() && !entry["tried_queries"].empty()) {
+        std::ostringstream oss;
+        oss << "Queries already tried per resource (if your next call targets the same resource "
+               "with similar intent, prefer a different angle instead of repeating):\n";
+        for (auto it = entry["tried_queries"].begin(); it != entry["tried_queries"].end(); ++it) {
+            if (!it.value().is_array() || it.value().empty())
+                continue;
+            const size_t total = (entry.contains("tried_queries_count") && entry["tried_queries_count"].is_object())
+                ? entry["tried_queries_count"].value(it.key(), (size_t) it.value().size())
+                : it.value().size();
+            oss << "- " << it.key() << " (" << total << " attempt(s) recorded so far";
+            if (total > it.value().size())
+                oss << ", only the most recent " << it.value().size() << " shown";
+            oss << "):\n";
+            for (const auto& q : it.value())
+                if (q.is_string())
+                    oss << "  - " << q.get<std::string>() << "\n";
+        }
+        tried_queries_block = oss.str();
+    }
+
     std::string last_success_block;
     if (entry.contains("last_success") && entry["last_success"].is_object()
             && !entry["last_success"].empty()) {
@@ -956,12 +1035,13 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         render_list("Facts / constraints", "facts_constraints"),
         render_list("Open questions", "open_questions"),
         read_files_block,
+        tried_queries_block,
         tool_state_block,
         page_directory_block,
     };
     static const char* kBlockNames[] = {
         "hard_rules", "artifacts", "last_success", "completed", "next_actions",
-        "facts_constraints", "open_questions", "read_files", "tool_state", "page_directory",
+        "facts_constraints", "open_questions", "read_files", "tried_queries", "tool_state", "page_directory",
     };
 
     std::string out = header;
