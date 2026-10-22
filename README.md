@@ -42,16 +42,20 @@ PP-OCR and more) and, whenever it needs a model that isn't packaged yet, resolve
 automatically — downloading a pre-built model straight from
 [Qualcomm AI Hub](https://aihub.qualcomm.com/compute/models) when one exists, or converting
 your own PyTorch / ONNX model (export → quantization → context-binary generation → accuracy
-validation via QAIRT SDK) when it doesn't. Either way, you never leave the conversation, and
-every model ends up running on the same on-device NPU engine (`QNNContext` via
-`qai-appbuilder`).
+validation via QAIRT SDK) when it doesn't. TensorFlow Lite models use the public `QNNContext`
+entry point; `QNNContext` auto-dispatches the model to the direct TFLite runtime path instead.
+Either way, you never leave the conversation.
+
+> **Direct TFLite availability:** Direct TFLite support is disabled by default. Build a custom
+> wheel with `APPBUILDER_ENABLE_TFLITE` (Linux ARM64) or `APPBUILDER_ENABLE_TFLITE_CPU` (Windows);
+> see [BUILD.md](BUILD.md).
 
 ### Why it matters
 
 - **Minutes, not days** — get a working local AI app without hand-writing a UI or wiring up
   model I/O yourself.
-- **Truly on-device** — every model runs on the Snapdragon NPU; your data never leaves the
-  machine. No internet connection is needed at inference time.
+- **Truly on-device** — models run locally, so your data never leaves the machine. No internet
+  connection is needed at inference time; compatible QNN/HTP paths can use the Snapdragon NPU.
 - **Private by design** — a natural fit for privacy-sensitive scenarios (corporate documents,
   medical images, personal recordings), backed by a built-in security module that gates every
   file, command, and tool the Agent touches.
@@ -196,7 +200,7 @@ The **AI Hub Model Run** skill downloads pre-exported QNN models directly from A
 
 > **Use this skill when you have a custom PyTorch or ONNX model that is NOT available on AI Hub.**
 
-The **Model Builder** skill automates the full QNN conversion pipeline for custom models — from ONNX export all the way to a validated `.bin` context binary running on the Snapdragon NPU.
+The **Model Builder** skill automates the full QNN conversion pipeline for custom models — from ONNX export all the way to a validated `.bin` context binary running on the Snapdragon NPU. TensorFlow Lite (`.tflite`) models use the direct runtime Skill, with `QNNContext` dispatching them to the appropriate native TFLite backend rather than this conversion pipeline.
 
 | What it does | Details |
 |-------------|---------|

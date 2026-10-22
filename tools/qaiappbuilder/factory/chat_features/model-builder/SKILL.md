@@ -1,6 +1,6 @@
 ---
 name: model-builder
-description: QAI ModelBuilder. Tools and workflows for model conversion, inspection, operator patching, quantization, and inference validation of self-converted models on Qualcomm platform. Use this skill when working with custom ONNX/PyTorch models — export to ONNX, convert to QNN/SNPE DLC, FP16/FP32/INT8 quantization, operator patching, context binary generation, and inference validation of self-built models. NOT for AI Hub prebuilt packages — use model-hub skill instead.
+description: QAI ModelBuilder. Tools and workflows for conversion, inspection, operator patching, quantization, and inference validation of custom ONNX/PyTorch models on Qualcomm platforms. Use this skill for ONNX/PyTorch-to-QNN or SNPE conversion; route direct `.tflite` and `.pte` execution to the matching runtime sub-skill. NOT for AI Hub prebuilt packages — use model-hub skill instead.
 ---
 
 # Model Builder
@@ -23,9 +23,12 @@ Answer three questions; **if any veto holds, stop and switch skills.**
 |---|------|-------|------|
 | Q1 | Does the model **already have a prebuilt package on AI Hub** (Zipformer, MobileNet, YOLO, …)? | ❌ **Stop -> `model-hub` skill** | Q2 |
 | Q2 | Is the file to download/use an AI Hub prebuilt artifact (QNN context binary `.bin` / `.dlc`)? | ❌ **Stop -> `model-hub` skill** | Q3 |
-| Q3 | Does the user have a **custom ONNX/PyTorch model** to convert, or to re-quantize/recompile into a custom `.bin`? | ✅ **Activate this skill** | ❓ Intent unclear — confirm first |
+| Q3 | Is the model a direct-runtime artifact: TensorFlow Lite (`.tflite`) or ExecuTorch (`.pte`)? | **Stop -> load the matching direct-runtime sub-skill** | Q4 |
+| Q4 | Does the user have a **custom ONNX/PyTorch model** to convert, or to re-quantize/recompile into a custom `.bin`? | ✅ **Activate this skill** | ❓ Intent unclear — confirm first |
 
 **Switch to `model-hub` on any of:** "download from AI Hub" / "model on AI Hub" / "prebuilt package" / "on-device pre-exported package"; a model name + "download" where it already exists on AI Hub; "QNN_CONTEXT_BINARY" / "QNN_DLC". An AI Hub prebuilt package (`.bin`/`.dlc`) is loaded directly by `model-hub` via `qai_appbuilder`/`QNNContext`; this skill only converts/compiles **custom ONNX/PyTorch**. ("run inference" alone does NOT pick this skill — only when the target is a self-converted model.)
+
+> **Direct-runtime switch:** `.tflite` -> [`tflite-direct-runtime/SKILL.md`](tflite-direct-runtime/SKILL.md); `.pte` -> [`executorch-direct-runtime/SKILL.md`](executorch-direct-runtime/SKILL.md). Neither format enters this ONNX/PyTorch conversion workflow.
 
 > **Dispatching a sub-agent to another skill (e.g. `model-hub`) — MANDATORY:** a sub-agent inherits NOTHING from this skill (blank context). Once a vacuum-written prompt sent one recursively scanning `C:\`/`C:\WoS_AI` for `.bin` -> 30-min hang. So: (1) **first `read` the target SKILL.md in full**, write the prompt from it; (2) the prompt's first instruction MUST be "read the target SKILL.md in full before acting"; (3) the prompt MUST NOT carry any path/script/toolchain from this skill (`run_pipeline.py`, `qnn-onnx-converter`, …) — useless for prebuilt packages and lures a wrong disk scan; (4) reuse the target's Sub-Agent Dispatch Template if it has one.
 
@@ -70,6 +73,8 @@ This SKILL is the main pipeline + index. For any specific step, error, or topic,
 | ADB device deployment | `references/adb_execution.md` |
 | Remote (SSH) execution | `references/remote_execution.md` |
 | Troubleshooting quick-index + Windows tips | `references/troubleshooting.md` |
+| Direct TensorFlow Lite (`.tflite`) execution | `tflite-direct-runtime/SKILL.md` |
+| Direct ExecuTorch (`.pte`) execution | `executorch-direct-runtime/SKILL.md` |
 
 ---
 
