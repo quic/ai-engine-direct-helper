@@ -84,6 +84,7 @@ public:
     static std::string Render(const json& entry, size_t max_chars = 0);
     static std::string RenderCompact(const json& entry);
     static std::string RenderRedundantToolCallNote(int repeat_count);
+    static std::string RenderNonContiguousRepeatNote(int repeat_count);
 
 private:
     json BuildRuleLayer(const json& prev, const std::vector<GenieChatMessage>& dropped_messages) const;

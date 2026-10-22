@@ -27,6 +27,27 @@ std::string ToolCallRepetitionStore::MakeKey(const std::string& session_key, con
     return session_key + "::" + model_name;
 }
 
+void ToolCallRepetitionStore::RecordSignatureTotal(Entry& entry, const std::string& signature)
+{
+    auto sit = entry.signature_totals.find(signature);
+    if (sit == entry.signature_totals.end())
+    {
+        if (entry.signature_totals.size() >= kMaxSignaturesPerEntry && !entry.signature_order.empty())
+        {
+            entry.signature_totals.erase(entry.signature_order.front());
+            entry.signature_order.pop_front();
+        }
+        entry.signature_totals[signature] = 1;
+        entry.signature_order.push_back(signature);
+        entry.last_signature_total = 1;
+    }
+    else
+    {
+        sit->second += 1;
+        entry.last_signature_total = sit->second;
+    }
+}
+
 int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::string& signature)
 {
     if (key.empty())
@@ -43,6 +64,7 @@ int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::strin
         entry.last_signature = signature;
         entry.repeat_count = 1;
         entry.last_call_time = now;
+        RecordSignatureTotal(entry, signature);
         lru_list_.push_front(key);
         cache_[key] = {entry, lru_list_.begin()};
         return 1;
@@ -54,7 +76,14 @@ int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::strin
 
     Entry& entry = it->second.first;
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - entry.last_call_time).count();
-    if (elapsed >= ttl_seconds_ || entry.last_signature != signature)
+    if (elapsed >= ttl_seconds_)
+    {
+        entry.repeat_count = 1;
+        entry.last_signature = signature;
+        entry.signature_totals.clear();
+        entry.signature_order.clear();
+    }
+    else if (entry.last_signature != signature)
     {
         entry.repeat_count = 1;
         entry.last_signature = signature;
@@ -64,6 +93,7 @@ int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::strin
         entry.repeat_count += 1;
     }
     entry.last_call_time = now;
+    RecordSignatureTotal(entry, signature);
     return entry.repeat_count;
 }
 
@@ -84,6 +114,25 @@ int ToolCallRepetitionStore::GetRepeatCount(const std::string& key) const
         return 0;
 
     return entry.repeat_count;
+}
+
+int ToolCallRepetitionStore::GetNonContiguousRepeatCount(const std::string& key) const
+{
+    if (key.empty())
+        return 0;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = cache_.find(key);
+    if (it == cache_.end())
+        return 0;
+
+    const Entry& entry = it->second.first;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - entry.last_call_time).count();
+    if (elapsed >= ttl_seconds_)
+        return 0;
+
+    return entry.last_signature_total;
 }
 
 void ToolCallRepetitionStore::Clear()

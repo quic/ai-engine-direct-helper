@@ -128,6 +128,7 @@ namespace {
     // 已尝试查询索引：资源数、每个资源下保留的查询条数上限，避免长链路里自身无限增长。
     constexpr size_t kMaxTriedQueryResources = 10;
     constexpr size_t kMaxTriedQueriesPerResource = 6;
+    constexpr size_t kMaxCommandResourceKeyChars = 120;
 
     std::string FullToolCall(const std::string& assistant_content) {
         std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
@@ -312,6 +313,21 @@ namespace {
         return "";
     }
 
+    std::string ExtractCommandArgFrom(const std::string& assistant_content, size_t search_from) {
+        static const char* kCommandKeys[] = { "\"command\"", "\"cmd\"", "\"script\"" };
+        for (const char* key : kCommandKeys) {
+            size_t kp = assistant_content.find(key, search_from);
+            if (kp == std::string::npos)
+                continue;
+            size_t colon = assistant_content.find(':', kp);
+            size_t q1 = (colon == std::string::npos) ? std::string::npos : assistant_content.find('"', colon + 1);
+            size_t q2 = (q1 == std::string::npos) ? std::string::npos : assistant_content.find('"', q1 + 1);
+            if (q1 != std::string::npos && q2 != std::string::npos)
+                return assistant_content.substr(q1 + 1, q2 - q1 - 1);
+        }
+        return "";
+    }
+
     std::string ExtractReadToolPathImpl(const std::string& assistant_content) {
         const std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
         std::string name;
@@ -330,7 +346,13 @@ namespace {
         size_t search_from = 0;
         if (!ExtractToolNameAndSearchFrom(visible, name, search_from))
             return "";
-        return ExtractPathArgFrom(visible, search_from);
+        std::string path = ExtractPathArgFrom(visible, search_from);
+        if (!path.empty())
+            return path;
+        std::string command = ExtractCommandArgFrom(visible, search_from);
+        if (!command.empty())
+            return "cmd:" + safe_utf8_truncate(command, kMaxCommandResourceKeyChars, "");
+        return "";
     }
 
     std::string ReplaceInvalidUtf8(const std::string& s) {
@@ -871,9 +893,13 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         std::string rc_key = ToolCallRepetitionStore::MakeKey(first_msg_key, instance_config_.get_model_name());
         entry["redundant_tool_call_count"] = ToolCallRepetitionStore::GetInstance().GetRepeatCount(rc_key);
         entry["redundant_tool_call_threshold"] = redundant_cfg.repeat_threshold;
+        entry["non_contiguous_repeat_count"] = ToolCallRepetitionStore::GetInstance().GetNonContiguousRepeatCount(rc_key);
+        entry["non_contiguous_repeat_threshold"] = redundant_cfg.non_contiguous_repeat_threshold;
     } else {
         entry["redundant_tool_call_count"] = 0;
         entry["redundant_tool_call_threshold"] = 0;
+        entry["non_contiguous_repeat_count"] = 0;
+        entry["non_contiguous_repeat_threshold"] = 0;
     }
 
     entry["refresh_count"] = prev_refresh + 1;
@@ -940,6 +966,12 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     int redundant_tool_call_threshold = entry.value("redundant_tool_call_threshold", 0);
     if (redundant_tool_call_threshold > 0 && redundant_tool_call_count >= redundant_tool_call_threshold) {
         goal_block += TaskMemoBuilder::RenderRedundantToolCallNote(redundant_tool_call_count);
+    }
+
+    int non_contiguous_repeat_count = entry.value("non_contiguous_repeat_count", 0);
+    int non_contiguous_repeat_threshold = entry.value("non_contiguous_repeat_threshold", 0);
+    if (non_contiguous_repeat_threshold > 0 && non_contiguous_repeat_count >= non_contiguous_repeat_threshold) {
+        goal_block += TaskMemoBuilder::RenderNonContiguousRepeatNote(non_contiguous_repeat_count);
     }
 
     std::string plan = entry.value("current_plan", std::string(""));
@@ -1081,6 +1113,16 @@ std::string TaskMemoBuilder::RenderRedundantToolCallNote(int repeat_count)
     oss << "Note: you have called the same tool with the same arguments " << repeat_count
         << " time(s) in a row. Its result is already in the conversation (or summarized in this memo); "
            "repeating it again is unlikely to give new information. Use that result or try a different approach.\n";
+    return oss.str();
+}
+
+std::string TaskMemoBuilder::RenderNonContiguousRepeatNote(int repeat_count)
+{
+    std::ostringstream oss;
+    oss << "Note: you have called the same tool with the same arguments " << repeat_count
+        << " time(s) so far in this task (not necessarily in a row). Its result is already in the "
+           "conversation (or summarized in this memo); repeating it again is unlikely to give new "
+           "information. Use that result or try a different approach.\n";
     return oss.str();
 }
 

@@ -30,6 +30,8 @@ public:
 
     int GetRepeatCount(const std::string& key) const;
 
+    int GetNonContiguousRepeatCount(const std::string& key) const;
+
     void Clear();
     size_t Size() const;
 
@@ -44,7 +46,14 @@ private:
         std::string last_signature;
         int repeat_count = 0;
         std::chrono::steady_clock::time_point last_call_time;
+        std::unordered_map<std::string, int> signature_totals;
+        std::list<std::string> signature_order;
+        int last_signature_total = 0;
     };
+
+    static constexpr size_t kMaxSignaturesPerEntry = 64;
+
+    static void RecordSignatureTotal(Entry& entry, const std::string& signature);
 
     void EvictIfNeeded();
 

@@ -1775,9 +1775,12 @@ private:
         const std::string session_key = TaskMemoBuilder::ComputeFirstMsgKey(request_data_["messages"]);
         const std::string key = ToolCallRepetitionStore::MakeKey(session_key, instance_config_->get_model_name());
         int count = ToolCallRepetitionStore::GetInstance().GetRepeatCount(key);
-        if (count < cfg.repeat_threshold)
-            return "";
-        return "\n\n## Task Memo\n" + TaskMemoBuilder::RenderRedundantToolCallNote(count);
+        if (count >= cfg.repeat_threshold)
+            return "\n\n## Task Memo\n" + TaskMemoBuilder::RenderRedundantToolCallNote(count);
+        int non_contiguous_count = ToolCallRepetitionStore::GetInstance().GetNonContiguousRepeatCount(key);
+        if (non_contiguous_count >= cfg.non_contiguous_repeat_threshold)
+            return "\n\n## Task Memo\n" + TaskMemoBuilder::RenderNonContiguousRepeatNote(non_contiguous_count);
+        return "";
     }
 
     std::string BuildConsecutiveToolFailureNote() const

@@ -143,6 +143,45 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     store.Clear();
 
+    // ── 场景7：非连续回访计数（中间穿插其它签名不清零） ──────────────────────
+    {
+        ConfigureStore(300);
+        const std::string key = ToolCallRepetitionStore::MakeKey("scenario7_session", "modelX");
+
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario7_first_total", "cmd_A首次出现非连续总次数应为1",
+                     store.GetNonContiguousRepeatCount(key) == 1);
+
+        store.RecordCall(key, "exec|{\"command\":\"cmd_B\"}");
+        runner.Check("scenario7_other_signature_resets_contiguous", "插入cmd_B后连续计数应重置为1",
+                     store.GetRepeatCount(key) == 1);
+        runner.Check("scenario7_other_signature_total", "cmd_B首次出现非连续总次数应为1",
+                     store.GetNonContiguousRepeatCount(key) == 1);
+
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario7_revisit_total_accumulates", "绕回cmd_A后非连续总次数应累加为2",
+                     store.GetNonContiguousRepeatCount(key) == 2);
+        runner.Check("scenario7_revisit_contiguous_resets", "绕回cmd_A的连续计数仍应为1（未连续两次）",
+                     store.GetRepeatCount(key) == 1);
+    }
+
+    // ── 场景8：非连续回访计数同样受 ttl_seconds 门控 ──────────────────────────
+    {
+        ConfigureStore(/*ttl_seconds=*/1);
+        const std::string key = ToolCallRepetitionStore::MakeKey("scenario8_session", "modelX");
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        store.RecordCall(key, "exec|{\"command\":\"cmd_B\"}");
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario8_pre_ttl_total", "TTL窗口内绕回cmd_A的非连续总次数应为2",
+                     store.GetNonContiguousRepeatCount(key) == 2);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        runner.Check("scenario8_post_ttl_zero", "超过ttl_seconds后GetNonContiguousRepeatCount应返回0",
+                     store.GetNonContiguousRepeatCount(key) == 0);
+    }
+
+    store.Clear();
+
     out << "=================================================================================\n";
     out << "Total cases: " << runner.total() << ", passed: " << runner.passed()
         << " (" << (runner.total() > 0 ? (100.0 * runner.passed() / runner.total()) : 100.0) << "%)\n";
