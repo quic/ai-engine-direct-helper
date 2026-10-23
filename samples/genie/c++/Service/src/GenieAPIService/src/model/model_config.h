@@ -756,6 +756,11 @@ struct PromptOptimizationConfig {
         bool model_layer_enabled = true;         // 模型层深度总结开关（关闭时永远只用规则层兜底，enabled=false 时无意义）
         double token_budget_ratio = 0.15;        // Task Memo 段落允许占用 context_size 的比例上限
         size_t min_dropped_for_trigger = 1;      // FitMessagesToContext 本次即将丢弃的消息数达到此值才更新备忘录
+        // Update() 重渲染节流：自上一次真正重渲染以来新增的丢弃消息数达到此值才重新渲染，
+        // 未达到时直接复用上一份渲染结果（内容仍在 dropped_messages 里累积，不会丢失，
+        // 下次真正触发时通过 _folded_count 差分一次性合并）。与 min_dropped_for_trigger
+        // 不同：后者比较的是累积丢弃总量（首轮触发后事实上失效），这里比较的是本轮新增量。
+        size_t render_throttle_min_new_dropped = 4;
         size_t long_tool_chain_threshold = 4;    // 本次丢弃的连续 tool 消息数达到此值时触发模型层深度总结
         double low_confidence_threshold = 0.5;   // 上一份备忘录 confidence 低于此值时触发模型层深度总结
         int rule_layer_preview_chars = 160;      // 规则层 facts_constraints/completed/tool_state 预览截断长度（字符数）

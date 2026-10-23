@@ -34,7 +34,8 @@ public:
 
     std::string GetUserMessage(const std::string &prompt_system,
                                const std::string &prompt_start,
-                               const std::string &assistant_turn_prefix = "");
+                               const std::string &assistant_turn_prefix = "",
+                               const std::string &trailing_note = "");
 
     void AddMessage(const std::string &role, const std::string &content);
 

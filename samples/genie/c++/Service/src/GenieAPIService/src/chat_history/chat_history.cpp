@@ -26,7 +26,8 @@ public:
 
     std::string GetUserMessage(const std::string &prompt_system,
                                const std::string &prompt_start,
-                               const std::string &assistant_turn_prefix)
+                               const std::string &assistant_turn_prefix,
+                               const std::string &trailing_note)
     {
         std::vector<std::string> messages;
         const auto &j = prompt_template_;
@@ -57,6 +58,8 @@ public:
 
         if (count == 0)
         {
+            if (!trailing_note.empty())
+                messages.insert(messages.end() - 1, trailing_note);
             return std::accumulate(messages.begin(), messages.end(), std::string{});
         }
 
@@ -98,6 +101,12 @@ public:
             // 插入到 start prompt 之前
             messages.insert(messages.end() - 1, format_content);
         }
+
+        // trailing_note 插在全部历史消息之后、prompt_start（生成起始标记）之前：
+        // 它不写入 history，每轮由调用方重新算出，因此不会被下一轮带着走、
+        // 也不会落在任何会被复用的前缀中段——代价只在新增内容本身，不作废任何缓存。
+        if (!trailing_note.empty())
+            messages.insert(messages.end() - 1, trailing_note);
 
         return std::accumulate(messages.begin(), messages.end(), std::string{});
     }
@@ -225,5 +234,5 @@ void ChatHistory::Clear()
 { impl_->history.clear(); }
 
 std::string ChatHistory::GetUserMessage(const std::string &prompt_system, const std::string &prompt_start,
-                                        const std::string &assistant_turn_prefix)
-{ return impl_->GetUserMessage(prompt_system, prompt_start, assistant_turn_prefix); }
+                                        const std::string &assistant_turn_prefix, const std::string &trailing_note)
+{ return impl_->GetUserMessage(prompt_system, prompt_start, assistant_turn_prefix, trailing_note); }

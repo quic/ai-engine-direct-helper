@@ -1517,6 +1517,7 @@ bool ModelManager::InitializeConfig()
                         memo_cfg.model_layer_enabled = tm.value("model_layer_enabled", true);
                         memo_cfg.token_budget_ratio = tm.value("token_budget_ratio", 0.15);
                         memo_cfg.min_dropped_for_trigger = tm.value("min_dropped_for_trigger", (size_t) 1);
+                        memo_cfg.render_throttle_min_new_dropped = tm.value("render_throttle_min_new_dropped", (size_t) 4);
                         memo_cfg.long_tool_chain_threshold = tm.value("long_tool_chain_threshold", (size_t) 4);
                         memo_cfg.low_confidence_threshold = tm.value("low_confidence_threshold", 0.5);
                         memo_cfg.rule_layer_preview_chars = tm.value("rule_layer_preview_chars", 160);
@@ -1544,6 +1545,7 @@ bool ModelManager::InitializeConfig()
                                 << "[TaskMemo] Config loaded: enabled=" << memo_cfg.enabled
                                 << ", model_layer_enabled=" << memo_cfg.model_layer_enabled
                                 << ", token_budget_ratio=" << memo_cfg.token_budget_ratio
+                                << ", render_throttle_min_new_dropped=" << memo_cfg.render_throttle_min_new_dropped
                                 << ", long_tool_chain_threshold=" << memo_cfg.long_tool_chain_threshold
                                 << ", low_confidence_threshold=" << memo_cfg.low_confidence_threshold
                                 << ", rule_layer_preview_chars=" << memo_cfg.rule_layer_preview_chars

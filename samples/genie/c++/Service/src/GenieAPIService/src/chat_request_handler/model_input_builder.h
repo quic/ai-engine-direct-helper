@@ -519,13 +519,6 @@ private:
             chat_history_.AddMessage(opt_msg.role, opt_msg.content);
         }
 
-        if (!chat_history_.IsEmpty()) {
-            std::string memo_notes = BuildTaskMemoNotes();
-            if (!memo_notes.empty()) {
-                chat_history_.PrependToLastMessage(memo_notes);
-            }
-        }
-
         return optimized;
     }
 
@@ -712,7 +705,8 @@ private:
         std::string modelInputContent = chat_history_.GetUserMessage(
                                                           str_replace(j["system"], "string", systemDefaultPrompt),
                                                           start_prompt_str,
-                                                          stable_empty_think_history ? empty_think_start : std::string());
+                                                          stable_empty_think_history ? empty_think_start : std::string(),
+                                                          BuildTaskMemoNotes());
 
         // 计算最终提示词的真实 token 数
         // 修复：使用注入的 context_（多模型并发安全），而非 model_config_.get_genie_model_handle()
@@ -995,25 +989,20 @@ private:
             }
         }
 
-        if (!chat_history_.IsEmpty() && !optimized.messages.empty()) {
-            std::string memo_section = BuildTaskMemoSection();
-            if (!memo_section.empty()) {
-                chat_history_.PrependToLastMessage(memo_section);
-                std::string &last_content = optimized.messages.back().content;
-                const std::string message_tag = "<|message|>";
-                size_t tag_pos = last_content.find(message_tag);
-                if (tag_pos != std::string::npos) {
-                    last_content.insert(tag_pos + message_tag.size(), memo_section);
-                } else {
-                    last_content = memo_section + last_content;
-                }
-            }
-        }
-
         // 5. 构建当前请求的提示词（使用优化后的消息）
         for (const auto &msg_info : optimized.messages)
         {
             messages.push_back(msg_info.content);
+        }
+
+        // Task Memo 尾部提示（连续失败/重复调用提醒等）作为独立的一条 Harmony user
+        // 消息追加在全部历史之后、assistant 生成标记之前：不写入 chat_history_，
+        // 不会被下一轮带进历史，避免作废其后已缓存的全部检查点。
+        if (!optimized.messages.empty()) {
+            std::string memo_section = BuildTaskMemoSection();
+            if (!memo_section.empty()) {
+                messages.push_back(HarmonyProcessor::BuildUserMessage(memo_section));
+            }
         }
 
         return optimized;

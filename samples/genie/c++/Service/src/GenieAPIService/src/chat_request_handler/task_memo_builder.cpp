@@ -815,7 +815,15 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
     size_t already_folded = has_prev ? prev->value("_folded_count", (size_t)0) : 0;
     if (already_folded > dropped_messages.size())
         already_folded = 0;
-    if (has_prev && already_folded == dropped_messages.size()) {
+    const std::vector<GenieChatMessage> new_dropped(dropped_messages.begin() + (long long) already_folded,
+                                                    dropped_messages.end());
+
+    // 节流：驱逐仍按需每轮发生，但只有自上一次真正重渲染以来新增的丢弃量达到
+    // config_.render_throttle_min_new_dropped 才真正重渲染；未达到（含恰好 0 的
+    // "无新增"情形）直接复用上一份渲染结果——新增内容仍留在 dropped_messages 里，
+    // 不写回 store（_folded_count 不前移），下一次真正触发时通过差分一次性合并，不会丢失。
+    size_t render_throttle = std::max<size_t>(1, config_.render_throttle_min_new_dropped);
+    if (has_prev && new_dropped.size() < render_throttle) {
         res.active = true;
         res.confidence = prev_confidence;
         res.refresh_count = prev_refresh;
@@ -823,8 +831,6 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         res.compact_render = RenderCompact(*prev);
         return res;
     }
-    const std::vector<GenieChatMessage> new_dropped(dropped_messages.begin() + (long long) already_folded,
-                                                    dropped_messages.end());
 
     json entry = BuildRuleLayer(has_prev ? *prev : json::object(), new_dropped);
 
