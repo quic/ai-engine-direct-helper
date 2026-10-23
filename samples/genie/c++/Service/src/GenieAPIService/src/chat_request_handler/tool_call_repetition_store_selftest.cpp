@@ -206,9 +206,9 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
         runner.Check("scenario9_post_ttl_zero", "超过non_contiguous_ttl_seconds后GetNonContiguousRepeatCount应返回0",
                      store.GetNonContiguousRepeatCount(key) == 0);
 
-        int c3 = store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
-        runner.Check("scenario9_restarts_after_ttl", "非连续TTL过期后下一次调用应视为全新历史从1开始",
-                     c3 == 1);
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario9_restarts_after_ttl", "非连续TTL过期后下一次调用应视为全新历史从1开始（用GetNonContiguousRepeatCount校验，RecordCall返回值反映的是另一把连续性时钟，此处不适用）",
+                     store.GetNonContiguousRepeatCount(key) == 1);
     }
 
     store.Clear();
