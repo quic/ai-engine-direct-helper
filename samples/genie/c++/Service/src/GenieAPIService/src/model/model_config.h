@@ -759,6 +759,7 @@ struct PromptOptimizationConfig {
         size_t long_tool_chain_threshold = 4;    // 本次丢弃的连续 tool 消息数达到此值时触发模型层深度总结
         double low_confidence_threshold = 0.5;   // 上一份备忘录 confidence 低于此值时触发模型层深度总结
         int rule_layer_preview_chars = 160;      // 规则层 facts_constraints/completed/tool_state 预览截断长度（字符数）
+        double memo_reserve_ratio = 0.3;         // 为 tried_queries/tool_state 预留的最低渲染预算占 max_chars 的比例上限（0 表示不预留，沿用整块跳过的旧行为）
 
         // ── 原始目标锚点（original_goal_raw）鲁棒抓取 ──────────
         size_t goal_scan_window = 3;             // 在前几条非 system 用户消息里扫描锚点候选

@@ -887,6 +887,7 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
     // Render() 是 static 方法读不到 config_，阈值随 entry 一起落盘，保持 Render() 签名
     // 不变（纯函数于 entry），也让每条已存储的备忘录自描述当时生效的阈值是多少。
     entry["failure_streak_warn_threshold"] = config_.failure_streak_warn_threshold;
+    entry["memo_reserve_ratio"] = config_.memo_reserve_ratio;
 
     const auto &redundant_cfg = instance_config_.i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
     if (redundant_cfg.enabled) {
@@ -1086,18 +1087,32 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
             out += goal_block;
         }
     }
+
+    double reserve_ratio = entry.value("memo_reserve_ratio", 0.0);
+    size_t budget_for_high_priority = max_chars;
+    if (max_chars > 0 && reserve_ratio > 0.0) {
+        const size_t reserve_want = tried_queries_block.size() + tool_state_block.size();
+        const size_t reserve_cap = static_cast<size_t>(static_cast<double>(max_chars) * reserve_ratio);
+        const size_t reserved_for_memory = std::min(reserve_want, reserve_cap);
+        budget_for_high_priority = (max_chars > reserved_for_memory) ? (max_chars - reserved_for_memory) : 0;
+    }
+
     size_t block_index = 0;
     for (const auto& block : blocks) {
         const size_t slot = block_index++;
         const char* block_name = kBlockNames[slot];
         if (block.empty())
             continue;
-        if (max_chars > 0 && out.size() + block.size() > max_chars) {
+        const bool is_reserved_block = (std::strcmp(block_name, "tried_queries") == 0
+                                         || std::strcmp(block_name, "tool_state") == 0);
+        const size_t slot_budget = is_reserved_block ? max_chars : budget_for_high_priority;
+        if (max_chars > 0 && out.size() + block.size() > slot_budget) {
             My_Log{My_Log::Level::kWarning}
                 << "[TaskMemo] Render block skipped: name=" << block_name
                 << ", block_chars=" << block.size()
                 << ", used_chars=" << out.size()
-                << ", max_chars=" << max_chars << std::endl;
+                << ", max_chars=" << max_chars
+                << ", slot_budget=" << slot_budget << std::endl;
             continue;
         }
         out += block;
