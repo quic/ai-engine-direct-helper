@@ -780,18 +780,18 @@ bool Desensitizer::ApplyStructuredPlaceholders(
     WalkJsonStringFieldsWithPath(out.desensitized_request, "",
         [&](std::string &s, const std::string &path) {
             auto it = spans_by_field.find(path);
-            if (it == spans_by_field.end()) return;
-
-            size_t last_replaced_start = std::string::npos;
-            for (const auto *sp : it->second) {
-                // 重叠检测：若当前 span 与已替换区间重叠，跳过
-                if (last_replaced_start != std::string::npos && sp->end > last_replaced_start) {
-                    continue;
-                }
-                if (sp->end <= s.size()) {
-                    std::string ph = make_placeholder(sp->type, sp->matched);
-                    s.replace(sp->start, sp->end - sp->start, ph);
-                    last_replaced_start = sp->start;
+            if (it != spans_by_field.end()) {
+                size_t last_replaced_start = std::string::npos;
+                for (const auto *sp : it->second) {
+                    // 重叠检测：若当前 span 与已替换区间重叠，跳过
+                    if (last_replaced_start != std::string::npos && sp->end > last_replaced_start) {
+                        continue;
+                    }
+                    if (sp->end <= s.size()) {
+                        std::string ph = make_placeholder(sp->type, sp->matched);
+                        s.replace(sp->start, sp->end - sp->start, ph);
+                        last_replaced_start = sp->start;
+                    }
                 }
             }
         });

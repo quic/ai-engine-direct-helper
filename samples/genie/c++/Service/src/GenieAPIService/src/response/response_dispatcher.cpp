@@ -17,9 +17,25 @@
 #include <regex>
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 
 namespace
 {
+    struct ProfileTotals
+    {
+        std::mutex mtx;
+        uint64_t rounds{0};
+        uint64_t samples{0};
+        double pp_rate_sum{0.0};
+        double tg_rate_sum{0.0};
+    };
+
+    ProfileTotals &GetProfileTotals()
+    {
+        static ProfileTotals totals;
+        return totals;
+    }
+
     // 判断 convertToolCallJson() 的返回结果是否仍是 "unknow" 兜底（即 Layer0 正则修复链 +
     // Layer1 本地确定性提取均未能采纳出合法工具调用）。convertToolCallJson() 的返回值恒为
     // wrapJsonInToolCall() 包裹后的 "<tool_call>\n{...}\n</tool_call>" 形式（成功/失败两种
@@ -617,7 +633,7 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                         // chatHistory 完全隔离，SendResponse() 返回后自动销毁。
                         auto *mutable_instance_config = const_cast<ModelInstanceConfig *>(instance_config_);
                         ChatHistory scratch_chat_history(*mutable_instance_config);
-                        ModelInputBuilder scratch_builder(scratch_chat_history, mutable_instance_config);
+                        ModelInputBuilder scratch_builder(scratch_chat_history, mutable_instance_config, scratch_data);
 
                         bool scratch_is_tool = false;
                         std::function<bool()> scratch_is_alive_fn = nullptr;
@@ -791,18 +807,24 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
             // 请求保持稳定）+ model_name；任一信息不可用（如 DLL 模式）时 key 为空字符串，
             // ToolCallCircuitBreakerStore 对空 key 的全部操作均安全地不做任何事。
             std::string circuit_breaker_key;
+            std::string repetition_key;
+            std::string think_session_key;
             if (instance_config_ && !retry_request_data_.is_null()
                 && retry_request_data_.contains("messages") && retry_request_data_["messages"].is_array())
             {
                 const std::string session_key = TaskMemoBuilder::ComputeFirstMsgKey(retry_request_data_["messages"]);
+                think_session_key = session_key;
                 circuit_breaker_key = ToolCallCircuitBreakerStore::MakeKey(session_key, instance_config_->get_model_name());
+                repetition_key = ToolCallRepetitionStore::MakeKey(session_key, instance_config_->get_model_name());
             }
+            const bool redundant_guard_enabled = model_config_.GetToolCallRepairConfig().redundant_call_guard.enabled;
+            const bool output_truncated = handle->was_stopped_by_output_limit();
 
             if (!IsUnknowToolCallJson(toolResponse))
             {
                 // Layer0/1/2 某一层成功恢复出合法工具调用：打断"连续触发 Layer3"的判定序列。
                 ToolCallCircuitBreakerStore::GetInstance().RecordSuccess(circuit_breaker_key);
-                finishReason = "tool_calls";
+                finishReason = output_truncated ? "length" : "tool_calls";
                 std::string tool_name;
                 try
                 {
@@ -810,6 +832,18 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                     if (parsed.contains("name") && parsed["name"].is_string())
                     {
                         tool_name = parsed["name"].get<std::string>();
+                    }
+                    if (!tool_name.empty())
+                    {
+                        const std::string signature = tool_name + "|" + parsed.value("arguments", json::object()).dump();
+                        if (redundant_guard_enabled)
+                            ToolCallRepetitionStore::GetInstance().RecordCall(repetition_key, signature);
+                        std::string conclusion = TaskMemoBuilder::ExtractThinkConclusion(response_buffer);
+                        if (output_truncated)
+                            conclusion += (conclusion.empty() ? "" : " ") + std::string("this call was cut off by the output token limit after ")
+                                + std::to_string(response_buffer.size()) + " characters, so its arguments are incomplete; split the content into several smaller calls";
+                        if (!conclusion.empty())
+                            TaskMemoBuilder::PinThinkConclusion(think_session_key, signature, conclusion);
                     }
                 }
                 catch (...) {}
@@ -831,9 +865,15 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                     best_effort["name"] = partial_recovery["name"];
                     best_effort["arguments"] = partial_recovery.value("arguments", json::object());
                     toolResponse = ResponseTools::wrapJsonInToolCall(best_effort.dump());
-                    finishReason = "tool_calls";
+                    finishReason = output_truncated ? "length" : "tool_calls";
                     isToolResponse = true;
                     send_tool_call_status_once(partial_recovery["name"].get<std::string>());
+                    if (redundant_guard_enabled)
+                    {
+                        const std::string signature = partial_recovery["name"].get<std::string>() + "|"
+                            + best_effort["arguments"].dump();
+                        ToolCallRepetitionStore::GetInstance().RecordCall(repetition_key, signature);
+                    }
                     My_Log{My_Log::Level::kWarning}
                         << "[ToolCallRepair][Layer3] Case A: emitting real tool_call '"
                         << partial_recovery["name"].get<std::string>()
@@ -868,6 +908,8 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
         {
             finalize_tool_call_layer3(connection_broken ? " (connection_broken)" : "");
         }
+        last_finish_reason_ = finishReason;
+        last_tool_response_ = isToolResponse ? toolResponse : std::string();
 
         // Layer -1 hold-back 释放：若生成过程中曾因为"</think> 之后的可见文本以 '{' 或
         // 代码围栏开头"而暂缓发送（见 genie_callback 内的 hold-back 逻辑），且最终判定
@@ -994,6 +1036,23 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
         // 性能统计是服务端内部监控，不依赖客户端连接，应始终执行。
         PrintProfile();
 
+        // 真实 token 计数：修复 responseDataJson() 的 usage 字段此前硬编码为全零的缺陷
+        // （导致下游 QAIModelBuilder 把本地模型响应误判为"空 usage 块"，回退到不可靠的
+        // tokenizer 估算）。复用三后端（GGUF/MNN/QNN）都已实现的 handle->HandleProfile()
+        // （PrintProfile() 内部已调用过一次用于日志，这里是请求结束时的第二次独立调用，
+        // 不在逐 token 发送的性能敏感路径上，开销可忽略）。字段缺失/解析失败时安全回退为 0，
+        // 与修复前的全零行为一致，不引入新的异常路径。只在本次请求结束时计算一次，下方按
+        // finish_reason 分支选用，中间流式 content chunk 不受影响（仍使用默认的 0）。
+        json profile_for_usage = handle->HandleProfile();
+        size_t real_prompt_tokens = (profile_for_usage.is_object()
+                                      && profile_for_usage.contains("num_prompt_tokens")
+                                      && profile_for_usage["num_prompt_tokens"].is_number())
+            ? profile_for_usage["num_prompt_tokens"].get<size_t>() : 0;
+        size_t real_completion_tokens = (profile_for_usage.is_object()
+                                          && profile_for_usage.contains("num_generated_tokens")
+                                          && profile_for_usage["num_generated_tokens"].is_number())
+            ? profile_for_usage["num_generated_tokens"].get<size_t>() : 0;
+
         // Fix: connection_broken 检查移到历史存储和性能统计之后。
         // 历史存储和性能统计是服务端内部状态，不依赖客户端连接，应在连接断开时仍然执行。
         // 即使连接断开，也尝试发送工具调用响应和 [DONE]，让客户端知道当前流已结束，
@@ -1047,7 +1106,8 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                 // 发送结束标记
                 if (!overflow_truncated)
                 {
-                    ResponseTools::post_stream_data(*sink, "data", ResponseTools::responseDataJson("", finishReason, true));
+                    ResponseTools::post_stream_data(*sink, "data",
+                        ResponseTools::responseDataJson("", finishReason, true, "", real_prompt_tokens, real_completion_tokens));
                     ResponseTools::post_stream_data(*sink, "data", "[DONE]", true);
                     My_Log{My_Log::Level::kWarning}
                         << "[SendResponse] End-of-stream markers sent (connection_broken path)." << std::endl;
@@ -1107,7 +1167,8 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
         {
             if (!overflow_truncated)
             {
-                ResponseTools::post_stream_data(*sink, "data", ResponseTools::responseDataJson("", finishReason, true));
+                ResponseTools::post_stream_data(*sink, "data",
+                    ResponseTools::responseDataJson("", finishReason, true, "", real_prompt_tokens, real_completion_tokens));
                 ResponseTools::post_stream_data(*sink, "data", "[DONE]", true);
             }
             else
@@ -1133,7 +1194,8 @@ bool ResponseDispatcher::SendResponse(size_t, httplib::DataSink *sink, httplib::
                     vt->text_hook_free_string(watermarked);
                 }
             }
-            auto data = ResponseTools::responseDataJson(content, finishReason, false, toolResponse);
+            auto data = ResponseTools::responseDataJson(content, finishReason, false, toolResponse,
+                                                         real_prompt_tokens, real_completion_tokens);
             res->set_content(data, MIMETYPE_JSON);
         }
         return true;
@@ -1185,7 +1247,14 @@ bool ResponseDispatcher::isConnectionAlive() const
 
 void ResponseDispatcher::PrintProfile()
 {
+    uint64_t round;
+    {
+        auto &totals = GetProfileTotals();
+        std::lock_guard<std::mutex> lk(totals.mtx);
+        round = ++totals.rounds;
+    }
     My_Log{} << "--- Token Summary Start ---" << std::endl;
+    My_Log{}.original() << "Round: " << round << std::endl;
     // 修复：使用 GetEffectiveHandle()（优先取每模型独立的 instance_config_ 句柄），而非
     // 全局 model_config_.get_genie_model_handle()——后者在多模型场景下会被 ModelManager::Clean()
     // 置空，此处原代码在未做任何空指针检查的情况下直接调用 ->HandleProfile()，是另一处会导致
@@ -1206,6 +1275,21 @@ void ResponseDispatcher::PrintProfile()
 
     try
     {
+        const double pp_rate = std::stod(json_str.at("prompt_processing_rate").get<std::string>());
+        const double tg_rate = std::stod(json_str.at("token_generation_rate").get<std::string>());
+        uint64_t samples;
+        double pp_avg;
+        double tg_avg;
+        {
+            auto &totals = GetProfileTotals();
+            std::lock_guard<std::mutex> lk(totals.mtx);
+            samples = ++totals.samples;
+            totals.pp_rate_sum += pp_rate;
+            totals.tg_rate_sum += tg_rate;
+            pp_avg = totals.pp_rate_sum / static_cast<double>(samples);
+            tg_avg = totals.tg_rate_sum / static_cast<double>(samples);
+        }
+
         My_Log{} << "Time to First Token: "
                  << std::fixed
                  << std::setprecision(2)
@@ -1228,6 +1312,10 @@ void ResponseDispatcher::PrintProfile()
                  << std::setprecision(2)
                  << json_str.at("prompt_processing_rate").get<std::string>()
                  << " toks/sec" << std::endl;
+        My_Log{}.original() << "Prompt Processing Rate (avg of " << samples << " rounds): "
+                             << std::fixed << std::setprecision(2) << pp_avg
+                             << " toks/sec" << std::endl;
+        My_Log{}.original() << "----------------------------------------" << std::endl;
 
         My_Log{} << "Num Generated Tokens: "
                  << json_str.at("num_generated_tokens")
@@ -1239,6 +1327,9 @@ void ResponseDispatcher::PrintProfile()
                  << std::setprecision(2)
                  << json_str.at("token_generation_rate").get<std::string>()
                  << " toks/sec" << std::endl;
+        My_Log{}.original() << "Token Generation Rate (avg of " << samples << " rounds): "
+                             << std::fixed << std::setprecision(2) << tg_avg
+                             << " toks/sec" << std::endl;
     }
     catch (std::exception &e)
     {

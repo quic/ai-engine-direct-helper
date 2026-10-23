@@ -43,10 +43,6 @@ bool isPortAvailable(int port)
 
 #elif defined(__linux__) && !defined(__ANDROID__)
 
-// Native Linux: implement isPortAvailable via POSIX sockets so the service
-// detects port conflicts properly. The Windows branch above and the Android
-// stub below both keep their original behaviour.
-
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -78,7 +74,5 @@ bool isPortAvailable(int port)
 }
 
 #else
-// Android (and any other POSIX-ish platform that previously took this path):
-// keep the original no-op behaviour to avoid changing existing builds.
 bool isPortAvailable(int port){return true;}
 #endif

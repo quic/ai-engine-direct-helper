@@ -25,21 +25,21 @@
 #endif
 
 enum generater_status {
-    completed = 0,    // finished generate 
-    generating = 1,    // Running generation
-    stopped = 2,    // generation stopped
-    exceed = 3,    // exceed context size
-    failed = -1    // generation failed
+    completed = 0,
+    generating = 1,
+    stopped = 2,
+    exceed = 3,
+    failed = -1
 };
 
 enum status
 {
-    init = 0,    // Init parameters
-    loading = 1,   // Model is loading
-    loaded = 2,    // Model loaded or reset
-    unloaded = 3,    // Unload model -> Release model and tokenizer
-    inference = 4,    // Running generation
-    error = -1    // General error
+    init = 0,
+    loading = 1,
+    loaded = 2,
+    unloaded = 3,
+    inference = 4,
+    error = -1
 };
 
 enum hardware_type
@@ -77,10 +77,8 @@ public:
 
     bool api_loadmodel(const std::string& model_path, std::vector<std::string>& model_name, const std::string& hwinfo);
 
-    // Async model loading: starts loading in background thread, returns immediately
     bool api_loadmodel_async(const std::string& model_path, std::vector<std::string>& model_name, const std::string& hwinfo);
 
-    // Wait for async model loading to complete, returns true if loaded successfully
     bool api_wait_loaded(int timeout_ms = -1);
 
     bool api_unloadmodel();
@@ -89,10 +87,8 @@ public:
 
     std::string api_Generate(const std::string& prompt);
 
-    // stream answer
     std::string api_Generate(const std::string& prompt, std::function<bool(const std::string& chunk)> callback);
 
-    // Async streaming APIs
     bool api_Generate_stream(const std::string& prompt);
 
     std::string api_Get_Generate_token();
@@ -105,25 +101,18 @@ public:
 
     int api_token_num(const std::string& promptJson);
 
-    // 暂未实现：从内存缓冲区加载模型
     bool api_loadmodel(std::vector<uint8_t*>& buffers, std::vector<size_t>& buffersSize, const std::string& hwinfo);
 
-    // 暂未实现：单独加载 tokenizer
     bool api_loadtoken(const std::string& token_fullpath);
 
-    // 暂未实现：模型预热
     bool api_warmUp();
 
-    // 暂未实现：返回当前推理参数
     std::string api_param_return();
 
-    // 暂未实现：卸载到 CPU
     bool api_unloadtocpu();
 
-    // 暂未实现：启动常驻循环
     void api_StartLoop();
 
-    // 暂未实现：停止常驻循环
     void api_StopLoop();
 
 private:

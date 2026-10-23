@@ -4,31 +4,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
 //==============================================================================
-//
-// gateway.cpp
-//
-// 职责（主文件）：
-//   - 构造函数 / 析构函数
-//   - SetLocalAvailabilityChecker
-//
-// 其余功能已拆分到以下文件：
-//   gateway_routing.cpp              — HandleChatCompletion（主路由入口：Step1~Step6 编排、增量检查、S2 清洗、sticky 路由）
-//   gateway_session.cpp              — Session ID 管理 + 限流计数器 + 脱敏映射表
-//   gateway_history.cpp              — 历史清洗（本地历史 + S2 轮次清洗）
-//   gateway_cloud.cpp                — 云端请求执行（流式 + 非流式 + 响应还原）
-//   gateway_steps.cpp                — Step1~Step6 + DesensitizeForCloudOnly
-//   gateway_incremental.cpp          — 增量检查（DetermineCheckScope 等）
-//   gateway_overflow.cpp             — HandleLocalOutputOverflow + HandleLocalInputOverflow
-//
-//==============================================================================
 
 #include "gateway.h"
 #include "log.h"
 
-// ============================================================
-// 辅助函数：将 EnterpriseCloudModelConfig 转换为 CloudModelConfig
-// 用于复用 CloudModelClient 实现，避免代码重复
-// ============================================================
 static CloudModelConfig ToCloudModelConfig(const EnterpriseCloudModelConfig &ec)
 {
     CloudModelConfig cc;
@@ -58,9 +37,6 @@ static CloudModelConfig ToCloudModelConfig(const EnterpriseCloudModelConfig &ec)
     return cc;
 }
 
-// ============================================================
-// 构造函数
-// ============================================================
 GenieRoutingGateway::GenieRoutingGateway(IModelConfig &model_config,
                         const RoutingConfig &routing_config,
                         const CloudModelConfig &cloud_config,
@@ -84,18 +60,6 @@ GenieRoutingGateway::GenieRoutingGateway(IModelConfig &model_config,
           alive_(std::make_shared<std::atomic<bool>>(true)),
           prompt_prep_service_(model_config)
 {
-    // 默认本地可用性检测：检查当前是否有已加载的模型。
-    // model_config.get_genie_model_handle() 只返回全局 genieModelHandle，在模型切换场景下
-    // 可能滞后于真实状态；改为调用虚方法 IsLocalModelAvailable()，ModelManager 重写此方法
-    // 以检查 current_model_ 是否非空（本仓库已删除并发多模型托管设计，运行时只有一个当前模型）。
-    // 测试时可通过 SetLocalAvailabilityChecker 注入返回 false 的函数，
-    // 以验证 S2+本地不可用（HTTP 403）等场景。
-    //
-    // 不能在构造时缓存这个值：服务启动时若尚未加载任何模型，GenieRoutingGateway 构造时
-    // IsLocalModelAvailable() 必然是 false；之后请求触发的动态加载（见
-    // ChatCompletions 里的 LoadModelByName）即使成功，缓存值也不会更新，导致路由
-    // 永远误判"本地不可用"并 fallback 到云端（实测复现为 503 all_routes_unavailable）。
-    // 每次实时调用，让路由决策反映模型的真实加载状态。
     local_availability_checker_ = [this]() -> bool {
         return model_config_.IsLocalModelAvailable();
     };
@@ -112,13 +76,8 @@ void GenieRoutingGateway::SetLocalAvailabilityChecker(std::function<bool()> chec
     local_availability_checker_ = std::move(checker);
 }
 
-// ============================================================
-// 析构函数
-// ============================================================
 GenieRoutingGateway::~GenieRoutingGateway()
 {
-    // 通知所有已 detach 的后台线程：GenieRoutingGateway 即将析构，不得再访问成员变量。
-    // 后台线程持有 alive_ 的 shared_ptr 副本，检测到 false 后会提前退出。
     alive_->store(false);
     My_Log{} << "[GenieRoutingGateway] Destructor: alive flag set to false, detached threads will exit safely" << std::endl;
 }

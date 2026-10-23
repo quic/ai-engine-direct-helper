@@ -18,62 +18,39 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <functional>
 #include <optional>
 #include <memory>
 #include <array>
 
-// 消息压缩配置
 struct MessageCompressionConfig {
-    size_t max_messages = 16;           // 最大消息数量
-    size_t keep_recent_full = 6;        // 保持完整的最新消息数
+    size_t max_messages = 16;
+    size_t keep_recent_full = 6;
 };
 
-// 优化后的消息列表
 struct OptimizedMessages {
     std::vector<GenieChatMessage> messages;
     size_t total_tokens;
     size_t dropped_count;
     bool success;
     std::string error_message;
-    // Phase 4（FitMessagesToContext 内的紧急截断）是否被实际触发过；供 PromptLedger 回报
-    // 调用方「本轮最末尾的巨型 tool 响应是否被紧急截断过」。
     bool emergency_truncated;
-    // Task Memo（TaskMemoBuilder::Update 结果）：功能关闭或未触发时保持默认值。
     bool memo_active;
     double memo_confidence;
     size_t memo_refresh_count;
+    size_t memo_pages_total;
 
     OptimizedMessages() : total_tokens(0), dropped_count(0), success(false), emergency_truncated(false),
-                           memo_active(false), memo_confidence(0.0), memo_refresh_count(0) {}
+                           memo_active(false), memo_confidence(0.0), memo_refresh_count(0), memo_pages_total(0) {}
 };
 
-// ========== 消息预过滤器 ==========
-// 封装 Prompt 压缩相关的所有逻辑，包括：
-//   - 分级压缩算法（Phase 0~5）
-//   - 消息数量限制（SmartSelectMessages）
-//   - 工具调用序列验证（ValidateToolCallSequence）
-//   - 各类辅助函数（SafeEraseToolChain、DropOldMessagesBatch 等）
 class MessagePreFilter {
 public:
-    // 多模型并发场景：构造函数直接接受 ContextBase* 参数，避免后续 SetContext 调用
     explicit MessagePreFilter(IModelConfig& model_config, ContextBase* context = nullptr);
 
-    // 设置 per-model 的 ContextBase（多模型并发场景）
-    // 保留此方法用于运行时切换 context（可选）
     void SetContext(ContextBase* context) { context_override_ = context; }
 
-    // ========== 主入口：将消息适配到上下文大小（Token 控制和消息丢弃）==========
-    // 注意：消息内容压缩应在 PreFilterMessages 中完成，本函数只负责丢弃整条消息。
-    //
-    // 保护策略：
-    //   - 最后一条 user 消息（last_user_index）必须保留
-    //   - last_user_index 之后的消息受保护，不可丢弃
-    //   - 只丢弃 last_user_index 之前的旧消息
-    //
-    // 两阶段丢弃策略：
-    //   - 第一阶段：优先丢弃 recent_boundary 之前的旧消息
-    //   - 第二阶段：若第一阶段仍不满足，再丢弃 recent_boundary 之后（但 last_user_index 之前）的消息
     OptimizedMessages FitMessagesToContext(
         const std::vector<GenieChatMessage>& all_messages,
         const std::string& system_prompt,
@@ -82,32 +59,6 @@ public:
         const nlohmann::ordered_json* raw_messages_for_memo = nullptr,
         TaskMemoBuilder* memo_builder = nullptr);
 
-    // ========== 主入口：分级压缩预过滤 ==========
-    // 算法设计：预算驱动 + 分级压缩，只在超出预算时才压缩/丢弃消息
-    //
-    // 保护集（Protected Set，永不丢弃、永不截断）：
-    //   - 最后一条 user 消息（当前请求）
-    //   - 最后一条 assistant final 消息（上一轮回复）
-    //   - 最近一轮工具调用链（最后一个 assistant tool_call + 其后的 tool responses）
-    //
-    // 分级压缩顺序（从无损到有损）：
-    //   Phase 0: 无损清理（始终执行）→ 检查预算
-    //   Phase 1: 旧消息处理（recent_window 之外）→ 检查预算
-    //     Step A: 压缩旧 user/assistant 消息内容（old_compress_len）
-    //     Step B: 若仍超预算，删除旧消息（DropOldMessagesBatch）
-    //     Step C: 若仍超预算，压缩旧 tool 响应（old_compress_len）
-    //   Phase 2: 新消息处理（recent_window 之内）→ 检查预算
-    //     Step A: 压缩新 user/assistant 消息内容（recent_compress_len）
-    //     Step B: 若仍超预算，压缩新 tool 响应（tool_compress_len）
-    //   Phase 3: 丢弃新消息（最后手段，跳过保护集）
-    //   兜底：返回当前结果，让 FitMessagesToContext 处理剩余溢出
-    //
-    // 参数：
-    //   msg:                          待过滤的消息列表（原地修改）
-    //   contextSize:                  可用 token 数（已减去预留输出空间）
-    //   system_prompt_for_token_calc: 用于 token 预算计算的系统提示词（含工具定义和 /think 标记）
-    //   is_harmony:                   是否为 Harmony 路径（影响 tool 消息 token 估算口径）
-    //   tool_call_id_to_name:         tool_call_id → 函数名映射（Harmony 路径使用，可为 nullptr）
     nlohmann::ordered_json PreFilterMessages(
         nlohmann::ordered_json& msg,
         int contextSize,
@@ -115,51 +66,33 @@ public:
         bool is_harmony = false,
         const std::unordered_map<std::string, std::string>* tool_call_id_to_name = nullptr);
 
-    // 获取上次 PreFilterMessages 调用的统计信息（只读）
     const MessageCategoryStats& GetStats() const { return prefilter_stats_; }
 
-    // 获取上次 PreFilterMessages 调用中被丢弃的消息内容（只读）：FitMessagesToContext
-    // 传给 TaskMemoBuilder::Update() 前需要与自身 Step3/Phase4 丢弃的消息合并，否则
-    // Update() 只会看到 FitMessagesToContext 自己丢弃的极少数消息（Phase 0-5 丢的大头
-    // 从未被它看到过），导致 Task Memo 在真实场景下几乎永远不触发。
     const std::vector<GenieChatMessage>& GetDroppedMessages() const { return prefilter_dropped_messages_; }
 
-    // ========== 辅助函数：对任意消息 content 做统一文本清洗（块级元数据 + 时间戳）==========
     std::string CleanMessageContent(const std::string& content);
 
 private:
-    // ========== 辅助函数：判断是否是工具相关消息 ==========
     bool IsToolRelatedMessage(const nlohmann::ordered_json& element, const std::string& role);
 
-    // ========== 辅助函数：移除 Tool 返回内容中的冗余安全警告（Phase 0）==========
     std::string RemoveToolResponseRedundancy(const std::string& content);
 
-    // ========== 辅助函数：过滤 user 消息中的非指令元数据块（Phase 0）==========
     std::string RemoveUntrustedMetadataBlocks(const std::string& content);
 
-    // ========== 辅助函数：智能选择消息（Step 1：消息数量限制）==========
     nlohmann::ordered_json SmartSelectMessages(const nlohmann::ordered_json& msg, size_t max_messages);
 
-    // ========== 辅助函数：验证工具调用序列（Step 4）==========
     nlohmann::ordered_json ValidateToolCallSequence(const nlohmann::ordered_json& msg);
 
-    // ========== 辅助函数：级联删除工具调用链 ==========
     size_t SafeEraseToolChain(nlohmann::ordered_json& messages, size_t assistant_idx);
 
-    // ========== 辅助函数：diff original 与 kept，把差集追加进 prefilter_dropped_messages_ ==========
-    // 用内容签名（role+content）diff 而非在 Phase 0-5 每个删除点分别记录，因为删除点分散在
-    // SmartSelectMessages/DropOldMessagesBatch/CompressMessages 等多处；被压缩（内容变短但未
-    // 整条丢弃）的消息签名也会不匹配、连带计入，是可接受的偏保守行为（记忆机制多看到几条
-    // 仍在场的旧消息内容，不影响正确性）。
     void CaptureDroppedMessages(const nlohmann::ordered_json& original, const nlohmann::ordered_json& kept);
 
-    // ========== 辅助方法：检查消息是否应该保持完整（不压缩）==========
     bool ShouldKeepFull(const GenieChatMessage& msg) const;
 
-    // ========== 辅助方法：计算 token 数量 ==========
     size_t CountTokens(const std::string& text);
 
-    // ========== 辅助函数：批量删除旧消息直到满足预算（Phase 1 专用）==========
+    bool PrefixCacheActive();
+
     void DropOldMessagesBatch(
         nlohmann::ordered_json& filtered_msg,
         const std::vector<bool>& old_flags,
@@ -169,7 +102,6 @@ private:
         size_t available_tokens,
         const std::function<void()>& refresh_prot_idx);
 
-    // ========== 通用辅助函数：压缩指定角色的消息内容（Phase 1A/1C/2A/2B）==========
     size_t CompressMessages(
         nlohmann::ordered_json& filtered_msg,
         const std::vector<bool>& old_flags,
@@ -187,11 +119,14 @@ private:
         bool is_harmony = false);
 
     IModelConfig& model_config_;
-    // 多模型并发场景：per-model 的 ContextBase（优先于 model_config_.get_genie_model_handle()）
     ContextBase* context_override_{nullptr};
     MessageCategoryStats prefilter_stats_;
     std::vector<GenieChatMessage> prefilter_dropped_messages_;
+    std::unordered_set<size_t> repeat_protected_raw_;
+    std::unordered_set<size_t> repeat_must_keep_raw_;
+    size_t repeat_retain_budget_{0};
 };
 
-#endif // MESSAGE_PRE_FILTER_H
+void ClearPreFilterSessionStates();
 
+#endif // MESSAGE_PRE_FILTER_H

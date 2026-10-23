@@ -11,24 +11,19 @@
 
 #include "model_config.h"
 
+#include "../context/llama_runtime_planner.h"
+
 using json = nlohmann::ordered_json;
 
-// ============================================================
-// ModelInstanceConfig: 单个模型实例的配置状态
-// 从 IModelConfig 中分离出来，使每个模型实例拥有独立的配置
-// ============================================================
 class ModelInstanceConfig
 {
 public:
-    // 基础配置访问器
     const std::string &get_model_path() const { return model_path_; }
     void set_model_path(const std::string &path) { model_path_ = path; }
 
     const std::string &get_model_name() const { return  model_name_; }
     void set_model_name(const std::string &name) { model_name_ = name; }
 
-    // 修复：返回 int 值而非 int& 引用，避免外部直接修改私有成员破坏封装性
-    // 同时移除 const 方法中的 mutable 修改语义，使接口语义更清晰
     int get_context_size() const { return context_size_; }
     void set_context_size(int size) { context_size_ = size; }
 
@@ -44,14 +39,32 @@ public:
     bool is_thinking_model() const { return thinking_model_; }
     void set_thinking_model(bool is_thinking) { thinking_model_ = is_thinking; }
 
-    // LoRA 配置
+    bool is_speculative_draft_configured() const { return speculative_draft_configured_; }
+    void set_speculative_draft_configured(bool configured) { speculative_draft_configured_ = configured; }
+
+    bool is_speculative_draft_forced_cpu() const { return speculative_draft_forced_cpu_; }
+    void set_speculative_draft_forced_cpu(bool forced) { speculative_draft_forced_cpu_ = forced; }
+
+    bool is_speculative_reduced_ubatch() const { return speculative_reduced_ubatch_; }
+    void set_speculative_reduced_ubatch(bool reduced) { speculative_reduced_ubatch_ = reduced; }
+
+    bool is_speculative_full_gpu() const { return speculative_full_gpu_; }
+    void set_speculative_full_gpu(bool full_gpu) { speculative_full_gpu_ = full_gpu; }
+
+    bool has_runtime_plan() const { return has_runtime_plan_; }
+    const llama_runtime::RuntimePlan &runtime_plan() const { return runtime_plan_; }
+    void set_runtime_plan(const llama_runtime::RuntimePlan &plan)
+    {
+        runtime_plan_ = plan;
+        has_runtime_plan_ = true;
+    }
+
     const std::string &getloraAdapter() const { return loraAdapter_; }
     void set_lora_adapter(const std::string &adapter) { loraAdapter_ = adapter; }
 
     float getloraAlpha() const { return loraAlpha_; }
     void set_lora_alpha(float alpha) { loraAlpha_ = alpha; }
 
-    // 输出配置
     bool getisOutputAllText() const { return outputAllText_; }
     void set_output_all_text(bool output_all) { outputAllText_ = output_all; }
 
@@ -64,22 +77,17 @@ public:
     int getnumResponse() const { return numResponse_; }
     void set_num_response(int num) { numResponse_ = num; }
 
-    // numResponse == -1 的唯一权威判定入口：客户端自管历史 + 启用 prompt 压缩优化的无状态模式。
-    // 新增判断点必须复用此方法，不要再手写 == -1 / != -1。
     bool IsStatelessMode() const { return numResponse_ == -1; }
 
     int getminOutputNum() const { return minOutputNum_; }
     void set_min_output_num(int num) { minOutputNum_ = num; }
 
-    // 后端类型（用于多模型路由）
     const std::string &get_backend() const { return backend_; }
     void set_backend(const std::string &backend) { backend_ = backend; }
 
-    // 设备类型（CPU/GPU/NPU）
     const std::string &get_device() const { return device_; }
     void set_device(const std::string &device) { device_ = device; }
 
-    // Tool Prompt Template
     const std::string &get_tool_prompt_template() const { return tool_prompt_template_; }
     void set_tool_prompt_template(const std::string &template_str) { tool_prompt_template_ = template_str; }
 
@@ -94,6 +102,12 @@ private:
     int context_size_{DEFAULT_CONTEXT_SIZE};
     json prompt_{json::object()};
     bool thinking_model_{false};
+    bool speculative_draft_configured_{false};
+    bool speculative_draft_forced_cpu_{false};
+    bool speculative_reduced_ubatch_{false};
+    bool speculative_full_gpu_{false};
+    bool has_runtime_plan_{false};
+    llama_runtime::RuntimePlan runtime_plan_{};
     PromptType prompt_type_{};
     ModelFormat model_format_{};
 
@@ -106,8 +120,8 @@ private:
     int numResponse_ = 30;
     int minOutputNum_ = 512;
 
-    std::string backend_ = "GGUF";  // GGUF, mnn, qnn
-    std::string device_ = "gpu";    // cpu, gpu, npu
+    std::string backend_ = "GGUF";
+    std::string device_ = "gpu";
 
     std::string tool_prompt_template_ = "\n# Tools\n\n"
                                         "You may call one or more functions to assist with the user query.\n"

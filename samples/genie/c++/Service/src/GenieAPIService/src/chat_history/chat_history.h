@@ -16,8 +16,8 @@
 using json = nlohmann::ordered_json;
 struct GenieChatMessage
 {
-    std::string role;        // role："user", "assistant", "tool"
-    std::string content;     // message content
+    std::string role;
+    std::string content;
 };
 
 class ModelInstanceConfig;
@@ -33,9 +33,15 @@ public:
     ~ChatHistory();
 
     std::string GetUserMessage(const std::string &prompt_system,
-                               const std::string &prompt_start);
+                               const std::string &prompt_start,
+                               const std::string &assistant_turn_prefix = "",
+                               const std::string &trailing_note = "");
 
     void AddMessage(const std::string &role, const std::string &content);
+
+    void PrependToLastMessage(const std::string &prefix);
+
+    bool IsEmpty() const;
 
     void Print() const;
 

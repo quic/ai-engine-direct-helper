@@ -22,10 +22,11 @@ struct ModelInput
     std::string text_;
     std::string image_;
     std::string audio_;
-    // Agent 类型标记：由 ModelInputBuilder 在构建时设置
-    // "main" = 主 Agent（system prompt 含 "agent=main"）
-    // "sub"  = 子 Agent（默认值）
     std::string agent_type_ = "sub";
+    int think_time_budget_s_ = 0;
+    int think_min_tokens_ = 0;
+    int think_max_tokens_ = 0;
+    int think_ctx_reserve_ = 0;
 };
 
 struct PromptType : public BaseEnum

@@ -134,9 +134,7 @@ inline json ConfigFixer::FixConfig(const std::string &watermark_callback_name)
             {"forecast", json::json_pointer("/dialog/ssd-q1/forecast-prefix-name"), FixedInfo::kString, true, true},
             {"lut-path", json::json_pointer("/dialog/embedding/lut-path"), FixedInfo::kString, true, false}
     };
-    // pointers below are relative to a single engine object; applied per-engine
-    // to support both the legacy single-engine `dialog/engine` object and the
-    // eaglet (speculative-decoding) `dialog/engine` array of {target, draft} roles.
+    // pointers below are relative to a single engine object; applied per-engine.
     std::vector<FixedInfo> engine_items{
             {"extensions", json::json_pointer("/backend/extensions"), FixedInfo::kString, true},
             {"ctx-bins", json::json_pointer("/model/binary/ctx-bins"), FixedInfo::kArrayString, false},
