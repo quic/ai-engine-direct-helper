@@ -18,6 +18,8 @@
 #include "../chat_request_handler/summary_cache.h"
 #include "../chat_request_handler/task_memo_store.h"
 #include "../chat_request_handler/tool_call_circuit_breaker_store.h"
+#include "../chat_request_handler/tool_call_repetition_store.h"
+#include "../chat_request_handler/request_trace_writer.h"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -32,30 +34,11 @@
 
 namespace fs = std::filesystem;
 
-// ── Windows Credential Manager API Key 读取辅助函数 ──────────────────────────
-// 服务名与 QAIAgentForge/backend/keyring_helper.py 中的 SERVICE_NAME 保持一致。
-// account 格式：
-//   "global::cloud_model"            → cloud_model.api_key
-//   "global::enterprise_cloud_model" → enterprise_cloud_model.api_key
-//
-// keyring 库（WinVaultKeyring）的存储规则：
-//   - 第一次存储：TargetName = SERVICE_NAME（"QAIAgentForge"），UserName = account
-//   - 有冲突时：TargetName = "{account}@{SERVICE_NAME}"（"global::cloud_model@QAIAgentForge"）
-//   - CredentialBlob 编码：UTF-16 LE（keyring 库写入时使用 UTF-16）
-//
-// 优先级：Credential Manager > JSON 文件（fallback）
-// 若 Credential Manager 中无值或平台不支持，返回空字符串，由调用方 fallback 到 JSON 值。
 static std::string LoadApiKeyFromCredentialManager(const std::string &account)
 {
 #ifdef _WIN32
-    // Credential Manager 服务名（与 keyring_helper.py 中 SERVICE_NAME = "QAIAgentForge" 一致）
     const std::wstring service_name = L"QAIAgentForge";
     const std::wstring account_w(account.begin(), account.end());
-
-    // keyring WinVaultKeyring 的读取逻辑（_resolve_credential）：
-    //   1. 先尝试 TargetName = SERVICE_NAME，检查 UserName 是否匹配
-    //   2. 若不匹配，再尝试 TargetName = "{account}@{SERVICE_NAME}"
-    // 此处按相同顺序尝试两个 target name。
 
     auto try_read = [&](const std::wstring &target) -> std::string
     {
@@ -64,14 +47,11 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
             return "";
 
         std::string result;
-        // 验证 UserName 是否与 account 匹配（keyring 存储时 UserName = account）
         bool user_match = (pcred->UserName != nullptr &&
                            std::wstring(pcred->UserName) == account_w);
 
         if (user_match && pcred->CredentialBlobSize > 0 && pcred->CredentialBlob != nullptr)
         {
-            // keyring 库写入时使用 UTF-16 LE 编码
-            // 将 UTF-16 LE 字节序列转换为 UTF-8 std::string
             const wchar_t *blob_w = reinterpret_cast<const wchar_t *>(pcred->CredentialBlob);
             int blob_wchars = static_cast<int>(pcred->CredentialBlobSize / sizeof(wchar_t));
             int utf8_len = WideCharToMultiByte(CP_UTF8, 0, blob_w, blob_wchars,
@@ -87,7 +67,6 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
         return result;
     };
 
-    // 尝试1：TargetName = "QAIAgentForge"（单账号场景，keyring 默认存储位置）
     std::string key = try_read(service_name);
     if (!key.empty())
     {
@@ -96,7 +75,6 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
         return key;
     }
 
-    // 尝试2：TargetName = "global::cloud_model@QAIAgentForge"（多账号冲突场景）
     std::wstring compound_target = account_w + L"@" + service_name;
     key = try_read(compound_target);
     if (!key.empty())
@@ -109,10 +87,6 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
     return "";
 }
 
-// ── API Key 解析辅助函数 ──────────────────────────────────────────────────────
-// 优先从 Windows Credential Manager 读取，若无值则 fallback 到 JSON 中的值。
-// json_api_key: 从 service_config.json 中读取的原始值（可能为空字符串）
-// account:      Credential Manager 账号名（如 "global::cloud_model"）
 static std::string ResolveApiKey(const std::string &json_api_key, const std::string &account)
 {
     std::string cm_key = LoadApiKeyFromCredentialManager(account);
@@ -120,7 +94,6 @@ static std::string ResolveApiKey(const std::string &json_api_key, const std::str
     {
         return cm_key;
     }
-    // fallback：使用 JSON 中的值（用户直接编辑配置文件的场景）
     if (!json_api_key.empty())
     {
         My_Log{} << "[CredMgr] API Key fallback to JSON value: account=" << account << std::endl;
@@ -130,19 +103,16 @@ static std::string ResolveApiKey(const std::string &json_api_key, const std::str
 
 #include <LibAppBuilder.hpp>
 
-// 前向声明：ParsePromptFile 定义在文件后部，LoadModel 和 LoadPromptTemplates 均调用此函数
 static void ParsePromptFile(const std::string &prompt_path,
                             const std::string &model_name,
                             json &out_prompt,
                             PromptType &out_pt,
                             int &out_ctx_size);
 
-// 前向声明：ParseContextSizeFromConfigJson 定义在文件后部，LoadModel 和 LoadPromptTemplates 均调用此函数
 static int ParseContextSizeFromConfigJson(const std::string &config_json_path,
                                           const std::string &model_name,
                                           const std::string &log_prefix);
 
-// 前向声明：ParseBackendDeviceFromConfigJson 定义在文件后部，LoadSingleModel 调用此函数
 static void ParseBackendDeviceFromConfigJson(const std::string &config_json_path,
                                              const std::string &model_name,
                                              const std::string &log_prefix,
@@ -495,9 +465,6 @@ struct ModelManager::ModeVerifier
 
             if (!j.contains(json::json_pointer("/dialog/embedding/datatype")))
             {
-                // 校验失败前必须先清理已成功创建的视觉/音频 HTP 会话（ModelInitialize 已在
-                // QNNImpl::TryCreate 内部完成），否则该会话会随异常直接抛出而静默泄漏，
-                // 从未被 ModelDestroy() 释放。
                 self_->qnn_embedding_.Clean();
                 throw std::runtime_error("qnn embedding has bad config in datatype");
             }
@@ -514,7 +481,6 @@ struct ModelManager::ModeVerifier
 
             if (self_->qnn_embedding_.data_type == EmbeddingDataType::None)
             {
-                // 同上：datatype 字符串未匹配到任何已知类型时，也要先清理已创建的 HTP 会话再抛出。
                 self_->qnn_embedding_.Clean();
                 throw std::runtime_error("qnn embedding has bad datatype");
             }
@@ -537,8 +503,6 @@ struct ModelManager::ModeVerifier
         {
             uint64_t required = MNNContext::EstimateMnnMemoryRequirement(config_->get_model_path());
             uint64_t available_raw = MNNContext::GetAvailablePhysicalMemoryBytes();
-            // 增强：扣除同进程内已加载的其它模型（任意后端）的估算内存占用，
-            // 降低多模型并发场景下预检查失效的概率（见 EstimateOtherLoadedModelsMemoryBytes 注释）。
             uint64_t other_models_reserved = self_->EstimateOtherLoadedModelsMemoryBytes();
             bool available_unknown = (available_raw == UINT64_MAX);
             uint64_t available = available_unknown
@@ -574,9 +538,18 @@ struct ModelManager::ModeVerifier
 
         std::shared_ptr<ContextBase> CreateIfVerifiedImpl() override
         {
-            auto load_with_device = [this](const std::string &device) -> std::shared_ptr<ContextBase>
+            auto load_with_device = [this](const std::string &device, bool draft_on_cpu = false,
+                                           bool reduced_ubatch = false,
+                                           bool full_gpu = false) -> std::shared_ptr<ContextBase>
             {
+                My_Log{} << "[GGUFVerify] load attempt: device=" << device
+                          << ", draft_device=" << (draft_on_cpu ? std::string("cpu") : device)
+                          << ", reduced_ubatch=" << (reduced_ubatch ? 1 : 0)
+                          << ", full_gpu=" << (full_gpu ? 1 : 0) << std::endl;
                 config_->set_device(device);
+                config_->set_speculative_draft_forced_cpu(draft_on_cpu);
+                config_->set_speculative_reduced_ubatch(reduced_ubatch);
+                config_->set_speculative_full_gpu(full_gpu);
                 config_->i_model_config_ = *self_;
                 config_->i_model_config_.genieModelHandle = self_->genieModelHandle = std::make_shared<LLAMACppBuilder>(*config_);
                 return self_->genieModelHandle;
@@ -586,10 +559,6 @@ struct ModelManager::ModeVerifier
             std::transform(requested_device.begin(), requested_device.end(), requested_device.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-            // 模型自身 config.json 是可选的：缺失/为空/解析失败/不含 "backend" 键都静默忽略，
-            // 只有明确写 {"backend": "cpu"} 时才强制走 CPU（与 service_config.json 的 device 是"或"关系）。
-            // j 声明在 try 外部：draft_model 字段块解析（见下方）需要复用同一份已解析的 json，
-            // 避免 Step 4 的投机解码路径重复解析这份 config.json。
             json j;
             try
             {
@@ -611,8 +580,6 @@ struct ModelManager::ModeVerifier
                 }
                 else if (!File::IsFileExist(self_->config_file_))
                 {
-                    // config.json 只允许精确匹配、不允许前缀匹配回退；GGUF 模型的 config.json 本身是可选的，
-                    // 缺失时直接在模型目录下创建空文件占位，而不是借用其它模型的模板。
                     std::ofstream(self_->config_file_).close();
                 }
 
@@ -634,17 +601,72 @@ struct ModelManager::ModeVerifier
                         << std::endl;
             }
 
-            // draft_model 字段块存在即触发投机解码路径的硬件门槛检查（Step 3）：不含该字段的
-            // 模型（现有全部 GGUF 模型）完全不触发下面这段新增逻辑，零行为变化。
             llama_speculative::DraftModelConfig draft_config = llama_speculative::DraftModelConfig::ParseFrom(j);
+            config_->set_speculative_draft_configured(draft_config.present);
+            bool full_gpu_fits = false;
             if (draft_config.present)
             {
-                uint64_t total_physical = llama_speculative::GetTotalPhysicalMemoryBytes();
-                if (!llama_speculative::MeetsPhysicalMemoryThreshold(total_physical, llama_speculative::kDraftModelMinPhysicalMemoryBytes))
+                int configured_context_size = config_->get_context_size();
+                uint64_t effective_context_size = configured_context_size > 0
+                        ? static_cast<uint64_t>(configured_context_size) : 32768ULL;
+                uint64_t required = 0;
+                uint64_t available = llama_speculative::GetAvailablePhysicalMemoryBytes();
+
+                if (draft_config.planner == "off")
                 {
-                    std::string detail = "insufficient total physical memory for speculative decoding "
-                            "(draft_model) model: required>=" + std::to_string(llama_speculative::kDraftModelMinPhysicalMemoryBytes) +
-                            " bytes, total_physical=" + std::to_string(total_physical) + " bytes";
+                    uint64_t gpu_required = 0;
+                    uint64_t gpu_available = 0;
+                    full_gpu_fits = llama_speculative::SpeculativeFitsFullGpu(
+                            config_->get_model_path(), draft_config.path, effective_context_size,
+                            &gpu_required, &gpu_available);
+                    My_Log{} << "[GGUFVerify] full GPU check: required=" << gpu_required
+                              << " bytes, gpu_available=" << gpu_available
+                              << " bytes, fits=" << (full_gpu_fits ? 1 : 0)
+                              << " (planner off, legacy estimate)" << std::endl;
+                    required = llama_speculative::EstimateSpeculativeMemoryRequirement(
+                            config_->get_model_path(), draft_config.path, effective_context_size);
+                }
+                else
+                {
+                    const llama_runtime::RuntimePlan plan = llama_speculative::PlanSpeculativeRuntime(
+                            config_->get_model_path(), draft_config, effective_context_size);
+                    config_->set_runtime_plan(plan);
+                    full_gpu_fits = plan.full_gpu;
+
+                    const llama_runtime::MemoryLedger &led = plan.ledger;
+                    My_Log{} << "[Planner] weights=" << (led.weights_tgt + led.weights_dft)
+                              << " kv=" << (led.kv_attn_tgt + led.kv_attn_dft)
+                              << " rs=" << (led.recurrent_tgt + led.recurrent_dft)
+                              << " compute=" << (led.compute_const + led.compute_kq)
+                              << " peak=" << led.runtime_peak
+                              << " safety=" << led.safety
+                              << " required=" << led.gpu_required()
+                              << " free=" << plan.gpu_free_observed
+                              << std::endl;
+                    My_Log{} << "[Planner] " << plan.rationale << std::endl;
+                    My_Log{} << "[GGUFVerify] full GPU check: required=" << led.gpu_required()
+                              << " bytes, gpu_available=" << plan.gpu_free_observed
+                              << " bytes, fits=" << (full_gpu_fits ? 1 : 0) << std::endl;
+                    required = led.gpu_required() + led.host_checkpoints;
+
+#ifdef USE_GGUF
+                    const bool applied = LLAMACppBuilder::ApplyPlannedHeadCheckpoints(plan.head_checkpoints);
+#else
+                    const bool applied = false;
+#endif
+                    My_Log{} << "[Planner] head_checkpoints=" << plan.head_checkpoints
+                              << (applied ? " (derived, applied)" : " (explicit config wins, not applied)")
+                              << " ckpt_bytes=" << led.ckpt_bytes
+                              << " host_resident=" << led.host_checkpoints
+                              << " host_avail=" << plan.host_avail_observed << std::endl;
+                }
+
+                if (available != UINT64_MAX && required > available)
+                {
+                    std::string detail = "insufficient available physical memory for speculative decoding "
+                            "(draft_model) model: required=" + std::to_string(required) +
+                            " bytes, available=" + std::to_string(available) +
+                            " bytes, context_size=" + std::to_string(effective_context_size);
                     My_Log{My_Log::Level::kError} << "[GGUFVerify] " << detail << std::endl;
                     self_->SetLastLoadFailureReason(ModelManager::LoadFailureReason::kInsufficientMemory, detail);
                     return nullptr;
@@ -655,7 +677,29 @@ struct ModelManager::ModeVerifier
                           << ", spec_draft_n_max=" << draft_config.spec_draft_n_max
                           << ", spec_draft_p_min=" << draft_config.spec_draft_p_min
                           << ", required=" << draft_config.required
-                          << ", total_physical_memory_bytes=" << total_physical << std::endl;
+                          << ", context_size=" << effective_context_size
+                          << ", estimated_required_bytes=" << required
+                          << ", available_physical_memory_bytes=" << available << std::endl;
+            }
+
+            bool target_weights_too_large = false;
+            if (full_gpu_fits && requested_device != "cpu")
+            {
+                try
+                {
+                    return load_with_device("gpu", false, false, true);
+                }
+                catch (const std::exception &e)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] full GPU load failed, fallback to tuned split: " << e.what() << std::endl;
+                }
+                catch (...)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] full GPU load failed with unknown error, fallback to tuned split"
+                            << std::endl;
+                }
             }
 
             if (requested_device == "cpu")
@@ -667,6 +711,13 @@ struct ModelManager::ModeVerifier
             {
                 return load_with_device("gpu");
             }
+            catch (const TargetWeightsLoadError &e)
+            {
+                target_weights_too_large = true;
+                My_Log{My_Log::Level::kError}
+                        << "[GGUFVerify] GPU load failed on target weights, skipping remaining GPU tiers: "
+                        << e.what() << std::endl;
+            }
             catch (const std::exception &e)
             {
                 My_Log{My_Log::Level::kError}
@@ -676,6 +727,43 @@ struct ModelManager::ModeVerifier
             {
                 My_Log{My_Log::Level::kError}
                         << "[GGUFVerify] GPU load failed with unknown error, fallback to CPU" << std::endl;
+            }
+
+            if (draft_config.present && !target_weights_too_large)
+            {
+                try
+                {
+                    return load_with_device("gpu", true);
+                }
+                catch (const std::exception &e)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] GPU load with draft on CPU failed, fallback to CPU: " << e.what()
+                            << std::endl;
+                }
+                catch (...)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] GPU load with draft on CPU failed with unknown error, fallback to CPU"
+                            << std::endl;
+                }
+
+                try
+                {
+                    return load_with_device("gpu", true, true);
+                }
+                catch (const std::exception &e)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] GPU load with draft on CPU and reduced ubatch failed, fallback to CPU: "
+                            << e.what() << std::endl;
+                }
+                catch (...)
+                {
+                    My_Log{My_Log::Level::kError}
+                            << "[GGUFVerify] GPU load with draft on CPU and reduced ubatch failed with unknown error, "
+                               "fallback to CPU" << std::endl;
+                }
             }
 
             try
@@ -717,16 +805,10 @@ struct ModelManager::ModeVerifier
         };
         /* @formatter:on */
 
-        // 修复：若 config 中指定了 backend，优先只尝试该 backend，
-        // 避免在多模型场景下（同一路径不同 backend/device）加载错误的后端。
-        // 例如：同一 GGUF 模型路径可以用 CPU 或 GPU 后端加载，
-        // 必须按 service_config.json 中的 backend 字段决定使用哪个后端。
-        // 若指定的 backend 不在编译支持列表中，则回退到自动检测（向后兼容）。
         std::vector<Checker> checkers;
         const std::string &specified_backend = config->get_backend();
         if (!specified_backend.empty() && specified_backend != "auto")
         {
-            // 将 backend 字符串映射到 ModelFormat
             ModelFormat target_format{};
             bool format_found = false;
             if (specified_backend == "qnn" || specified_backend == "QNN")
@@ -748,7 +830,6 @@ struct ModelManager::ModeVerifier
 
             if (format_found)
             {
-                // 只保留匹配 backend 的 checker
                 for (const auto &c: all_checkers)
                 {
                     if (c.model_format_ == target_format)
@@ -779,7 +860,6 @@ struct ModelManager::ModeVerifier
         }
         else
         {
-            // 未指定 backend 或 backend="auto"：自动检测（向后兼容）
             checkers = all_checkers;
         }
 
@@ -825,20 +905,6 @@ ModelManager::ModelManager(IModelConfig &&config) : IModelConfig{std::move(confi
 
 ModelManager::~ModelManager()
 {
-    // 修复：显式析构，确保无论进程以何种方式退出（优雅关闭时 UnloadModel() 已清空 current_model_，
-    // 这里只是空操作；但若通过测试框架/编排工具直接终止进程、或从未显式调用过 UnloadModel()，
-    // 仍会残留驻留的 QNN/NPU 模型，届时只能靠这里的隐式成员析构去释放），都会在真正释放
-    // 最后一份引用之前完成 QNN/HTP 驱动异步释放资源所需的等待。
-    //
-    // 根因（已通过 minidump 复现确认）：Clean() 里的等待只在 genieModelHandle 被置空、
-    // 且此时确实是最后一份引用时才有意义；而编译器为 current_model_ 生成的隐式析构完全不会
-    // 触发这段等待。此前该等待只存在于 UnloadModel()/UnloadModelsByDevice() 等显式调用路径，
-    // atexit 析构链（`~ModelManager()` 从未显式定义、直接进入成员的隐式析构）完全没有保护，
-    // 崩溃点位于释放 current_model_ 底层对象时。
-    //
-    // 修复方式：先在锁内清空 current_model_（记录其是否为 QNN 后端），再处理
-    // genieModelHandle——保证无论哪一份引用恰好是最后一份，其对应的等待都在这里完成，
-    // 而不是被推迟到本函数返回之后的隐式成员析构阶段（那时已无法插入等待）。
     bool had_qnn = false;
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
@@ -850,7 +916,7 @@ ModelManager::~ModelManager()
     }
     if (genieModelHandle != nullptr)
     {
-        Clean();  // Clean() 内部已包含针对 QNN/NPU 的等待逻辑
+        Clean();
     }
     else if (had_qnn)
     {
@@ -900,11 +966,6 @@ bool ModelManager::LoadModelByName(const std::string &new_model, bool &first_loa
     return LoadSingleModel();
 }
 
-// ============================================================
-// ParsePromptSectionsConfig: 从 prompt_optimization 配置对象中解析指定 key（如
-// "prompt_sections" / "subagent_prompt_sections"）对应的段落过滤规则，填充到
-// sections_cfg 中。InitializeConfig 中两处调用点共用此函数，避免重复代码。
-// ============================================================
 static void ParsePromptSectionsConfig(const json &po, PromptSectionsConfig &sections_cfg, const std::string &tag)
 {
     if (!po.contains(tag) || !po[tag].is_object())
@@ -971,6 +1032,463 @@ bool ModelManager::InitializeConfig()
         return false;
     }
 
+    {
+        fs::path prompt_engineering_path = fs::path(RootDir) / "config" / "prompt_engineering.json";
+        if (File::IsFileExist(prompt_engineering_path.generic_string()) &&
+            !File::IsFileEmpty(prompt_engineering_path.generic_string()))
+        {
+            try
+            {
+                std::ifstream pe_file(prompt_engineering_path.generic_string());
+                json pe_json;
+                pe_file >> pe_json;
+
+                if (pe_json.contains("debug"))
+                {
+                    const auto &dbg = pe_json["debug"];
+                    ResponseTools::status_content_visible = dbg.value("status_update_content_visible", true);
+                    ResponseTools::log_inference_stream = dbg.value("log_inference_stream", false);
+                    My_Log{} << "Debug config loaded: status_update_content_visible="
+                             << ResponseTools::status_content_visible
+                             << ", log_inference_stream=" << ResponseTools::log_inference_stream
+                             << std::endl;
+                }
+
+                if (pe_json.contains("windows_shell_hint") && pe_json["windows_shell_hint"].is_object())
+                {
+                    const auto &wsh = pe_json["windows_shell_hint"];
+                    windows_shell_hint_config_.enabled = wsh.value("enabled", true);
+                    windows_shell_hint_config_.hint_text = wsh.value("hint_text", windows_shell_hint_config_.hint_text);
+                    if (wsh.contains("tool_keywords") && wsh["tool_keywords"].is_array())
+                    {
+                        windows_shell_hint_config_.tool_keywords.clear();
+                        for (const auto &kw : wsh["tool_keywords"])
+                        {
+                            if (kw.is_string())
+                            {
+                                windows_shell_hint_config_.tool_keywords.push_back(kw.get<std::string>());
+                            }
+                        }
+                    }
+                    My_Log{} << "[Config] windows_shell_hint loaded: enabled="
+                             << windows_shell_hint_config_.enabled
+                             << ", tool_keywords_count=" << windows_shell_hint_config_.tool_keywords.size()
+                             << std::endl;
+                }
+
+                if (pe_json.contains("adaptive_thinking") && pe_json["adaptive_thinking"].is_object())
+                {
+                    const auto &at = pe_json["adaptive_thinking"];
+                    auto &at_cfg = adaptive_thinking_config_;
+                    at_cfg.enabled = at.value("enabled", at_cfg.enabled);
+                    at_cfg.time_budget_s = at.value("time_budget_s", at_cfg.time_budget_s);
+                    at_cfg.min_tokens = at.value("min_tokens", at_cfg.min_tokens);
+                    at_cfg.max_per_signature = at.value("max_per_signature", at_cfg.max_per_signature);
+                    at_cfg.max_think_turn_share = at.value("max_think_turn_share", at_cfg.max_think_turn_share);
+                    at_cfg.error_repeat_window = at.value("error_repeat_window", at_cfg.error_repeat_window);
+                    at_cfg.near_repeat_window = at.value("near_repeat_window", at_cfg.near_repeat_window);
+                    at_cfg.max_tokens = at.value("max_tokens", at_cfg.max_tokens);
+                    at_cfg.ctx_reserve_tokens = at.value("ctx_reserve_tokens", at_cfg.ctx_reserve_tokens);
+                    My_Log{} << "[Config] adaptive_thinking loaded: enabled=" << at_cfg.enabled
+                             << ", time_budget_s=" << at_cfg.time_budget_s
+                             << ", max_tokens=" << at_cfg.max_tokens << std::endl;
+                }
+
+                if (pe_json.contains("tool_call_repair") && pe_json["tool_call_repair"].is_object())
+                {
+                    const auto &tcr = pe_json["tool_call_repair"];
+                    tool_call_repair_config_.enabled = tcr.value("enabled", true);
+
+                    if (tcr.contains("internal_retry") && tcr["internal_retry"].is_object())
+                    {
+                        const auto &ir = tcr["internal_retry"];
+                        auto &ir_cfg = tool_call_repair_config_.internal_retry;
+                        ir_cfg.max_attempts = ir.value("max_attempts", 1);
+                        if (ir.contains("skip_reasons") && ir["skip_reasons"].is_array())
+                        {
+                            ir_cfg.skip_reasons.clear();
+                            for (const auto &reason : ir["skip_reasons"])
+                            {
+                                if (reason.is_string())
+                                {
+                                    ir_cfg.skip_reasons.push_back(reason.get<std::string>());
+                                }
+                            }
+                        }
+                    }
+
+                    if (tcr.contains("circuit_breaker") && tcr["circuit_breaker"].is_object())
+                    {
+                        const auto &cb = tcr["circuit_breaker"];
+                        auto &cb_cfg = tool_call_repair_config_.circuit_breaker;
+                        cb_cfg.consecutive_layer3_threshold = cb.value("consecutive_layer3_threshold", 3);
+                        cb_cfg.cooldown_seconds = cb.value("cooldown_seconds", 300);
+                    }
+                    ToolCallCircuitBreakerStore::GetInstance().Configure(tool_call_repair_config_.circuit_breaker);
+
+                    if (tcr.contains("redundant_call_guard") && tcr["redundant_call_guard"].is_object())
+                    {
+                        const auto &rg = tcr["redundant_call_guard"];
+                        auto &rg_cfg = tool_call_repair_config_.redundant_call_guard;
+                        rg_cfg.enabled = rg.value("enabled", true);
+                        rg_cfg.repeat_threshold = rg.value("repeat_threshold", 2);
+                        rg_cfg.ttl_seconds = rg.value("ttl_seconds", 300);
+                        rg_cfg.consecutive_failure_threshold = rg.value("consecutive_failure_threshold", 3);
+                        rg_cfg.non_contiguous_repeat_threshold = rg.value("non_contiguous_repeat_threshold", 4);
+                        rg_cfg.non_contiguous_ttl_seconds = rg.value("non_contiguous_ttl_seconds", 3600);
+                    }
+                    ToolCallRepetitionStore::GetInstance().Configure(tool_call_repair_config_.redundant_call_guard);
+
+                    My_Log{} << "[Config] tool_call_repair loaded: enabled="
+                             << tool_call_repair_config_.enabled
+                             << ", internal_retry.max_attempts="
+                             << tool_call_repair_config_.internal_retry.max_attempts
+                             << ", internal_retry.skip_reasons=["
+                             << [&]() {
+                                    std::string joined;
+                                    for (const auto &r : tool_call_repair_config_.internal_retry.skip_reasons)
+                                    {
+                                        if (!joined.empty()) joined += ",";
+                                        joined += r;
+                                    }
+                                    return joined;
+                                }()
+                             << "], circuit_breaker.consecutive_layer3_threshold="
+                             << tool_call_repair_config_.circuit_breaker.consecutive_layer3_threshold
+                             << ", circuit_breaker.cooldown_seconds="
+                             << tool_call_repair_config_.circuit_breaker.cooldown_seconds
+                             << std::endl;
+                }
+
+                if (pe_json.contains("debug") && pe_json["debug"].is_object())
+                {
+                    const auto &dbg = pe_json["debug"];
+                    if (dbg.contains("request_trace") && dbg["request_trace"].is_object())
+                    {
+                        const auto &rt = dbg["request_trace"];
+                        request_trace_config_.enabled = rt.value("enabled", false);
+                        request_trace_config_.path = rt.value("path", std::string("tmp/request_trace.jsonl"));
+                        My_Log{} << "[Config] debug.request_trace loaded: enabled="
+                                 << request_trace_config_.enabled
+                                 << ", path=" << request_trace_config_.path
+                                 << std::endl;
+                    }
+                }
+                RequestTraceWriter::GetInstance().Configure(request_trace_config_);
+
+#ifdef USE_GGUF
+                {
+                    bool prefix_cache_enabled = true;
+                    int head_checkpoints = 2;
+                    bool head_checkpoints_explicit = false;
+                    if (pe_json.contains("llama_prefix_cache") && pe_json["llama_prefix_cache"].is_object())
+                    {
+                        prefix_cache_enabled = pe_json["llama_prefix_cache"].value("enabled", true);
+                        head_checkpoints = pe_json["llama_prefix_cache"].value("head_checkpoints", 2);
+                        head_checkpoints_explicit = pe_json["llama_prefix_cache"].contains("head_checkpoints");
+                    }
+                    LLAMACppBuilder::SetPrefixCacheEnabled(prefix_cache_enabled);
+                    LLAMACppBuilder::SetPrefixHeadCheckpoints(head_checkpoints, head_checkpoints_explicit);
+                    My_Log{} << "[Config] llama_prefix_cache.enabled=" << prefix_cache_enabled
+                             << " head_checkpoints=" << head_checkpoints
+                             << (head_checkpoints_explicit ? " (explicit)" : " (default)") << std::endl;
+                }
+#endif
+
+                if (pe_json.contains("prompt_optimization"))
+                {
+                    const auto &po = pe_json["prompt_optimization"];
+                    prompt_optimization_config_.output_reserve_ratio = po.value("output_reserve_ratio", 0.20f);
+                    prompt_optimization_config_.max_messages_limit = po.value("max_messages_limit", (size_t) 16);
+                    prompt_optimization_config_.token_pressure_trigger_ratio =
+                            po.value("token_pressure_trigger_ratio", 0.75);
+                    prompt_optimization_config_.recent_window = po.value("recent_window", (size_t) 6);
+                    prompt_optimization_config_.old_compress_len = po.value("old_compress_len", (size_t) 300);
+                    prompt_optimization_config_.recent_compress_len = po.value("recent_compress_len", (size_t) 600);
+                    prompt_optimization_config_.tool_compress_len = po.value("tool_compress_len", (size_t) 400);
+                    prompt_optimization_config_.min_compress_threshold = po.value("min_compress_threshold", (size_t) 10);
+                    prompt_optimization_config_.tool_min_length = po.value("tool_min_length", (size_t) 300);
+
+                    prompt_optimization_config_.skill_catalog_format = po.value("skill_catalog_format", "structured");
+                    prompt_optimization_config_.enable_tool_whitelist = po.value("enable_tool_whitelist", true);
+                    prompt_optimization_config_.enable_skill_auto_correction = po.value("enable_skill_auto_correction", true);
+                    prompt_optimization_config_.tool_call_temperature = po.value("tool_call_temperature", 0.1f);
+
+                    if (po.contains("allowed_tools") && po["allowed_tools"].is_array())
+                    {
+                        prompt_optimization_config_.allowed_tools.clear();
+                        for (const auto &tool: po["allowed_tools"])
+                        {
+                            prompt_optimization_config_.allowed_tools.push_back(tool.get<std::string>());
+                        }
+                    }
+
+                    if (po.contains("emergency_truncation") && po["emergency_truncation"].is_object())
+                    {
+                        const auto &et = po["emergency_truncation"];
+                        prompt_optimization_config_.emergency_truncation.enabled =
+                                et.value("enabled", true);
+                        prompt_optimization_config_.emergency_truncation.max_truncation_ratio =
+                                et.value("max_truncation_ratio", 0.95f);
+                        prompt_optimization_config_.emergency_truncation.safety_margin_tokens =
+                                et.value("safety_margin_tokens", 30);
+                        prompt_optimization_config_.emergency_truncation.target_largest_tool_messages =
+                                et.value("target_largest_tool_messages", true);
+                        My_Log{} << "[Config] emergency_truncation loaded: "
+                                 << "enabled=" << prompt_optimization_config_.emergency_truncation.enabled
+                                 << ", max_truncation_ratio="
+                                 << prompt_optimization_config_.emergency_truncation.max_truncation_ratio
+                                 << ", safety_margin_tokens="
+                                 << prompt_optimization_config_.emergency_truncation.safety_margin_tokens
+                                 << ", target_largest_tool_messages="
+                                 << prompt_optimization_config_.emergency_truncation.target_largest_tool_messages
+                                 << std::endl;
+                    }
+
+                    if (po.contains("fidelity") && po["fidelity"].is_object())
+                    {
+                        const auto &fid = po["fidelity"];
+                        auto &fid_cfg = prompt_optimization_config_.fidelity;
+                        fid_cfg.budget_unit = fid.value("budget_unit", std::string("tokens"));
+                        fid_cfg.preserve_tail = fid.value("preserve_tail", true);
+                        fid_cfg.tail_ratio = fid.value("tail_ratio", 0.30);
+                        fid_cfg.extract_high_signal = fid.value("extract_high_signal", true);
+                        fid_cfg.drop_placeholder = fid.value("drop_placeholder", true);
+                        fid_cfg.json_head_items = fid.value("json_head_items", (size_t) 3);
+                        fid_cfg.json_tail_items = fid.value("json_tail_items", (size_t) 1);
+                        fid_cfg.max_token_probe_per_message = fid.value("max_token_probe_per_message", (size_t) 8);
+                        fid_cfg.cjk_bytes_per_token = fid.value("cjk_bytes_per_token", 3.0);
+                        fid_cfg.ascii_bytes_per_token = fid.value("ascii_bytes_per_token", 4.0);
+                        My_Log{} << "[Config] fidelity loaded: "
+                                 << "budget_unit=" << fid_cfg.budget_unit
+                                 << ", preserve_tail=" << fid_cfg.preserve_tail
+                                 << ", tail_ratio=" << fid_cfg.tail_ratio
+                                 << ", extract_high_signal=" << fid_cfg.extract_high_signal
+                                 << ", drop_placeholder=" << fid_cfg.drop_placeholder
+                                 << ", json_head_items=" << fid_cfg.json_head_items
+                                 << ", json_tail_items=" << fid_cfg.json_tail_items
+                                 << ", max_token_probe_per_message=" << fid_cfg.max_token_probe_per_message
+                                 << ", cjk_bytes_per_token=" << fid_cfg.cjk_bytes_per_token
+                                 << ", ascii_bytes_per_token=" << fid_cfg.ascii_bytes_per_token
+                                 << std::endl;
+                    }
+
+                    if (po.contains("budget_partition") && po["budget_partition"].is_object())
+                    {
+                        const auto &bp = po["budget_partition"];
+                        auto &bp_cfg = prompt_optimization_config_.budget_partition;
+                        bp_cfg.enabled = bp.value("enabled", true);
+                        bp_cfg.skills_floor_ratio = bp.value("skills_floor_ratio", 0.15);
+                        bp_cfg.tools_ratio = bp.value("tools_ratio", 0.35);
+                        My_Log{} << "[Config] budget_partition loaded: "
+                                 << "enabled=" << bp_cfg.enabled
+                                 << ", skills_floor_ratio=" << bp_cfg.skills_floor_ratio
+                                 << ", tools_ratio=" << bp_cfg.tools_ratio
+                                 << std::endl;
+                    }
+
+                    if (po.contains("relevance_filter") && po["relevance_filter"].is_object())
+                    {
+                        const auto &rf = po["relevance_filter"];
+                        prompt_optimization_config_.relevance_filter.enabled =
+                                rf.value("enabled", true);
+                        prompt_optimization_config_.relevance_filter.name_token_weight =
+                                rf.value("name_token_weight", (size_t) 3);
+                        prompt_optimization_config_.relevance_filter.description_keyword_weight =
+                                rf.value("description_keyword_weight", (size_t) 1);
+                        prompt_optimization_config_.relevance_filter.zero_hit_keep_all =
+                                rf.value("zero_hit_keep_all", true);
+                        prompt_optimization_config_.relevance_filter.cjk_bigram =
+                                rf.value("cjk_bigram", true);
+                        prompt_optimization_config_.relevance_filter.intent_aliases_enabled =
+                                rf.value("intent_aliases_enabled", true);
+                        prompt_optimization_config_.relevance_filter.tag_weight =
+                                rf.value("tag_weight", (size_t) 2);
+                        prompt_optimization_config_.relevance_filter.anchor_first_user_message =
+                                rf.value("anchor_first_user_message", true);
+                        prompt_optimization_config_.relevance_filter.keep_all_tools_ratio =
+                                rf.value("keep_all_tools_ratio", 0.15);
+                        prompt_optimization_config_.relevance_filter.protect_core_capability_tools =
+                                rf.value("protect_core_capability_tools", true);
+                        if (rf.contains("core_capability_keywords") && rf["core_capability_keywords"].is_array())
+                        {
+                            prompt_optimization_config_.relevance_filter.core_capability_keywords.clear();
+                            for (const auto &kw : rf["core_capability_keywords"])
+                            {
+                                if (kw.is_string())
+                                {
+                                    prompt_optimization_config_.relevance_filter.core_capability_keywords
+                                            .push_back(kw.get<std::string>());
+                                }
+                            }
+                        }
+                        My_Log{} << "[Config] relevance_filter loaded: "
+                                 << "enabled=" << prompt_optimization_config_.relevance_filter.enabled
+                                 << ", name_token_weight=" << prompt_optimization_config_.relevance_filter.name_token_weight
+                                 << ", description_keyword_weight=" << prompt_optimization_config_.relevance_filter.description_keyword_weight
+                                 << ", zero_hit_keep_all=" << prompt_optimization_config_.relevance_filter.zero_hit_keep_all
+                                 << ", cjk_bigram=" << prompt_optimization_config_.relevance_filter.cjk_bigram
+                                 << ", intent_aliases_enabled=" << prompt_optimization_config_.relevance_filter.intent_aliases_enabled
+                                 << ", tag_weight=" << prompt_optimization_config_.relevance_filter.tag_weight
+                                 << ", anchor_first_user_message=" << prompt_optimization_config_.relevance_filter.anchor_first_user_message
+                                 << ", protect_core_capability_tools=" << prompt_optimization_config_.relevance_filter.protect_core_capability_tools
+                                 << ", core_capability_keywords_count=" << prompt_optimization_config_.relevance_filter.core_capability_keywords.size()
+                                 << std::endl;
+                    }
+
+                    // [skill_disclosure] D2：技能目录三档渐进披露（旧配置文件中没有该节时使用默认值，不报错）
+                    if (po.contains("skill_disclosure") && po["skill_disclosure"].is_object())
+                    {
+                        const auto &sd2 = po["skill_disclosure"];
+                        auto &sd_cfg = prompt_optimization_config_.skill_disclosure;
+                        sd_cfg.enabled = sd2.value("enabled", true);
+                        sd_cfg.l2_top_k = sd2.value("l2_top_k", (size_t) 2);
+                        sd_cfg.l1_top_k = sd2.value("l1_top_k", (size_t) 6);
+                        sd_cfg.l1_summary_max_chars = sd2.value("l1_summary_max_chars", (size_t) 240);
+                        sd_cfg.l0_summary_max_chars = sd2.value("l0_summary_max_chars", (size_t) 80);
+                        // 缺字段时一律取结构体默认值（Step 5 收口后为 false），
+                        // 不在此处硬编码 true —— 否则「旧配置文件写了 skill_disclosure
+                        // 节但没写 tie_aware_l2」会拿到与出厂默认相反的行为。
+                        sd_cfg.tie_aware_l2 = sd2.value("tie_aware_l2", sd_cfg.tie_aware_l2);
+                        My_Log{} << "[Config] skill_disclosure loaded: "
+                                 << "enabled=" << sd_cfg.enabled
+                                 << ", l2_top_k=" << sd_cfg.l2_top_k
+                                 << ", l1_top_k=" << sd_cfg.l1_top_k
+                                 << ", l1_summary_max_chars=" << sd_cfg.l1_summary_max_chars
+                                 << ", l0_summary_max_chars=" << sd_cfg.l0_summary_max_chars
+                                 << ", tie_aware_l2=" << sd_cfg.tie_aware_l2
+                                 << std::endl;
+                    }
+
+                    // 加载 long_text_summarization 配置
+                    if (po.contains("long_text_summarization") && po["long_text_summarization"].is_object())
+                    {
+                        const auto &lts = po["long_text_summarization"];
+                        auto &sum_cfg = prompt_optimization_config_.long_text_summarization;
+
+                        sum_cfg.enabled = lts.value("enabled", false);
+                        sum_cfg.trigger_ratio = lts.value("trigger_ratio", 0.5);
+                        sum_cfg.chunk_ratio = lts.value("chunk_ratio", 0.45);
+                        sum_cfg.summarize_user_messages = lts.value("summarize_user_messages", true);
+                        sum_cfg.summarize_tool_responses = lts.value("summarize_tool_responses", true);
+                        sum_cfg.max_chunks = lts.value("max_chunks", 4);
+                        sum_cfg.verbose_logging = lts.value("verbose_logging", false);
+                        sum_cfg.map_instruction = lts.value("map_instruction", sum_cfg.map_instruction);
+                        sum_cfg.reduce_instruction = lts.value("reduce_instruction", sum_cfg.reduce_instruction);
+
+                        // 加载缓存子配置
+                        if (lts.contains("cache") && lts["cache"].is_object())
+                        {
+                            const auto &ca = lts["cache"];
+                            sum_cfg.cache.enabled = ca.value("enabled", true);
+                            sum_cfg.cache.max_entries = ca.value("max_entries", (size_t) 500);
+                            sum_cfg.cache.max_memory_mb = ca.value("max_memory_mb", (size_t) 50);
+                            sum_cfg.cache.ttl_minutes = ca.value("ttl_minutes", 60);
+                        }
+
+                        My_Log{My_Log::Level::kInfo}
+                                << "[LongTextSummarization] Config loaded: enabled=" << sum_cfg.enabled
+                                << ", trigger_ratio=" << sum_cfg.trigger_ratio
+                                << ", chunk_ratio=" << sum_cfg.chunk_ratio
+                                << ", max_chunks=" << sum_cfg.max_chunks
+                                << ", summarize_user=" << sum_cfg.summarize_user_messages
+                                << ", summarize_tool=" << sum_cfg.summarize_tool_responses
+                                << ", cache.enabled=" << sum_cfg.cache.enabled
+                                << ", cache.max_entries=" << sum_cfg.cache.max_entries
+                                << ", cache.ttl_minutes=" << sum_cfg.cache.ttl_minutes
+                                << std::endl;
+
+                        // 配置加载完成后立即同步缓存配置
+                        if (sum_cfg.enabled && sum_cfg.cache.enabled)
+                        {
+                            SummaryCache::GetInstance().Configure(sum_cfg.cache);
+                            My_Log{My_Log::Level::kInfo}
+                                    << "[LongTextSummarization] SummaryCache configured: max_entries="
+                                    << sum_cfg.cache.max_entries
+                                    << ", max_memory_mb=" << sum_cfg.cache.max_memory_mb
+                                    << ", ttl_minutes=" << sum_cfg.cache.ttl_minutes
+                                    << std::endl;
+                        }
+                    }
+
+                    // 加载 task_memo 配置
+                    if (po.contains("task_memo") && po["task_memo"].is_object())
+                    {
+                        const auto &tm = po["task_memo"];
+                        auto &memo_cfg = prompt_optimization_config_.task_memo;
+
+                        memo_cfg.enabled = tm.value("enabled", false);
+                        memo_cfg.model_layer_enabled = tm.value("model_layer_enabled", true);
+                        memo_cfg.token_budget_ratio = tm.value("token_budget_ratio", 0.15);
+                        memo_cfg.min_dropped_for_trigger = tm.value("min_dropped_for_trigger", (size_t) 1);
+                        memo_cfg.render_throttle_min_new_dropped = tm.value("render_throttle_min_new_dropped", (size_t) 4);
+                        memo_cfg.long_tool_chain_threshold = tm.value("long_tool_chain_threshold", (size_t) 4);
+                        memo_cfg.low_confidence_threshold = tm.value("low_confidence_threshold", 0.5);
+                        memo_cfg.rule_layer_preview_chars = tm.value("rule_layer_preview_chars", 160);
+                        memo_cfg.memo_reserve_ratio = tm.value("memo_reserve_ratio", 0.3);
+                        memo_cfg.goal_scan_window = tm.value("goal_scan_window", (size_t) 3);
+                        memo_cfg.min_goal_signal_chars = tm.value("min_goal_signal_chars", (size_t) 20);
+                        memo_cfg.goal_anchor_preview_chars = tm.value("goal_anchor_preview_chars", (size_t) 300);
+                        memo_cfg.failure_streak_warn_threshold = tm.value("failure_streak_warn_threshold", 2);
+
+                        if (tm.contains("page_directory") && tm["page_directory"].is_object())
+                        {
+                            const auto &pd = tm["page_directory"];
+                            memo_cfg.page_directory.max_entries = pd.value("max_entries", (size_t) 20);
+                        }
+
+                        if (tm.contains("store") && tm["store"].is_object())
+                        {
+                            const auto &st = tm["store"];
+                            memo_cfg.store.max_entries = st.value("max_entries", (size_t) 200);
+                            memo_cfg.store.max_memory_mb = st.value("max_memory_mb", (size_t) 20);
+                            memo_cfg.store.ttl_minutes = st.value("ttl_minutes", 120);
+                        }
+
+                        My_Log{My_Log::Level::kInfo}
+                                << "[TaskMemo] Config loaded: enabled=" << memo_cfg.enabled
+                                << ", model_layer_enabled=" << memo_cfg.model_layer_enabled
+                                << ", token_budget_ratio=" << memo_cfg.token_budget_ratio
+                                << ", render_throttle_min_new_dropped=" << memo_cfg.render_throttle_min_new_dropped
+                                << ", long_tool_chain_threshold=" << memo_cfg.long_tool_chain_threshold
+                                << ", low_confidence_threshold=" << memo_cfg.low_confidence_threshold
+                                << ", rule_layer_preview_chars=" << memo_cfg.rule_layer_preview_chars
+                                << ", memo_reserve_ratio=" << memo_cfg.memo_reserve_ratio
+                                << ", goal_scan_window=" << memo_cfg.goal_scan_window
+                                << ", min_goal_signal_chars=" << memo_cfg.min_goal_signal_chars
+                                << ", goal_anchor_preview_chars=" << memo_cfg.goal_anchor_preview_chars
+                                << ", failure_streak_warn_threshold=" << memo_cfg.failure_streak_warn_threshold
+                                << ", page_directory.max_entries=" << memo_cfg.page_directory.max_entries
+                                << ", store.max_entries=" << memo_cfg.store.max_entries
+                                << ", store.max_memory_mb=" << memo_cfg.store.max_memory_mb
+                                << ", store.ttl_minutes=" << memo_cfg.store.ttl_minutes
+                                << std::endl;
+
+                        if (memo_cfg.enabled)
+                        {
+                            TaskMemoStore::GetInstance().Configure(memo_cfg.store);
+                        }
+                    }
+
+                    My_Log{} << "Prompt engineering config loaded: "
+                             << "output_reserve_ratio=" << prompt_optimization_config_.output_reserve_ratio
+                             << ", recent_window=" << prompt_optimization_config_.recent_window
+                             << ", old_compress_len=" << prompt_optimization_config_.old_compress_len
+                             << ", recent_compress_len=" << prompt_optimization_config_.recent_compress_len
+                             << ", format=" << prompt_optimization_config_.skill_catalog_format
+                             << ", whitelist=" << prompt_optimization_config_.enable_tool_whitelist
+                             << ", auto_correction=" << prompt_optimization_config_.enable_skill_auto_correction
+                             << std::endl;
+                }
+            }
+            catch (const std::exception &e)
+            {
+                My_Log{My_Log::Level::kError} << "Failed to load prompt_engineering.json: " << e.what() << std::endl;
+                // 配置加载失败不影响主流程，使用默认值
+            }
+        }
+    }
+
     // 尝试加载 service_config.json 中的路由与云端配置
     {
         // 从程序根目录的 config/ 子目录加载 service_config.json（与模型配置的落点统一）
@@ -987,26 +1505,11 @@ bool ModelManager::InitializeConfig()
                 // Group A（网络模块：云端/路由，含 routing.enabled 本身及其下敏感检测/脱敏/
                 // 复杂度评估子节）只在 -n -1（stateless/端云结合模式）时解析生效；-n 非 -1 时
                 // 保持结构体默认值，routing_config_.enabled 恒为 false，云端路径不可达。
-                // Group B（prompt_optimization/tool_call_repair/debug）与云端无关，无条件生效。
+                // 本节仅保留端云相关配置与下游客户端自己的提示词文案（prompt_optimization
+                // 中的 system_prompts/prompt_sections/subagent_prompt_sections/system_context/
+                // spawn_guard）；通用本地提示词工程参数与调试开关已迁出至独立的
+                // prompt_engineering.json，由上面单独的加载流程处理，与 -n 取值无关。
                 bool is_stateless_mode = (getnumResponse() == -1);
-
-                // 优先加载 debug 配置（必须最先加载，避免后续节解析异常时 debug 配置未生效）
-                // 历史问题：debug 节原来放在 try 块末尾，若前面任何节解析抛出异常，
-                // debug 配置就永远不会被加载，导致 status_content_visible 保持默认值 true，
-                // 状态消息文字（"Preparing inference..."等）会出现在 delta.content 中，
-                // 进而被客户端写入历史消息，污染下一轮请求的 Prompt。
-                if (sc_json.contains("debug"))
-                {
-                    const auto &dbg = sc_json["debug"];
-                    ResponseTools::status_content_visible = dbg.value("status_update_content_visible", true);
-                    routing_config_.sensitivity_detection.debug_log_matches = dbg.value("log_rule_matches", false);
-                    ResponseTools::log_inference_stream = dbg.value("log_inference_stream", false);
-                    My_Log{} << "Debug config loaded: status_update_content_visible="
-                             << ResponseTools::status_content_visible
-                             << ", log_rule_matches=" << routing_config_.sensitivity_detection.debug_log_matches
-                             << ", log_inference_stream=" << ResponseTools::log_inference_stream
-                             << std::endl;
-                }
 
                 // 加载 routing 配置（Group A：仅 -n -1 时解析生效）
                 if (is_stateless_mode && sc_json.contains("routing"))
@@ -1058,6 +1561,8 @@ bool ModelManager::InitializeConfig()
                         routing_config_.sensitivity_detection.max_gen_tokens = sd.value("max_gen_tokens", 2048);
                         // 安全检测系统提示词（留空时使用内置默认值）
                         routing_config_.sensitivity_detection.system_prompt = sd.value("system_prompt", std::string(""));
+                        // 调试日志开关：规则命中时是否打印匹配规则与原始文本（含上下文），默认关闭
+                        routing_config_.sensitivity_detection.debug_log_matches = sd.value("debug_log_matches", false);
                         // [扩展规则] 各类扩展检测规则的独立开关
                         if (sd.contains("extended_rules") && sd["extended_rules"].is_object())
                         {
@@ -1247,7 +1752,6 @@ bool ModelManager::InitializeConfig()
                         const auto &ar = r["agent_routing"];
                         routing_config_.agent_routing.sub_agent_prefer_local = ar.value("sub_agent_prefer_local", true);
                         routing_config_.agent_routing.sub_agent_allow_cloud_on_c2 = ar.value("sub_agent_allow_cloud_on_c2", true);
-                        routing_config_.agent_routing.max_tool_call_retries = ar.value("max_tool_call_retries", 10);
                     }
 
                     // 会话级路由锁定配置
@@ -1567,140 +2071,10 @@ bool ModelManager::InitializeConfig()
                              << std::endl;
                 }
 
-                // 加载 tool_call_repair 配置（Layer2 服务端内部隐形自纠正重试）
-                if (sc_json.contains("tool_call_repair") && sc_json["tool_call_repair"].is_object())
-                {
-                    const auto &tcr = sc_json["tool_call_repair"];
-                    tool_call_repair_config_.enabled = tcr.value("enabled", true);
-
-                    if (tcr.contains("internal_retry") && tcr["internal_retry"].is_object())
-                    {
-                        const auto &ir = tcr["internal_retry"];
-                        auto &ir_cfg = tool_call_repair_config_.internal_retry;
-                        ir_cfg.max_attempts = ir.value("max_attempts", 1);
-                        if (ir.contains("skip_reasons") && ir["skip_reasons"].is_array())
-                        {
-                            ir_cfg.skip_reasons.clear();
-                            for (const auto &reason : ir["skip_reasons"])
-                            {
-                                if (reason.is_string())
-                                {
-                                    ir_cfg.skip_reasons.push_back(reason.get<std::string>());
-                                }
-                            }
-                        }
-                    }
-
-                    if (tcr.contains("circuit_breaker") && tcr["circuit_breaker"].is_object())
-                    {
-                        const auto &cb = tcr["circuit_breaker"];
-                        auto &cb_cfg = tool_call_repair_config_.circuit_breaker;
-                        cb_cfg.consecutive_layer3_threshold = cb.value("consecutive_layer3_threshold", 3);
-                        cb_cfg.cooldown_seconds = cb.value("cooldown_seconds", 300);
-                    }
-                    // 同步配置进程内单例存储（会话+模型维度 LRU+TTL，语义见
-                    // ToolCallCircuitBreakerStore 类注释）；即使 tool_call_repair.enabled=false，
-                    // 阈值仍照常同步（真正受 enabled 门控的是"是否读取熔断状态并降级 system
-                    // prompt"这一后果，见 model_input_builder.h::Build()），避免留下过期默认值。
-                    ToolCallCircuitBreakerStore::GetInstance().Configure(tool_call_repair_config_.circuit_breaker);
-
-                    My_Log{} << "[Config] tool_call_repair loaded: enabled="
-                             << tool_call_repair_config_.enabled
-                             << ", internal_retry.max_attempts="
-                             << tool_call_repair_config_.internal_retry.max_attempts
-                             << ", internal_retry.skip_reasons=["
-                             << [&]() {
-                                    std::string joined;
-                                    for (const auto &r : tool_call_repair_config_.internal_retry.skip_reasons)
-                                    {
-                                        if (!joined.empty()) joined += ",";
-                                        joined += r;
-                                    }
-                                    return joined;
-                                }()
-                             << "], circuit_breaker.consecutive_layer3_threshold="
-                             << tool_call_repair_config_.circuit_breaker.consecutive_layer3_threshold
-                             << ", circuit_breaker.cooldown_seconds="
-                             << tool_call_repair_config_.circuit_breaker.cooldown_seconds
-                             << std::endl;
-                }
-
                 // 加载 prompt_optimization 配置
                 if (sc_json.contains("prompt_optimization"))
                 {
                     const auto &po = sc_json["prompt_optimization"];
-                    prompt_optimization_config_.output_reserve_ratio = po.value("output_reserve_ratio", 0.20f);
-                    prompt_optimization_config_.max_messages_limit = po.value("max_messages_limit", (size_t) 16);
-                    prompt_optimization_config_.recent_window = po.value("recent_window", (size_t) 6);
-                    prompt_optimization_config_.old_compress_len = po.value("old_compress_len", (size_t) 300);
-                    prompt_optimization_config_.recent_compress_len = po.value("recent_compress_len", (size_t) 600);
-                    prompt_optimization_config_.tool_compress_len = po.value("tool_compress_len", (size_t) 400);
-                    prompt_optimization_config_.min_compress_threshold = po.value("min_compress_threshold", (size_t) 10);
-                    prompt_optimization_config_.tool_min_length = po.value("tool_min_length", (size_t) 300);
-
-                    // 紧急截断配置
-                    if (po.contains("emergency_truncation") && po["emergency_truncation"].is_object())
-                    {
-                        const auto &et = po["emergency_truncation"];
-                        prompt_optimization_config_.emergency_truncation.enabled =
-                                et.value("enabled", true);
-                        prompt_optimization_config_.emergency_truncation.max_truncation_ratio =
-                                et.value("max_truncation_ratio", 0.95f);
-                        prompt_optimization_config_.emergency_truncation.safety_margin_tokens =
-                                et.value("safety_margin_tokens", 30);
-                        My_Log{} << "[Config] emergency_truncation loaded: "
-                                 << "enabled=" << prompt_optimization_config_.emergency_truncation.enabled
-                                 << ", max_truncation_ratio="
-                                 << prompt_optimization_config_.emergency_truncation.max_truncation_ratio
-                                 << ", safety_margin_tokens="
-                                 << prompt_optimization_config_.emergency_truncation.safety_margin_tokens
-                                 << std::endl;
-                    }
-
-                    // [fidelity] 保真截断配置（旧配置文件中没有该节时使用默认值，不报错）
-                    if (po.contains("fidelity") && po["fidelity"].is_object())
-                    {
-                        const auto &fid = po["fidelity"];
-                        auto &fid_cfg = prompt_optimization_config_.fidelity;
-                        fid_cfg.budget_unit = fid.value("budget_unit", std::string("tokens"));
-                        fid_cfg.preserve_tail = fid.value("preserve_tail", true);
-                        fid_cfg.tail_ratio = fid.value("tail_ratio", 0.30);
-                        fid_cfg.extract_high_signal = fid.value("extract_high_signal", true);
-                        fid_cfg.drop_placeholder = fid.value("drop_placeholder", true);
-                        fid_cfg.json_head_items = fid.value("json_head_items", (size_t) 3);
-                        fid_cfg.json_tail_items = fid.value("json_tail_items", (size_t) 1);
-                        fid_cfg.max_token_probe_per_message = fid.value("max_token_probe_per_message", (size_t) 8);
-                        // P1：CJK 感知 byte↔token 换算比例（单位 UTF-8 字节）；均改回 4.0 即逐字节回退到旧的 length()/4 估算
-                        fid_cfg.cjk_bytes_per_token = fid.value("cjk_bytes_per_token", 3.0);
-                        fid_cfg.ascii_bytes_per_token = fid.value("ascii_bytes_per_token", 4.0);
-                        My_Log{} << "[Config] fidelity loaded: "
-                                 << "budget_unit=" << fid_cfg.budget_unit
-                                 << ", preserve_tail=" << fid_cfg.preserve_tail
-                                 << ", tail_ratio=" << fid_cfg.tail_ratio
-                                 << ", extract_high_signal=" << fid_cfg.extract_high_signal
-                                 << ", drop_placeholder=" << fid_cfg.drop_placeholder
-                                 << ", json_head_items=" << fid_cfg.json_head_items
-                                 << ", json_tail_items=" << fid_cfg.json_tail_items
-                                 << ", max_token_probe_per_message=" << fid_cfg.max_token_probe_per_message
-                                 << ", cjk_bytes_per_token=" << fid_cfg.cjk_bytes_per_token
-                                 << ", ascii_bytes_per_token=" << fid_cfg.ascii_bytes_per_token
-                                 << std::endl;
-                    }
-
-                    // [budget_partition] D3：skills/tools 竞争时才生效的分区预算配置（旧配置文件中没有该节时使用默认值，不报错）
-                    if (po.contains("budget_partition") && po["budget_partition"].is_object())
-                    {
-                        const auto &bp = po["budget_partition"];
-                        auto &bp_cfg = prompt_optimization_config_.budget_partition;
-                        bp_cfg.enabled = bp.value("enabled", true);
-                        bp_cfg.skills_floor_ratio = bp.value("skills_floor_ratio", 0.15);
-                        bp_cfg.tools_ratio = bp.value("tools_ratio", 0.35);
-                        My_Log{} << "[Config] budget_partition loaded: "
-                                 << "enabled=" << bp_cfg.enabled
-                                 << ", skills_floor_ratio=" << bp_cfg.skills_floor_ratio
-                                 << ", tools_ratio=" << bp_cfg.tools_ratio
-                                 << std::endl;
-                    }
 
                     // [system_context] 系统上下文配置（所有系统提示词内容均从此处读取）
                     if (po.contains("system_context") && po["system_context"].is_object())
@@ -1743,20 +2117,6 @@ bool ModelManager::InitializeConfig()
 
                     // [subagent_prompt_sections] SubAgent 专用段落过滤配置
                     ParsePromptSectionsConfig(po, prompt_optimization_config_.subagent_prompt_sections, "subagent_prompt_sections");
-
-                    prompt_optimization_config_.skill_catalog_format = po.value("skill_catalog_format", "structured");
-                    prompt_optimization_config_.enable_tool_whitelist = po.value("enable_tool_whitelist", true);
-                    prompt_optimization_config_.enable_skill_auto_correction = po.value("enable_skill_auto_correction", true);
-                    prompt_optimization_config_.tool_call_temperature = po.value("tool_call_temperature", 0.1f);
-
-                    if (po.contains("allowed_tools") && po["allowed_tools"].is_array())
-                    {
-                        prompt_optimization_config_.allowed_tools.clear();
-                        for (const auto &tool: po["allowed_tools"])
-                        {
-                            prompt_optimization_config_.allowed_tools.push_back(tool.get<std::string>());
-                        }
-                    }
 
                     if (po.contains("system_prompts"))
                     {
@@ -1831,60 +2191,6 @@ bool ModelManager::InitializeConfig()
                             prompt_optimization_config_.system_prompts.few_shot_no_skill_response = sp.value("few_shot_no_skill_response", "I have the following skills: [list from catalog above]. No tool call needed.");
                     }
 
-                    // [relevance_filter] 相关性过滤配置（旧配置文件中没有该节时使用默认值，不报错）
-                    if (po.contains("relevance_filter") && po["relevance_filter"].is_object())
-                    {
-                        const auto &rf = po["relevance_filter"];
-                        prompt_optimization_config_.relevance_filter.enabled =
-                                rf.value("enabled", true);
-                        prompt_optimization_config_.relevance_filter.name_token_weight =
-                                rf.value("name_token_weight", (size_t) 3);
-                        prompt_optimization_config_.relevance_filter.description_keyword_weight =
-                                rf.value("description_keyword_weight", (size_t) 1);
-                        prompt_optimization_config_.relevance_filter.zero_hit_keep_all =
-                                rf.value("zero_hit_keep_all", true);
-                        prompt_optimization_config_.relevance_filter.cjk_bigram =
-                                rf.value("cjk_bigram", true);
-                        // D4：跨语言别名表 + tags 参与打分（缺字段时按结构体默认值工作）
-                        prompt_optimization_config_.relevance_filter.intent_aliases_enabled =
-                                rf.value("intent_aliases_enabled", true);
-                        prompt_optimization_config_.relevance_filter.tag_weight =
-                                rf.value("tag_weight", (size_t) 2);
-                        My_Log{} << "[Config] relevance_filter loaded: "
-                                 << "enabled=" << prompt_optimization_config_.relevance_filter.enabled
-                                 << ", name_token_weight=" << prompt_optimization_config_.relevance_filter.name_token_weight
-                                 << ", description_keyword_weight=" << prompt_optimization_config_.relevance_filter.description_keyword_weight
-                                 << ", zero_hit_keep_all=" << prompt_optimization_config_.relevance_filter.zero_hit_keep_all
-                                 << ", cjk_bigram=" << prompt_optimization_config_.relevance_filter.cjk_bigram
-                                 << ", intent_aliases_enabled=" << prompt_optimization_config_.relevance_filter.intent_aliases_enabled
-                                 << ", tag_weight=" << prompt_optimization_config_.relevance_filter.tag_weight
-                                 << std::endl;
-                    }
-
-                    // [skill_disclosure] D2：技能目录三档渐进披露（旧配置文件中没有该节时使用默认值，不报错）
-                    if (po.contains("skill_disclosure") && po["skill_disclosure"].is_object())
-                    {
-                        const auto &sd = po["skill_disclosure"];
-                        auto &sd_cfg = prompt_optimization_config_.skill_disclosure;
-                        sd_cfg.enabled = sd.value("enabled", true);
-                        sd_cfg.l2_top_k = sd.value("l2_top_k", (size_t) 2);
-                        sd_cfg.l1_top_k = sd.value("l1_top_k", (size_t) 6);
-                        sd_cfg.l1_summary_max_chars = sd.value("l1_summary_max_chars", (size_t) 240);
-                        sd_cfg.l0_summary_max_chars = sd.value("l0_summary_max_chars", (size_t) 80);
-                        // 缺字段时一律取结构体默认值（Step 5 收口后为 false），
-                        // 不在此处硬编码 true —— 否则「旧配置文件写了 skill_disclosure
-                        // 节但没写 tie_aware_l2」会拿到与出厂默认相反的行为。
-                        sd_cfg.tie_aware_l2 = sd.value("tie_aware_l2", sd_cfg.tie_aware_l2);
-                        My_Log{} << "[Config] skill_disclosure loaded: "
-                                 << "enabled=" << sd_cfg.enabled
-                                 << ", l2_top_k=" << sd_cfg.l2_top_k
-                                 << ", l1_top_k=" << sd_cfg.l1_top_k
-                                 << ", l1_summary_max_chars=" << sd_cfg.l1_summary_max_chars
-                                 << ", l0_summary_max_chars=" << sd_cfg.l0_summary_max_chars
-                                 << ", tie_aware_l2=" << sd_cfg.tie_aware_l2
-                                 << std::endl;
-                    }
-
                     // 加载 spawn_guard 配置
                     if (po.contains("spawn_guard"))
                     {
@@ -1901,106 +2207,7 @@ bool ModelManager::InitializeConfig()
                                 << std::endl;
                     }
 
-                    // 加载 long_text_summarization 配置
-                    if (po.contains("long_text_summarization") && po["long_text_summarization"].is_object())
-                    {
-                        const auto &lts = po["long_text_summarization"];
-                        auto &sum_cfg = prompt_optimization_config_.long_text_summarization;
-
-                        sum_cfg.enabled = lts.value("enabled", false);
-                        sum_cfg.trigger_ratio = lts.value("trigger_ratio", 0.5);
-                        sum_cfg.chunk_ratio = lts.value("chunk_ratio", 0.45);
-                        sum_cfg.summarize_user_messages = lts.value("summarize_user_messages", true);
-                        sum_cfg.summarize_tool_responses = lts.value("summarize_tool_responses", true);
-                        sum_cfg.max_chunks = lts.value("max_chunks", 4);
-                        sum_cfg.verbose_logging = lts.value("verbose_logging", false);
-                        sum_cfg.map_instruction = lts.value("map_instruction", sum_cfg.map_instruction);
-                        sum_cfg.reduce_instruction = lts.value("reduce_instruction", sum_cfg.reduce_instruction);
-
-                        // 加载缓存子配置
-                        if (lts.contains("cache") && lts["cache"].is_object())
-                        {
-                            const auto &ca = lts["cache"];
-                            sum_cfg.cache.enabled = ca.value("enabled", true);
-                            sum_cfg.cache.max_entries = ca.value("max_entries", (size_t) 500);
-                            sum_cfg.cache.max_memory_mb = ca.value("max_memory_mb", (size_t) 50);
-                            sum_cfg.cache.ttl_minutes = ca.value("ttl_minutes", 60);
-                        }
-
-                        My_Log{My_Log::Level::kInfo}
-                                << "[LongTextSummarization] Config loaded: enabled=" << sum_cfg.enabled
-                                << ", trigger_ratio=" << sum_cfg.trigger_ratio
-                                << ", chunk_ratio=" << sum_cfg.chunk_ratio
-                                << ", max_chunks=" << sum_cfg.max_chunks
-                                << ", summarize_user=" << sum_cfg.summarize_user_messages
-                                << ", summarize_tool=" << sum_cfg.summarize_tool_responses
-                                << ", cache.enabled=" << sum_cfg.cache.enabled
-                                << ", cache.max_entries=" << sum_cfg.cache.max_entries
-                                << ", cache.ttl_minutes=" << sum_cfg.cache.ttl_minutes
-                                << std::endl;
-
-                        // 配置加载完成后立即同步缓存配置
-                        if (sum_cfg.enabled && sum_cfg.cache.enabled)
-                        {
-                            SummaryCache::GetInstance().Configure(sum_cfg.cache);
-                            My_Log{My_Log::Level::kInfo}
-                                    << "[LongTextSummarization] SummaryCache configured: max_entries="
-                                    << sum_cfg.cache.max_entries
-                                    << ", max_memory_mb=" << sum_cfg.cache.max_memory_mb
-                                    << ", ttl_minutes=" << sum_cfg.cache.ttl_minutes
-                                    << std::endl;
-                        }
-                    }
-
-                    // 加载 task_memo 配置
-                    if (po.contains("task_memo") && po["task_memo"].is_object())
-                    {
-                        const auto &tm = po["task_memo"];
-                        auto &memo_cfg = prompt_optimization_config_.task_memo;
-
-                        memo_cfg.enabled = tm.value("enabled", false);
-                        memo_cfg.model_layer_enabled = tm.value("model_layer_enabled", true);
-                        memo_cfg.token_budget_ratio = tm.value("token_budget_ratio", 0.15);
-                        memo_cfg.min_dropped_for_trigger = tm.value("min_dropped_for_trigger", (size_t) 1);
-                        memo_cfg.long_tool_chain_threshold = tm.value("long_tool_chain_threshold", (size_t) 4);
-                        memo_cfg.low_confidence_threshold = tm.value("low_confidence_threshold", 0.5);
-                        memo_cfg.rule_layer_preview_chars = tm.value("rule_layer_preview_chars", 160);
-
-                        if (tm.contains("store") && tm["store"].is_object())
-                        {
-                            const auto &st = tm["store"];
-                            memo_cfg.store.max_entries = st.value("max_entries", (size_t) 200);
-                            memo_cfg.store.max_memory_mb = st.value("max_memory_mb", (size_t) 20);
-                            memo_cfg.store.ttl_minutes = st.value("ttl_minutes", 120);
-                        }
-
-                        My_Log{My_Log::Level::kInfo}
-                                << "[TaskMemo] Config loaded: enabled=" << memo_cfg.enabled
-                                << ", model_layer_enabled=" << memo_cfg.model_layer_enabled
-                                << ", token_budget_ratio=" << memo_cfg.token_budget_ratio
-                                << ", long_tool_chain_threshold=" << memo_cfg.long_tool_chain_threshold
-                                << ", low_confidence_threshold=" << memo_cfg.low_confidence_threshold
-                                << ", rule_layer_preview_chars=" << memo_cfg.rule_layer_preview_chars
-                                << ", store.max_entries=" << memo_cfg.store.max_entries
-                                << ", store.max_memory_mb=" << memo_cfg.store.max_memory_mb
-                                << ", store.ttl_minutes=" << memo_cfg.store.ttl_minutes
-                                << std::endl;
-
-                        if (memo_cfg.enabled)
-                        {
-                            TaskMemoStore::GetInstance().Configure(memo_cfg.store);
-                        }
-                    }
-
-                    My_Log{} << "Prompt optimization config loaded: "
-                             << "output_reserve_ratio=" << prompt_optimization_config_.output_reserve_ratio
-                             << ", recent_window=" << prompt_optimization_config_.recent_window
-                             << ", old_compress_len=" << prompt_optimization_config_.old_compress_len
-                             << ", recent_compress_len=" << prompt_optimization_config_.recent_compress_len
-                             << ", format=" << prompt_optimization_config_.skill_catalog_format
-                             << ", whitelist=" << prompt_optimization_config_.enable_tool_whitelist
-                             << ", auto_correction=" << prompt_optimization_config_.enable_skill_auto_correction
-                             << std::endl;
+                    My_Log{} << "Prompt optimization (client content) config loaded." << std::endl;
                 }
 
             }
@@ -2058,9 +2265,6 @@ bool ModelManager::LoadSingleModel()
     config->set_prompt_template(prompt_);
     config->set_prompt_type(prompt_type_);
     config->set_thinking_model(thinking_model_);
-    // 单模型命令行加载路径默认保持旧版本的“自动识别模型格式”行为。
-    // config.json 顶层可选声明的 backend/device 字段是唯一权威来源（本轮新增，取代已删除的
-    // service_config.json 覆盖机制）；字段缺失时回退 "auto"，走 ModeVerifier::TryCreate() 的自动探测。
     std::string config_json_backend, config_json_device;
     ParseBackendDeviceFromConfigJson(config_file_, model_name_, "[LoadSingleModel]",
                                       config_json_backend, config_json_device);
@@ -2069,10 +2273,6 @@ bool ModelManager::LoadSingleModel()
     {
         config->set_device(config_json_device);
     }
-    // context_size_ 已由上面 LoadPromptTemplates 从 config.json 的 dialog.context.size 解析得到，
-    // 是模型编译时固化的真实上限，本轮删除 service_config.json 覆盖机制后，它是唯一权威来源，
-    // 不再存在第二个下调/上调通道，此处无需额外处理。
-    // Copy other config fields as needed
     config->set_lora_adapter(loraAdapter);
     config->set_lora_alpha(loraAlpha);
     config->set_output_all_text(outputAllText);
@@ -2093,30 +2293,22 @@ bool ModelManager::LoadSingleModel()
         return false;
     }
 
-    // Sync back properties determined during creation
     model_format_ = config->get_model_format();
 
-    // 修复：根据实际检测到的模型格式推断 backend 和 device，
-    // 而非使用 ModelInstanceConfig 的默认值（"GGUF"/"gpu"）。
-    // LoadSingleModel() 通过 ModeVerifier::TryCreate() 自动检测模型格式，
-    // 需要将检测结果同步回 config 的 backend/device 字段。
     {
         ModelFormat fmt = config->get_model_format();
         if (fmt == ModelFormat::QNN)
         {
-            // QNN 模型只能跑在 NPU 上
             config->set_backend("qnn");
             config->set_device("npu");
         }
         else if (fmt == ModelFormat::MNN)
         {
-            // MNN 模型跑在 CPU 上
             config->set_backend("mnn");
             config->set_device("cpu");
         }
         else if (fmt == ModelFormat::GGUF)
         {
-            // GGUF 模型通过 llama.cpp 后端运行，优先 GPU，可 fallback CPU。
             config->set_backend("GGUF");
             std::string gguf_device = config->get_device();
             std::transform(gguf_device.begin(), gguf_device.end(), gguf_device.begin(),
@@ -2135,7 +2327,6 @@ bool ModelManager::LoadSingleModel()
                  << ", device=" << config->get_device() << std::endl;
     }
 
-    // Also register this as the currently active single model
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
         auto loaded_model = std::make_shared<LoadedModel>();
@@ -2156,11 +2347,6 @@ bool ModelManager::LoadSingleModel()
 
 void ModelManager::UnloadModel()
 {
-    // 主动信号任何在飞的 Query() 调用尽快退出：在真正清空引用/触发析构之前，对每个
-    // 已加载模型的 context 调用一次 Stop()。这是对既有 /reload 类接口（ModelStop）
-    // 已在用的能力的复用，让优雅关闭路径（GenieService::ServiceStop）能尽量缩短等待
-    // 时间——尤其是 MNN 后端在内存压力下 generate() 调用可能长时间阻塞的场景，Stop()
-    // 让其生成循环在下一次检查 m_stop 时尽快退出，而不是从未被通知过。
     if (genieModelHandle != nullptr)
     {
         genieModelHandle->Stop();
@@ -2173,7 +2359,6 @@ void ModelManager::UnloadModel()
         }
     }
 
-    // 清理全局单模型句柄（向后兼容路径）
     if (genieModelHandle != nullptr)
     {
         Clean();
@@ -2184,7 +2369,6 @@ void ModelManager::UnloadModel()
         My_Log{My_Log::Level::kWarning} << "UnloadModel: genieModelHandle is null" << std::endl;
     }
 
-    // 同时清空当前活跃模型指针，确保资源完整释放
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
         if (current_model_)
@@ -2232,8 +2416,6 @@ std::vector<json> ModelManager::ScanModelDirectory() const
         std::string backend = "unknown";
         std::string device = "unknown";
 
-        // 从 config.json 推断格式和 context_size
-        // 空文件是 GGUF 模型的正常情况（仅作目录标识），直接跳过解析
         if (File::IsFileEmpty(config_path))
         {
             backend = "GGUF";
@@ -2241,9 +2423,6 @@ std::vector<json> ModelManager::ScanModelDirectory() const
         }
         else
         {
-            // 优先检查目录内是否存在 *.gguf 权重文件：这是比 config.json 字段更可靠的判据，
-            // 因为部分 GGUF 模型目录沿用了 MNN 风格的占位 config.json（含 llm_model 字段），
-            // 若仅凭字段判断会被误判为 MNN 格式，导致按错误后端加载失败。
             bool has_gguf_file = false;
             for (const auto &sub_entry: fs::directory_iterator(entry.path(), ec))
             {
@@ -2270,21 +2449,18 @@ std::vector<json> ModelManager::ScanModelDirectory() const
 
                     if (cfg.contains("dialog") && cfg["dialog"].contains("context"))
                     {
-                        // QNN / SSD 格式：dialog.context.size
                         ctx = cfg["dialog"]["context"].value("size", 0);
                         backend = "qnn";
                         device = "npu";
                     }
                     else if (cfg.contains("llm_model"))
                     {
-                        // MNN 格式
                         ctx = cfg.value("context_size", cfg.value("context_length", 0));
                         backend = "mnn";
                         device = "cpu";
                     }
                     else
                     {
-                        // GGUF 格式（config.json 存在但无已知格式标识字段）
                         backend = "GGUF";
                         device = "gpu";
                     }
@@ -2294,14 +2470,12 @@ std::vector<json> ModelManager::ScanModelDirectory() const
                     My_Log{My_Log::Level::kWarning}
                             << "[ScanModelDirectory] Failed to parse config.json for model '" << name
                             << "': " << e.what() << std::endl;
-                    // 解析失败时保守地视为 GGUF 格式
                     backend = "GGUF";
                     device = "gpu";
                 }
             }
         }
 
-        // 若 config.json 未提供 context_size，尝试 prompt.json
         if (ctx == 0)
         {
             std::string prompt_path = entry.path().generic_string() + "/prompt.json";
@@ -2333,8 +2507,6 @@ std::vector<json> ModelManager::ScanModelDirectory() const
 
 void ModelManager::UnloadModelsByDevice(const std::string &device)
 {
-    // 用于在锁外持有被移除模型的 shared_ptr，确保析构在锁外发生，
-    // 同时保证在本函数返回前析构完成（NPU/GPU/CPU 内存完全释放后再允许加载新模型）。
     std::shared_ptr<LoadedModel> removed_model;
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
@@ -2343,20 +2515,16 @@ void ModelManager::UnloadModelsByDevice(const std::string &device)
             My_Log{} << "[UnloadModelsByDevice] Unloading model '"
                      << (current_model_->config ? current_model_->config->get_model_name() : "")
                      << "' (device=" << device << ")" << std::endl;
-            // 先将 shared_ptr 移出到局部变量，再清空 current_model_，
-            // 这样析构会在锁外、函数返回前发生，避免持锁析构死锁。
             removed_model = std::move(current_model_);
             current_model_.reset();
         }
     }
-    // 若被卸载的模型中包含当前全局单模型句柄所指向的模型，同步清理（向后兼容路径）
-    // 不限于 npu：GGUF 模型也可能通过 LoadSingleModel 注册到全局句柄
     if (removed_model && genieModelHandle != nullptr)
     {
         bool should_clean = false;
         if (device == "npu")
         {
-            should_clean = true;  // NPU 模型必然是 QNN，全局句柄指向 QNN 模型
+            should_clean = true;
         }
         else if (removed_model->config && removed_model->config->get_model_name() == model_name_)
         {
@@ -2364,20 +2532,11 @@ void ModelManager::UnloadModelsByDevice(const std::string &device)
         }
         if (should_clean)
         {
-            // Clean() 将 genieModelHandle 置为 nullptr，减少引用计数。
-            // 若 genieModelHandle 是最后一个持有者，GenieContext 在此处析构。
             Clean();
             model_name_.clear();
         }
         else
         {
-            // 名字匹配不足以判定全局句柄是否指向被卸载的模型，必须再按**指针身份**兜底判定：
-            // ModeVerifier::TryCreate() 的三个 Verifier（GenieContext/MNNContext/LLAMACppBuilder）
-            // 都会无条件执行 `self_->genieModelHandle = std::make_shared<...>(...)`，把全局句柄改指
-            // 到刚创建的 context 上；理论上单模型语义下 current_model_/genieModelHandle/model_name_
-            // 应始终指向同一模型，但仍保留此兜底以防御未来引入的间接赋值路径。
-            // 这里刻意**不**调用 Clean()：Clean() 会连带清空 qnn_embedding_（可能仍被驻留的 NPU
-            // 多模态模型使用）并额外 sleep，对 gpu/cpu 卸载路径是过度动作；只需释放这一份引用。
             if (removed_model->context == genieModelHandle)
             {
                 My_Log{My_Log::Level::kWarning}
@@ -2388,16 +2547,6 @@ void ModelManager::UnloadModelsByDevice(const std::string &device)
             }
         }
     }
-    // 在锁外、函数返回前，显式析构被移除的模型（释放硬件资源）。
-    // removed_model 超出作用域时其引用计数降为零，触发 GenieContext/MNNContext/LLAMACppBuilder
-    // 析构，完全释放 NPU/GPU/CPU 内存。这保证了调用方在本函数返回后可以安全地加载新模型，不会
-    // 出现内存不足。
-    //
-    // 修复：这里才是 removed_model 真正的最后一份引用被释放、~GenieContext() 真正执行的时刻
-    // （上面 Clean() 归零的只是 genieModelHandle 这一份引用，若该模型同时也是 removed_model，
-    // 此时引用计数还没到 0）。QNN/HTP 驱动异步释放资源需要显式等待才安全，此前这里完全没有
-    // 等待保护——这是与 Clean() 处已确认的竞态型堆损坏（STATUS_HEAP_CORRUPTION）同一缺陷模式
-    // 在模型切换路径上的重复，需要同等对待。
     bool had_qnn_backend = removed_model && removed_model->backend == "qnn";
     removed_model.reset();
     if (had_qnn_backend)
@@ -2481,6 +2630,20 @@ static int ParseContextSizeFromConfigJson(const std::string &config_json_path,
     int config_json_ctx_size = 0;
     if (File::IsFileExist(config_json_path) && !File::IsFileEmpty(config_json_path))
     {
+        {
+            std::error_code abs_ec;
+            fs::path abs_path = fs::weakly_canonical(fs::path(config_json_path), abs_ec);
+            My_Log{My_Log::Level::kInfo}
+                    << log_prefix << " Reading model config file for context_size: "
+                    << (abs_ec ? config_json_path : abs_path.generic_string()) << " (model='" << model_name << "')\n";
+            const fs::path shadowed = fs::path(config_json_path).parent_path() / "config.json";
+            if (fs::path(config_json_path).filename() == "genie_config.json" && File::IsFileExist(shadowed.string()))
+            {
+                My_Log{My_Log::Level::kWarning}
+                        << log_prefix << " genie_config.json takes precedence; sibling config.json is IGNORED: "
+                        << shadowed.generic_string() << "\n";
+            }
+        }
         try
         {
             std::ifstream f(config_json_path);

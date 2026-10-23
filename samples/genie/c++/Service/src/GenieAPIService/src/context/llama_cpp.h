@@ -11,6 +11,12 @@
 
 #include "context_base.h"
 
+class TargetWeightsLoadError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
 class LLAMACppBuilder : public ContextBase
 {
 public:
@@ -27,11 +33,24 @@ public:
 
     json HandleProfile() override;
 
-    // Fix: 实现 SetParams，使 Fix 1 的 available_output 计算对 GGUF 后端生效
     int SetParams(const std::string &key, const std::string &value) override;
 
-    // Fix: 报告是否因输出 token 限制而停止生成
     bool was_stopped_by_output_limit() const override { return stopped_by_output_limit_; }
+
+    json GetLastQueryTraceMetrics() const override;
+
+    static void SetPrefixCacheEnabled(bool enabled);
+
+    // n = prompt_engineering.json 的 llama_prefix_cache.head_checkpoints；
+    // from_config = 该键是否**显式**出现（而不是取了默认值）。显式给出后，规划器推导的值不再覆盖它。
+    static void SetPrefixHeadCheckpoints(int n, bool from_config);
+
+    // 应用规划器按主机可用内存推导出的检查点份数。显式配置存在时返回 false 且不改动。
+    static bool ApplyPlannedHeadCheckpoints(int n);
+
+    bool UsesCrossRequestPrefixCache() const override;
+
+    void ClearConversationState() override;
 
 private:
     class Impl;

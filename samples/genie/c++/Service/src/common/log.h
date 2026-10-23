@@ -302,7 +302,8 @@ private:
         mtx.unlock();
     }
 
-    static inline void (My_Log::*func_)(const char *msg, uint32_t len){&My_Log::LogConsole};
+    using LogFunc = void (My_Log::*)(const char *msg, uint32_t len);
+    static inline LogFunc func_{&My_Log::LogConsole};
 
     std::function<std::string()> get_log_title_{[this]()
                                                 {

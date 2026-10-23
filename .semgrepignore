@@ -60,3 +60,27 @@ tools/qaiappbuilder/src/qai/platform/persistence/database.py
 tools/qaiappbuilder/src/qai/platform/scheduling/task_store.py
 tools/qaiappbuilder/src/qai/security/adapters/audit_query.py
 tools/qaiappbuilder/tools/init/seed_defaults/runner.py
+
+# python.sqlalchemy.security.sqlalchemy-execute-raw-query -- same pattern as
+# above: the interpolated column list comes from a fixture-local dict whose
+# keys are hardcoded in this test file (plus test-author-supplied
+# **overrides, never external input); values are bound via `?` placeholders.
+tools/qaiappbuilder/tests/e2e/test_scheduled_tasks.py
+
+# use-defused-xml-parse -- parses a JUnit XML report this same test run just
+# wrote to disk (pytest's own `--junitxml` output), not externally-sourced
+# or attacker-controlled content; adding a new dependency for this one
+# self-generated-and-immediately-read-back file is not proportionate.
+tools/qaiappbuilder/tests/e2e/run_e2e.py
+
+# javascript.lang.security.detect-insecure-websocket -- every connection
+# attempt here targets the e2e suite's own loopback backend (`conftest.
+# E2E_HOST = "127.0.0.1"`, fixed port 8989), never a real network endpoint;
+# several of these tests exist specifically to pin a documented, known
+# WebSocket auth/origin gap (see test_events_auth_gate.py's module
+# docstring), so the plaintext scheme is the test subject, not an
+# accidental insecure default.
+tools/qaiappbuilder/tests/e2e/test_chat_stream.py
+tools/qaiappbuilder/tests/e2e/test_downloads.py
+tools/qaiappbuilder/tests/e2e/test_events.py
+tools/qaiappbuilder/tests/e2e/test_events_auth_gate.py

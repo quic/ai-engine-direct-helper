@@ -25,15 +25,13 @@ public:
     { return history; }
 
     std::string GetUserMessage(const std::string &prompt_system,
-                               const std::string &prompt_start)
+                               const std::string &prompt_start,
+                               const std::string &assistant_turn_prefix,
+                               const std::string &trailing_note)
     {
         std::vector<std::string> messages;
         const auto &j = prompt_template_;
 
-        // 修复：检查 prompt_template 是否有效（非 null 且为 object 类型）
-        // 若 prompt.json 读取失败（file.good()=false、格式错误等），
-        // prompt_template 会保持 null，对 null 类型的 const json 使用字符串键会抛出 type_error.305。
-        // 此处提前检查，避免在 str_replace(j["tool"], ...) 等处触发异常。
         bool has_valid_template = j.is_object()
                                   && j.contains("user")    && j["user"].is_string()
                                   && j.contains("assistant") && j["assistant"].is_string()
@@ -43,7 +41,6 @@ public:
                 << "[ChatHistory::GetUserMessage] prompt_template is invalid (type=" << j.type_name()
                 << "). This model's prompt.json may not have been loaded correctly. "
                 << "Check [LoadModel] logs for 'Error loading prompt file' or 'file.good()=false'." << std::endl;
-            // 抛出异常，让上层 BuildPrompt 的 catch 捕获并返回明确错误
             throw std::runtime_error(std::string{"prompt_template is not a valid JSON object (type="}
                                      + j.type_name() + "). "
                                      + "Ensure the model directory contains a valid prompt.json file.");
@@ -56,17 +53,25 @@ public:
 
         if (count == 0)
         {
+            if (!trailing_note.empty())
+                messages.insert(messages.end() - 1, trailing_note);
             return std::accumulate(messages.begin(), messages.end(), std::string{});
         }
 
-        // 原样拼接 history 中的全部消息；history 本身是否经过压缩/裁剪由调用方
-        // （model_input_builder.h 的 PrepareFilteredMessages/PrepareHarmonyMessages）
-        // 在写入 chat_history_ 之前统一决定，这里不重复做任何压缩或丢弃判断。
+        size_t last_user = 0;
+        for (size_t i = 0; i < count; i++)
+            if (history[i].role == "user")
+                last_user = i;
+        const std::string assistant_tmpl = j["assistant"].get<std::string>();
+        const size_t slot = assistant_tmpl.find("string");
+        const std::string assistant_tail = slot == std::string::npos ? "" : assistant_tmpl.substr(slot + 6);
+
         for (size_t i = 0; i < count; i++)
         {
             auto &msg = history[i];
 
             std::string content = msg.content;
+            bool is_after_last_user = (i > last_user);
 
             std::string format_content;
             if (msg.role == "tool")
@@ -77,14 +82,20 @@ public:
             {
                 format_content = str_replace(j["user"], "string", content);
             }
+            else if (msg.role == "assistant" && !assistant_turn_prefix.empty() && is_after_last_user && slot != std::string::npos)
+            {
+                format_content = assistant_turn_prefix + content + assistant_tail;
+            }
             else if (msg.role == "assistant")
             {
                 format_content = str_replace(j["assistant"], "string", content);
             }
 
-            // 插入到 start prompt 之前
             messages.insert(messages.end() - 1, format_content);
         }
+
+        if (!trailing_note.empty())
+            messages.insert(messages.end() - 1, trailing_note);
 
         return std::accumulate(messages.begin(), messages.end(), std::string{});
     }
@@ -121,13 +132,22 @@ ChatHistory::~ChatHistory() = default;
 void ChatHistory::AddMessage(const std::string &role, const std::string &content)
 { impl_->add_message(role, content); }
 
+void ChatHistory::PrependToLastMessage(const std::string &prefix)
+{
+    if (impl_->history.empty()) return;
+    impl_->history.back().content = prefix + impl_->history.back().content;
+}
+
+bool ChatHistory::IsEmpty() const
+{ return impl_->history.empty(); }
+
 bool ChatHistory::import_from_json(const json &j)
 {
     try
     {
         if (!j.contains("history") || !j["history"].is_array())
         {
-            return false; // if missing history field or format error, return false
+            return false;
         }
 
         std::vector<GenieChatMessage> new_history;
@@ -136,14 +156,13 @@ bool ChatHistory::import_from_json(const json &j)
             if (!item.contains("role") || !item.contains("content") ||
                 !item["role"].is_string() || !item["content"].is_string())
             {
-                return false; // Each message must have the role and content fields, and they must be strings.
+                return false;
             }
 
             GenieChatMessage msg;
             msg.role = item["role"];
             msg.content = item["content"];
 
-            // Verify whether the role field is valid.
             if (msg.role != "user" && msg.role != "assistant" && msg.role != "tool")
             {
                 return false;
@@ -152,7 +171,6 @@ bool ChatHistory::import_from_json(const json &j)
             new_history.push_back(msg);
         }
 
-        // Successfully parsed and replaced the current history.
         impl_->history = std::move(new_history);
         return true;
 
@@ -182,7 +200,6 @@ void ChatHistory::Print() const
 {
     for (const auto &msg: impl_->history)
     {
-        // 过滤 \r 和 \n，防止控制字符破坏日志格式（例如 tool 消息含 Windows CRLF）
         std::string content_safe = msg.content;
         std::replace(content_safe.begin(), content_safe.end(), '\r', ' ');
         std::replace(content_safe.begin(), content_safe.end(), '\n', ' ');
@@ -202,5 +219,6 @@ void ChatHistory::Limit(size_t max_size)
 void ChatHistory::Clear()
 { impl_->history.clear(); }
 
-std::string ChatHistory::GetUserMessage(const std::string &prompt_system, const std::string &prompt_start)
-{ return impl_->GetUserMessage(prompt_system, prompt_start); }
+std::string ChatHistory::GetUserMessage(const std::string &prompt_system, const std::string &prompt_start,
+                                        const std::string &assistant_turn_prefix, const std::string &trailing_note)
+{ return impl_->GetUserMessage(prompt_system, prompt_start, assistant_turn_prefix, trailing_note); }

@@ -59,9 +59,6 @@ private:
     int argc_;
     char **argv_;
     int port_ = 8910;
-    // 默认保持 0.0.0.0（监听所有网卡），与改动前行为一致；仅新增 -H/--host 让使用者
-    // 按需显式收紧到 127.0.0.1 或指定网卡 IP，不改变现有调用方（如 QAIModelBuilder）
-    // 不传该参数时的默认行为。
     std::string host_ = "0.0.0.0";
     bool loadModel = false;
     IModelConfig model_config_;
@@ -76,13 +73,10 @@ inline bool Config::Process()
     CLI::App app{"Genie API Service - Powerful Local LLM Service"};
     app.footer("\nSupport: https://github.com/quic/ai-engine-direct-helper");
 
-    // -c 只定位模型目录（解析 model_path_/model_root_/model_name_），不再隐式触发加载。
     app.add_option("-c,--config_file", config_file, "Path to the config file. Only resolves the model path; "
                    "pass -l/--load_model to actually load it.");
     app.add_option("--adapter", model_config_.loraAdapter, "the adapter of lora");
 
-    // -l 才真正调用 LoadSingleModel() 占用硬件资源；未传时服务启动后不持有任何已加载模型，
-    // 之后仍可通过对话/HTTP 触发的 LoadModelByName() 动态加载任意后端模型。
     app.add_flag("-l,--load_model", loadModel, "Actually load the model specified by -c at service startup. "
                  "Without this flag, no model is loaded until a chat/HTTP request triggers LoadModelByName().");
     app.add_flag("-a,--all_text", model_config_.outputAllText, "Output all text includes tool calls text.");
@@ -148,9 +142,6 @@ inline bool Config::Process()
                     .parent_path()
                     .generic_string();
 #ifdef __ANDROID__
-    // Android 上 argv[0] 固定是字符串 "main"、App 进程的 getcwd() 恒为 "/"，
-    // 上面推导出的 argv0_root_dir 毫无意义；改为从 -c 参数指向的配置文件路径向上两级反推
-    // （模型根目录/模型目录/config.json），推导失败（层级不足）时回退到 argv0_root_dir。
     std::string derived_root_dir = File::DeriveAncestorDir(config_file, CurrentDir, 2);
     RootDir = derived_root_dir.empty() ? argv0_root_dir : derived_root_dir;
 #else

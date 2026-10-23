@@ -21,6 +21,7 @@
 #include "response/response_tools_layer1_selftest.h"
 #include "response/response_tools_sanitization_selftest.h"
 #include "chat_request_handler/tool_call_circuit_breaker_store_selftest.h"
+#include "chat_request_handler/tool_call_repetition_store_selftest.h"
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <windows.h>
 #endif
@@ -29,15 +30,7 @@ using json = nlohmann::ordered_json;
 
 static GenieService service;
 
-// 关闭看门狗兜底阈值：明显小于测试脚本判定"挂起"的 30s 窗口，正常关闭远快于该阈值，
-// 不影响任何正常关闭场景；仅在底层推理调用（如 MNN 在真实内存压力下的 generate()）
-// 未能在 ModelManager::UnloadModel() 主动调用的 Stop() 信号下及时让出控制权时兜底，
-// 把"无限期挂起"转化为"有限时间后被强制终止"。
 static constexpr int kShutdownWatchdogTimeoutSeconds = 15;
-// 看门狗强制终止时使用的退出码：刻意选用一个不落在 test_service.py
-// _WINDOWS_EXIT_CODE_HINTS 崩溃特征码表内的普通正数，配合下方的专属日志标记，
-// 使测试报告能把"看门狗兜底退出"与"真实崩溃(NTSTATUS 特征码)"清楚区分开，
-// 不会被误判为崩溃。
 static constexpr int kShutdownWatchdogExitCode = 124;
 
 class GenieService::Route : public std::enable_shared_from_this<Route>
@@ -138,7 +131,6 @@ void GenieService::run(int argc, char *argv[])
     self_ = this;
     Config config{argc, argv};
 
-    // 1. Parsing command line arguments
     try
     {
         if (!config.Process())
@@ -153,17 +145,11 @@ void GenieService::run(int argc, char *argv[])
         return;
     }
 
-    // InitializeConfig must complete before ChatRequestHandler construction
-    // because the handler reads routing/cloud config set during initialization.
-    // 本身只做模型路径解析 + service_config.json 解析，不再触发模型加载。
     if (!modelManager->InitializeConfig())
     {
         My_Log{My_Log::Level::kError} << "resolve model config failed." << std::endl;
     }
 
-    // Initialize request handler and start HTTP server BEFORE model loading.
-    // This allows /models and /status endpoints to respond immediately,
-    // enabling remote test scripts to detect connectivity while models load in background.
     requestHandler = std::make_unique < ChatRequestHandler > (this);
     int port_checked = config.get_port();
     if (!init_)
@@ -173,9 +159,6 @@ void GenieService::run(int argc, char *argv[])
         init_ = true;
     }
 
-    // -c 只定位模型路径（已在 InitializeConfig() 中完成），只有显式带 -l/--load_model 才
-    // 真正占用硬件资源加载模型；未带 -l 时服务启动后 current_model_ 为空，之后仍可通过
-    // 对话/HTTP 触发的 LoadModelByName() 动态加载任意后端（QNN/MNN/GGUF）模型。
     if (config.NeedLoadModel())
     {
         if (!modelManager->LoadSingleModel())
@@ -184,8 +167,6 @@ void GenieService::run(int argc, char *argv[])
         }
     }
 
-    // 默认值仍是 0.0.0.0（与改动前行为一致），仅在使用者显式传入 -H/--host 时按需收紧，
-    // 详见 config.h::Config::host_ 的注释。
     const std::string &HOST = config.get_host();
     My_Log{My_Log::Level::kAlways} << YELLOW << "[OK] Genie API Service IS Running." << RESET << std::endl;
     My_Log{My_Log::Level::kAlways} << YELLOW << "[OK] Genie API Service -> http://"
@@ -194,14 +175,6 @@ void GenieService::run(int argc, char *argv[])
                                    << std::endl;
     svr.listen(HOST, port_checked);
 
-    // 服务器停止后执行清理。svr.listen() 可能因两种原因返回：Ctrl+C 信号（shutdown_requested_
-    // 已置位，run() 自己在本线程同步调用 ServiceStop() 并等待其完成）；或 /servicestop 等 HTTP
-    // 接口在另一个后台线程里已经调用了 ServiceStop()（该线程内部先 svr.stop() 才使这里的
-    // listen() 提前解除阻塞，随后才真正执行 UnloadModel()）。后一种情况下如果这里直接让 run()
-    // 返回，main() 会紧接着 return，触发全局 `service`（含 modelManager 成员）在主线程被析构，
-    // 与仍在后台线程内运行的 ServiceStop()/UnloadModel() 形成数据竞争——曾实测复现为模型卸载被
-    // 中途截断（日志停在 "the context is being destroyed" 后进程即消失，从未打印
-    // "Service stopped successfully"，且远早于看门狗的 15s 超时）。
     if (shutdown_requested_.load())
     {
         My_Log{} << "\n[Shutdown] Interrupt signal received. Initiating graceful shutdown...\n";
@@ -210,10 +183,6 @@ void GenieService::run(int argc, char *argv[])
     }
     else if (!shutdown_completed_.load())
     {
-        // 必须等待后台线程真正完成（shutdown_completed_ 变为 true）才能让 run()/main() 返回。
-        // 看门狗线程保证最多 kShutdownWatchdogTimeoutSeconds 秒后一定会有结果（正常完成或被
-        // 强制终止整个进程），这里额外加 5 秒余量兜底极少数 listen() 因非停止原因提前返回、且
-        // 从未有任何线程调用过 ServiceStop() 的场景，避免永久挂起。
         const auto wait_deadline = std::chrono::steady_clock::now() +
                 std::chrono::seconds(kShutdownWatchdogTimeoutSeconds + 5);
         while (!shutdown_completed_.load() && std::chrono::steady_clock::now() < wait_deadline)
@@ -225,11 +194,6 @@ void GenieService::run(int argc, char *argv[])
 
 inline void GenieService::ServiceStop()
 {
-    // 幂等性保护：Ctrl+C 路径下 TriggerGracefulShutdown() 同步调用一次 ServiceStop()，
-    // 随后 run() 里 svr.listen() 因 svr.stop() 提前返回、shutdown_requested_ 已置位，
-    // 会再次调用 ServiceStop()，两次调用可能在不同线程上并发执行。这里保证核心卸载
-    // 逻辑全进程只真正跑一次；后来的调用只等待第一次调用真正完成后直接返回，不重复
-    // 触发 modelManager->UnloadModel() 或看门狗线程。
     if (stop_in_progress_.exchange(true))
     {
         while (!shutdown_completed_.load())
@@ -242,11 +206,6 @@ inline void GenieService::ServiceStop()
     My_Log{} << "start to stop service\n";
     shutdown_completed_.store(false);
 
-    // 关闭看门狗：detach 一个线程，若 ServiceStop() 主体逻辑在阈值内仍未完成（即
-    // shutdown_completed_ 仍是 false），说明底层某个调用（最典型是 MNN 在内存压力下
-    // 的 generate()）卡住了，主动强制终止整个进程，保证"收到终止信号后总能在有限
-    // 时间内退出"这条底线，即使 ModelManager::UnloadModel() 里新增的 Stop() 信号未能
-    // 让第三方推理库的阻塞调用真正让出控制权。正常关闭路径远快于该阈值，不受影响。
     std::thread watchdog([]() {
         std::this_thread::sleep_for(std::chrono::seconds(kShutdownWatchdogTimeoutSeconds));
         if (self_ && !self_->shutdown_completed_.load())
@@ -265,13 +224,8 @@ inline void GenieService::ServiceStop()
     });
     watchdog.detach();
 
-    // Stop accepting new connections immediately so that connectivity checks
-    // from test scripts fail, signaling that the service is truly down.
     svr.stop();
-    
-    // Then unload model to release hardware (NPU/GPU) resources.
-    // NPU 释放等待已下沉到 ModelManager::Clean() 内部（UnloadModel() 经过此处），
-    // 这里不再重复等待，避免与 GenieAPILibrary::api_unloadmodel() 等其他调用路径行为不一致。
+
     if (modelManager)
     {
         My_Log{} << "Unloading model...\n";
@@ -294,11 +248,6 @@ void GenieService::TriggerGracefulShutdown(int exit_code)
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 namespace
 {
-    // signal(SIGINT, ...) below only reacts to Ctrl+C. An orchestrator that needs to target
-    // just this process (without affecting siblings sharing the same console) can only use
-    // CTRL_BREAK_EVENT on Windows, but that event never raises SIGINT via the CRT - without
-    // this handler the OS force-terminates the process (STATUS_CONTROL_C_EXIT) before any of
-    // our shutdown/unload code runs. Route it through the same TriggerGracefulShutdown path.
     BOOL WINAPI ConsoleCtrlHandler(DWORD ctrl_type)
     {
         switch (ctrl_type)
@@ -327,18 +276,16 @@ inline void GenieService::setupSignalHandlers()
 void GenieService::setupHttpServer()
 {
     My_Log("GenieService::setupHttpServer start\n");
-    
-    // Allow rapid port rebind after service restart (avoids TIME_WAIT blocking)
+
     svr.set_socket_options([](socket_t sock) {
         int yes = 1;
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
     });
 
-    // 设置合理的超时时间，避免因模型推理耗时过长导致连接主动断开 (任务2)
-    svr.set_read_timeout(300, 0);   // 300 秒读超时
-    svr.set_write_timeout(300, 0);  // 300 秒写超时
-    svr.set_idle_interval(300, 0);  // 300 秒空闲保持
-    
+    svr.set_read_timeout(300, 0);
+    svr.set_write_timeout(300, 0);
+    svr.set_idle_interval(300, 0);
+
     svr.set_logger([](const auto &req, const httplib::Response &res)
                    {
                        if (!res.has_header("X-Skip"))
@@ -385,47 +332,34 @@ int main(int argc, char **argv)
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
     SetConsoleOutputCP(CP_UTF8);
 #endif
-    // 隐藏自测分支：离线回放 Layer1 兜底提取的畸形样本集，跑完立即退出，不触碰
-    // 正常的 CLI11/service.run() 逻辑。用法：GenieAPIService.exe --self-test-layer1-recovery
-    // 设计取舍见 src/response/response_tools.md。
     if (argc > 1 && std::string(argv[1]) == "--self-test-layer1-recovery")
     {
         bool all_passed = RunLayer1RecoverySelfTest(std::cout);
         return all_passed ? 0 : 1;
     }
-    // 隐藏自测分支：离线回放验证 ResponseTools::DetectBareToolCall()（"Layer -1"：无
-    // <tool_call> 标签时的裸 JSON 工具调用检测）。用法：GenieAPIService.exe --self-test-bare-json-detect
-    // 设计取舍见 src/response/response_tools.md「Layer -1」节。
     if (argc > 1 && std::string(argv[1]) == "--self-test-bare-json-detect")
     {
         bool all_passed = RunBareToolCallDetectionSelfTest(std::cout);
         return all_passed ? 0 : 1;
     }
-    // 隐藏自测分支：离线回放验证 ResponseTools::ApplyBareJsonHoldBack()（"Layer -1" 流式
-    // hold-back 状态机）在"逐 chunk 到达"场景下的行为，与上面的 --self-test-bare-json-detect
-    // 是两条独立代码路径——真机复现的"</think> 独占一个 chunk"边界 bug 只会在这里被捕获。
-    // 用法：GenieAPIService.exe --self-test-bare-json-holdback
-    // 设计取舍见 src/response/response_dispatcher.md「Layer -1 hold-back」一节。
     if (argc > 1 && std::string(argv[1]) == "--self-test-bare-json-holdback")
     {
         bool all_passed = RunBareJsonHoldBackStreamingSelfTest(std::cout);
         return all_passed ? 0 : 1;
     }
-    // 隐藏自测分支：离线回放验证 ResponseTools::remove_tool_call_content() 的最终防线（对
-    // 未闭合/跨多行截断的 <tool_call> 输入是否彻底清空,不泄漏任何标签/JSON碎片）。
-    // 用法：GenieAPIService.exe --self-test-sanitization
     if (argc > 1 && std::string(argv[1]) == "--self-test-sanitization")
     {
         bool all_passed = RunToolCallSanitizationSelfTest(std::cout);
         return all_passed ? 0 : 1;
     }
-    // 隐藏自测分支：直接调用 ToolCallCircuitBreakerStore 公开接口验证"会话+模型维度连续
-    // 触发Layer3计数/降级/冷却重置"链路的端到端语义（单session、交错session/模型、空key、
-    // 并发、冷却过期）。用法：GenieAPIService.exe --self-test-circuit-breaker
-    // 设计取舍见 src/chat_request_handler/tool_call_circuit_breaker_store.md。
     if (argc > 1 && std::string(argv[1]) == "--self-test-circuit-breaker")
     {
         bool all_passed = RunToolCallCircuitBreakerSelfTest(std::cout);
+        return all_passed ? 0 : 1;
+    }
+    if (argc > 1 && std::string(argv[1]) == "--self-test-tool-repetition")
+    {
+        bool all_passed = RunToolCallRepetitionSelfTest(std::cout);
         return all_passed ? 0 : 1;
     }
     service.run(argc, argv);

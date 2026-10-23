@@ -593,50 +593,51 @@ bool GenieRoutingGateway::ExecuteCloudRequest(const json &cloud_request,
                 state->error_msg = "GenieRoutingGateway was destroyed before stream could start";
                 state->done = true;
                 state->cv.notify_all();
-                return;
             }
-
-            std::string err;
-            bool ok = cloud_client_ptr->ChatCompletionStream(
-                mutable_request,
-                [&state](const std::string &chunk) -> bool {
-                    {
-                        std::lock_guard<std::mutex> lock(state->mtx);
-                        // 若消费者已停止（客户端断开），通知生产者停止接收云端数据
-                        if (state->consumer_stopped)
-                        {
-                            return false;  // 中止云端 SSE 接收
-                        }
-                        state->chunks.push_back(chunk);
-
-                        // 累积响应文本（用于日志打印）
-                        std::string delta_text = ExtractDeltaContent(chunk);
-                        if (!delta_text.empty()) {
-                            state->accumulated_response += delta_text;
-                        }
-
-                        // 尝试从每个 chunk 中提取 token 使用量（通常在最后一个 chunk 中）
-                        auto usage = ExtractChunkTokenUsage(chunk);
-                        if (usage.has_data)
-                        {
-                            state->total_tokens = usage.total_tokens;
-                            state->prompt_tokens = usage.prompt_tokens;
-                            state->completion_tokens = usage.completion_tokens;
-                            state->has_token_data = true;
-                        }
-                    }
-                    state->cv.notify_one();
-                    return true;
-                },
-                err);
-
+            else
             {
-                std::lock_guard<std::mutex> lock(state->mtx);
-                state->success = ok;
-                state->error_msg = err;
-                state->done = true;
+                std::string err;
+                bool ok = cloud_client_ptr->ChatCompletionStream(
+                    mutable_request,
+                    [&state](const std::string &chunk) -> bool {
+                        {
+                            std::lock_guard<std::mutex> lock(state->mtx);
+                            // 若消费者已停止（客户端断开），通知生产者停止接收云端数据
+                            if (state->consumer_stopped)
+                            {
+                                return false;  // 中止云端 SSE 接收
+                            }
+                            state->chunks.push_back(chunk);
+
+                            // 累积响应文本（用于日志打印）
+                            std::string delta_text = ExtractDeltaContent(chunk);
+                            if (!delta_text.empty()) {
+                                state->accumulated_response += delta_text;
+                            }
+
+                            // 尝试从每个 chunk 中提取 token 使用量（通常在最后一个 chunk 中）
+                            auto usage = ExtractChunkTokenUsage(chunk);
+                            if (usage.has_data)
+                            {
+                                state->total_tokens = usage.total_tokens;
+                                state->prompt_tokens = usage.prompt_tokens;
+                                state->completion_tokens = usage.completion_tokens;
+                                state->has_token_data = true;
+                            }
+                        }
+                        state->cv.notify_one();
+                        return true;
+                    },
+                    err);
+
+                {
+                    std::lock_guard<std::mutex> lock(state->mtx);
+                    state->success = ok;
+                    state->error_msg = err;
+                    state->done = true;
+                }
+                state->cv.notify_all();
             }
-            state->cv.notify_all();
         });
         producer.detach();
 

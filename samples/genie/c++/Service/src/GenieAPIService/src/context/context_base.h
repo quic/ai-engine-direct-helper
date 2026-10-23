@@ -47,6 +47,8 @@ public:
 
     virtual void Reset();
 
+    virtual void ClearConversationState() {}
+
     // 检查模型是否正在执行推理（query_mutex_ 是否被锁定）
     // 用于诊断安全检查与主推理之间的锁竞争
     // 注意：此方法仅用于诊断，不保证原子性（检查后状态可能改变）
@@ -63,10 +65,13 @@ public:
     virtual void setLoraStrength(const std::string &engineRole,
                                  const std::unordered_map<std::string, float> &alphaValue);
 
-    // Fix 5: returns true if the last generation was stopped because the output token
-    // limit was reached (finish_reason = "length"). Base class returns false by default;
-    // GenieContext overrides this with the actual flag.
+    // 返回 true 表示上一次生成因触达输出 token 上限而停止（finish_reason = "length"）；
+    // 基类默认返回 false，GenieContext 等子类用实际标记位覆盖。
     virtual bool was_stopped_by_output_limit() const { return false; }
+
+    virtual json GetLastQueryTraceMetrics() const { return nullptr; }
+
+    virtual bool UsesCrossRequestPrefixCache() const { return false; }
 
 protected:
     virtual int ApplyParams();
