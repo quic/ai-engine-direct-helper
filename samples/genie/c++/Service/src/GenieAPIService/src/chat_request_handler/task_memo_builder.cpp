@@ -818,12 +818,37 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
     const std::vector<GenieChatMessage> new_dropped(dropped_messages.begin() + (long long) already_folded,
                                                     dropped_messages.end());
 
+    // 连续失败/重复调用三个活体信号提前查询：它们各自独立维护在 ToolCallCircuitBreakerStore/
+    // ToolCallRepetitionStore 里，不依赖 dropped_messages 是否有新增，必须在节流判断之前就取到
+    // 最新值——否则节流一旦命中，这三个信号会一直复用 *prev 里的陈旧值，在驱逐边界冻结（sticky）
+    // 期间永远传不到模型那里，而这恰恰是最需要这些警告生效的时间窗口。
+    std::string cb_key = ToolCallCircuitBreakerStore::MakeKey(first_msg_key, instance_config_.get_model_name());
+    int failure_streak_live = ToolCallCircuitBreakerStore::GetInstance().GetConsecutiveCount(cb_key);
+    const auto &redundant_cfg = instance_config_.i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
+    int redundant_tool_call_count_live = 0;
+    int non_contiguous_repeat_count_live = 0;
+    if (redundant_cfg.enabled) {
+        std::string rc_key = ToolCallRepetitionStore::MakeKey(first_msg_key, instance_config_.get_model_name());
+        redundant_tool_call_count_live = ToolCallRepetitionStore::GetInstance().GetRepeatCount(rc_key);
+        non_contiguous_repeat_count_live = ToolCallRepetitionStore::GetInstance().GetNonContiguousRepeatCount(rc_key);
+    }
+    bool warning_active =
+        (config_.failure_streak_warn_threshold > 0 && failure_streak_live >= config_.failure_streak_warn_threshold) ||
+        (redundant_cfg.enabled && redundant_cfg.repeat_threshold > 0
+            && redundant_tool_call_count_live >= redundant_cfg.repeat_threshold) ||
+        (redundant_cfg.enabled && redundant_cfg.non_contiguous_repeat_threshold > 0
+            && non_contiguous_repeat_count_live >= redundant_cfg.non_contiguous_repeat_threshold);
+
     // 节流：驱逐仍按需每轮发生，但只有自上一次真正重渲染以来新增的丢弃量达到
     // config_.render_throttle_min_new_dropped 才真正重渲染；未达到（含恰好 0 的
     // "无新增"情形）直接复用上一份渲染结果——新增内容仍留在 dropped_messages 里，
     // 不写回 store（_folded_count 不前移），下一次真正触发时通过差分一次性合并，不会丢失。
+    // warning_active 时无条件绕开节流（即便 new_dropped 为空也继续往下走）：BuildRuleLayer 对
+    // 空输入是安全的纯空操作（不会误改 _folded_count/source_range），ShouldTriggerModelLayer 对
+    // 空 new_dropped 也不会触发模型层推理，不产生额外开销；只有在确有问题需要示警时才允许 memo
+    // 字节在非驱逐轮变化，这与驱逐本身造成的 KV 失效属于同一类"有理由的"失效，不是新增的不稳定源。
     size_t render_throttle = std::max<size_t>(1, config_.render_throttle_min_new_dropped);
-    if (has_prev && new_dropped.size() < render_throttle) {
+    if (has_prev && new_dropped.size() < render_throttle && !warning_active) {
         res.active = true;
         res.confidence = prev_confidence;
         res.refresh_count = prev_refresh;
@@ -883,24 +908,18 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         }
     }
 
-    // 连续失败不轻易放弃：与 ToolCallCircuitBreakerStore 打通，只读查询（不调用
-    // RecordLayer3Trigger/RecordSuccess，保持该 store 计数语义的唯一写入方仍是
-    // response_dispatcher.cpp）。key 计算方式与该 store 自身注释里记录的约定一致：
-    // session_key 用 ComputeFirstMsgKey（已算好的 first_msg_key），model_name 用
-    // instance_config_.get_model_name()，与 response_dispatcher.cpp 查到的是同一条记录。
-    std::string cb_key = ToolCallCircuitBreakerStore::MakeKey(first_msg_key, instance_config_.get_model_name());
-    entry["failure_streak"] = ToolCallCircuitBreakerStore::GetInstance().GetConsecutiveCount(cb_key);
+    // 连续失败/重复调用三个活体信号已在节流判断之前查询过（见上方 warning_active），这里
+    // 直接复用同一份值落盘，不重复查询 store——保持"查一次、决策和落盘用同一份数据"。
+    entry["failure_streak"] = failure_streak_live;
     // Render() 是 static 方法读不到 config_，阈值随 entry 一起落盘，保持 Render() 签名
     // 不变（纯函数于 entry），也让每条已存储的备忘录自描述当时生效的阈值是多少。
     entry["failure_streak_warn_threshold"] = config_.failure_streak_warn_threshold;
     entry["memo_reserve_ratio"] = config_.memo_reserve_ratio;
 
-    const auto &redundant_cfg = instance_config_.i_model_config_.GetToolCallRepairConfig().redundant_call_guard;
     if (redundant_cfg.enabled) {
-        std::string rc_key = ToolCallRepetitionStore::MakeKey(first_msg_key, instance_config_.get_model_name());
-        entry["redundant_tool_call_count"] = ToolCallRepetitionStore::GetInstance().GetRepeatCount(rc_key);
+        entry["redundant_tool_call_count"] = redundant_tool_call_count_live;
         entry["redundant_tool_call_threshold"] = redundant_cfg.repeat_threshold;
-        entry["non_contiguous_repeat_count"] = ToolCallRepetitionStore::GetInstance().GetNonContiguousRepeatCount(rc_key);
+        entry["non_contiguous_repeat_count"] = non_contiguous_repeat_count_live;
         entry["non_contiguous_repeat_threshold"] = redundant_cfg.non_contiguous_repeat_threshold;
     } else {
         entry["redundant_tool_call_count"] = 0;
@@ -1018,8 +1037,10 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     std::string tried_queries_block;
     if (entry.contains("tried_queries") && entry["tried_queries"].is_object() && !entry["tried_queries"].empty()) {
         std::ostringstream oss;
-        oss << "Queries already tried per resource (if your next call targets the same resource "
-               "with similar intent, prefer a different angle instead of repeating):\n";
+        oss << "Queries already tried per resource, drawn from earlier context that has since left "
+               "the window (check the most recent messages below in case one of these was actually "
+               "resolved since; if your next call targets the same resource with similar intent, "
+               "prefer a different angle instead of repeating):\n";
         for (auto it = entry["tried_queries"].begin(); it != entry["tried_queries"].end(); ++it) {
             if (!it.value().is_array() || it.value().empty())
                 continue;
@@ -1067,7 +1088,9 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     // 由高到低优先级排列；预算放不下时整块跳过。
     const std::string blocks[] = {
         render_list("Rules from documents you read (still in force)", "hard_rules"),
-        render_list("Artifacts already produced (confirmed by tool output; do not redo these steps)", "artifacts"),
+        render_list("Artifacts already produced, confirmed by tool output from earlier context that has "
+                    "since left the window (not an exhaustive list of everything done so far; check the "
+                    "most recent messages below for newer results before redoing any of these steps)", "artifacts"),
         last_success_block,
         render_list("Completed", "completed"),
         render_list("Next actions", "next_actions"),
