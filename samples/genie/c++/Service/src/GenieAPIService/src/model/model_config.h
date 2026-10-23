@@ -19,9 +19,6 @@ using json = nlohmann::ordered_json;
 
 class ContextBase;
 
-// ============================================================
-// 路由配置结构（对应 service_config.json 中的 "routing" 节）
-// ============================================================
 struct RoutingConfig {
     bool enabled = false;
     std::string policy_id = "default_v1";
@@ -207,22 +204,10 @@ struct RoutingConfig {
     } metrics;
 };
 
-// ============================================================
-// 本地模型配置结构（对应 service_config.json 中的 "local_model" 节）
-// ============================================================
 struct LocalModelConfig {
-    bool enabled = true;  // 是否启用本地模型（默认开启，向后兼容）
+    bool enabled = true;
 };
 
-// ============================================================
-// 工具调用兜底修复配置（对应 prompt_engineering.json 中的 "tool_call_repair" 节；
-// 与端云结合完全无关的本地能力，不在 service_config.json 中）
-// Layer2：现有正则修复链 + Layer1（本地确定性提取）均失败（最终会落回 name="unknow"）后，
-// 服务端在决定返回给客户端之前发起的内部隐形自纠正重试：构造 scratch ModelInput 追加一条
-// role=tool 错误消息，重新走完整 ModelInputBuilder::Build() 预算/压缩流水线再次调用
-// handle->Query()；成功结果直接替换给客户端，失败的第一次尝试绝不写入 ChatHistory，
-// 也绝不向客户端发送任何中间态。默认开启，可通过 prompt_engineering.json 关闭/调阈值。
-// ============================================================
 struct ToolCallRepairConfig {
     bool enabled = true;
 
@@ -237,13 +222,6 @@ struct ToolCallRepairConfig {
         std::vector<std::string> skip_reasons = {"truncated"};
     } internal_retry;
 
-    // Layer3：Layer2 重试耗尽仍失败后走分级终态协议（识别出工具名则发真实 tool_call，
-    // 否则降级为 finish_reason="length" 的纯文本）。连续多次真正走到 Layer3 终态
-    // （而非 Layer0/1/2 任一层成功）说明模型系统性不具备工具调用能力，
-    // 熔断后该会话+模型维度动态降级 system prompt（跳过工具声明注入），避免模型继续
-    // 做徒劳的工具调用尝试。计数存储见 ToolCallCircuitBreakerStore
-    // （chat_request_handler/tool_call_circuit_breaker_store.h，LRU+TTL，key=会话
-    // 指纹+模型名，模式对齐 TaskMemoStore）。
     struct CircuitBreakerConfig {
         // 连续触发 Layer3 达到此次数后，判定该会话+模型系统性不支持工具调用。
         int consecutive_layer3_threshold = 3;
@@ -262,14 +240,6 @@ struct ToolCallRepairConfig {
     } redundant_call_guard;
 };
 
-// ============================================================
-// Windows shell 使用提示配置（对应 prompt_engineering.json 中的 "windows_shell_hint" 节；
-// 与端云结合完全无关的本地能力，不在 service_config.json 中）
-// 通用、与具体技能无关的基础设施：Windows 平台编译时，若请求的 tools 声明里存在
-// shell/命令执行类工具（按 name/description 关键词匹配），提示模型该命令可能被
-// 路由到 cmd.exe 或 PowerShell 之一，两者链式执行/变量/引号语法不同，命中语法错误
-// 时可尝试换另一种 shell 的写法。挂载点见 model_input_builder.h::BuildPrompt()。
-// ============================================================
 struct WindowsShellHintConfig {
     bool enabled = true;
     std::vector<std::string> tool_keywords = {"cmd", "powershell", "shell", "exec", "bash", "terminal", "command"};
@@ -297,9 +267,6 @@ struct AdaptiveThinkingConfig {
     int ctx_reserve_tokens = 2048;
 };
 
-// ============================================================
-// 云端模型配置结构（对应 service_config.json 中的 "cloud_model" 节）
-// ============================================================
 struct CloudModelConfig {
     bool enabled = false;
     std::string base_url;
@@ -359,10 +326,6 @@ struct CloudModelConfig {
     bool log_debug = false;
 };
 
-// ============================================================
-// 企业内网云端模型配置（对应 service_config.json 中的 "enterprise_cloud_model" 节）
-// 用于 C1 级别任务路由（中等复杂度，企业内部服务器处理）
-// ============================================================
 struct EnterpriseCloudModelConfig {
     bool enabled = false;
     std::string base_url;
@@ -404,11 +367,6 @@ struct EnterpriseCloudModelConfig {
     bool log_debug = false;
 };
 
-// ============================================================
-// 系统上下文配置（对应 service_config.json 中的 "prompt_optimization.system_context" 节）
-// 所有系统提示词内容均从此处读取，由 BuildSystemContext() 使用
-// ============================================================
-
 // 单个系统上下文子段落
 struct SystemContextSection {
     std::string title;                  // 段落标题（如 "## Core Behavior"），空字符串表示无标题
@@ -420,10 +378,6 @@ struct SystemContextSection {
 struct SystemContextConfig {
     std::vector<SystemContextSection> sections;  // 子段落列表（按顺序拼接）
 };
-
-// ============================================================
-// Prompt 段落过滤配置（对应 service_config.json 中的 "prompt_optimization.prompt_sections" 节）
-// ============================================================
 
 // 单条段落匹配规则
 struct PromptSectionRule {
@@ -439,10 +393,6 @@ struct PromptSectionsConfig {
     int max_section_tokens = 0;            // 单段落最大 token 数（0=不限制）
     bool enabled = false;                  // 是否启用段落过滤（false=不过滤，不追加原始段落）
 };
-
-// ============================================================
-// Prompt 优化配置（对应 service_config.json 中的 "prompt_optimization" 节）
-// ============================================================
 
 // 提示词模板配置
 struct SystemPromptsConfig {

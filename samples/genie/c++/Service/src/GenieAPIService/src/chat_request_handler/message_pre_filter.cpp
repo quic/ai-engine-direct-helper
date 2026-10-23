@@ -583,10 +583,6 @@ bool MessagePreFilter::PrefixCacheActive()
 
 size_t MessagePreFilter::CountTokens(const std::string& text)
 {
-    // 修复：多模型场景下优先使用 context_override_（per-model 的 ContextBase），
-    // 而非 model_config_.get_genie_model_handle()（全局单模型句柄）。
-    // 在多模型场景下，get_genie_model_handle() 返回的是最后加载的单模型句柄，
-    // 会导致所有请求使用同一个模型进行 token 计数，破坏多模型路由的正确性。
     if (context_override_) {
         return context_override_->TokenLength(text);
     }
@@ -594,10 +590,6 @@ size_t MessagePreFilter::CountTokens(const std::string& text)
     if (handle) {
         return handle->TokenLength(text);
     }
-    // P1：如果无法获取 handle，按 text 内实际 CJK 字节占比推算有效 bytes/token
-    // （EstimateCjkAwareBytesPerToken，utils.h），不再统一按 length()/4——该比例只对
-    // 纯 ASCII 文本成立，UTF-8 中文 1 字 = 3 字节 ≈ 1 token，按 4 字节/token 会把
-    // token 数低估约 25%。两者都设为 4.0 即逐字节回退到 P1 引入前的 length()/4。
     const auto& fid_cfg = model_config_.GetPromptOptimizationConfig().fidelity;
     double bytes_per_token = EstimateCjkAwareBytesPerToken(
         text, fid_cfg.cjk_bytes_per_token, fid_cfg.ascii_bytes_per_token);
@@ -610,19 +602,15 @@ size_t MessagePreFilter::CountTokens(const std::string& text)
 
 bool MessagePreFilter::ShouldKeepFull(const GenieChatMessage& msg) const
 {
-    // 工具响应消息始终保持完整
     if (msg.role == "tool") {
         return true;
     }
 
-    // 包含工具调用的 assistant 消息保持完整
     if (msg.role == "assistant") {
-        // Harmony 格式：to=functions.xxx
         if (msg.content.find("to=functions.") != std::string::npos) {
             return true;
         }
 
-        // 普通格式：<tool_call> 标记
         if (msg.content.find("<tool_call>") != std::string::npos) {
             return true;
         }
@@ -788,12 +776,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
             }
         }
 
-        // 找到最后一条 tool 消息的位置——它可能出现在 last_user_index 之前（例如
-        // assistant(tool_calls) → tool(响应) → user(追问) 这种真实存在的对话形态）。
-        // PreFilterMessages 的 Phase 2B 已把这条消息标记为「truncate-protected」并跳过
-        // 压缩，本意是留给下面的 Phase 4 紧急截断（ContentCondenser 头尾双保留）兜底；
-        // 如果这里不同步保护它，Step 3a/3b 会把它当作普通旧消息连同其 assistant 一起
-        // 整段丢弃，Phase 4 永远等不到执行机会，尾部 canary/退出码等关键信息因此丢失。
         int last_tool_index = -1;
         for (int i = (int)final_messages.size() - 1; i >= 0; i--) {
             if (final_messages[i].role == "tool") {
@@ -802,30 +784,23 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
             }
         }
 
-        // 计算 recent_boundary：keep_recent_full 条消息之前的边界
         auto compute_recent_boundary = [&]() -> int {
             if (last_user_index < 0) return 0;
             int boundary = last_user_index - (int)config.keep_recent_full;
             return (boundary > 0) ? boundary : 0;
         };
 
-        // 判断索引 idx 是否受保护（不可丢弃）
-        // 保护条件：idx >= last_user_index（最后一条 user 及其之后的消息），
-        // 或 idx >= last_tool_index（最后一条 tool 消息及其之后的消息，交给 Phase 4 兜底）。
         auto is_fit_protected = [&](int idx) -> bool {
             if (last_user_index >= 0 && idx >= last_user_index) return true;
             if (last_tool_index >= 0 && idx >= last_tool_index) return true;
             return false;
         };
 
-        // 尝试从 [0, drop_before) 范围内丢弃最旧的一条（或一链）消息
-        // 返回是否成功丢弃
         auto try_drop_oldest_before = [&](int drop_before) -> bool {
             if (final_messages.empty() || drop_before <= 0) return false;
 
             std::string role_to_drop = final_messages[0].role;
 
-            // assistant 消息：级联丢弃其后连续的 tool 消息
             if (role_to_drop == "assistant") {
                 size_t tool_count = 0;
                 for (size_t k = 1; k < final_messages.size(); k++) {
@@ -833,12 +808,8 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                     else break;
                 }
                 size_t drop_count = 1 + tool_count;
-                // 整条 assistant+tool 链超出 drop_before 边界时，不截断删除（避免孤立 tool 消息）
                 if ((int)drop_count > drop_before) return false;
                 if (drop_count == 0) return false;
-                // 级联范围内含受保护的「最后一条 tool 消息」时放弃整段丢弃——它应交给
-                // 下面的 Phase 4 紧急截断（ContentCondenser 头尾双保留），wholesale 丢弃会
-                // 让 canary/退出码等关键尾部信息在 Phase 4 有机会介入之前就彻底消失。
                 if (last_tool_index >= 0 && last_tool_index < (int)drop_count) return false;
 
                 size_t dropped_tokens = 0;
@@ -863,14 +834,12 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                 return true;
             }
 
-            // 孤立 tool 消息：若正是受保护的最后一条 tool 消息，同样放弃丢弃，交给 Phase 4。
             if (role_to_drop == "tool") {
                 if (last_tool_index == 0) return false;
                 My_Log{My_Log::Level::kWarning}
                     << "[FitMessagesToContext] Found orphaned tool message at position 0, dropping it" << std::endl;
             }
 
-            // 其他消息：直接丢弃
             size_t dropped_tokens = CountTokens(final_messages[0].content);
             dropped_for_memo.push_back(final_messages[0]);
             final_messages.erase(final_messages.begin());
@@ -889,16 +858,14 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
             return true;
         };
 
-        // 第一阶段：优先丢弃 recent_boundary 之前的旧消息
         My_Log{My_Log::Level::kDebug} << "[FitMessagesToContext] Step 3a: Dropping old messages (before recent_boundary)..." << std::endl;
         while (total_tokens > evict_target_size) {
             if (final_messages.empty()) break;
             int recent_boundary = compute_recent_boundary();
-            if (recent_boundary <= 0) break;  // 没有旧消息可丢弃，进入第二阶段
+            if (recent_boundary <= 0) break;
             if (!try_drop_oldest_before(recent_boundary)) break;
         }
 
-        // 第二阶段：若仍超出，丢弃 recent_boundary 之后（但 last_user_index 之前）的消息
         if (total_tokens > evict_target_size) {
             My_Log{My_Log::Level::kDebug} << "[FitMessagesToContext] Step 3b: Dropping recent messages (before last_user_index)..." << std::endl;
         }
@@ -919,20 +886,12 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
             }
         }
 
-        // 检查是否仍然超出（保护集本身超出 context_size）
         if (total_tokens > context_size) {
-            // ── Phase 4: 紧急截断（最后一条 tool 消息超大时的兜底机制）──────────────
-            // 触发条件：所有常规压缩/丢弃手段均已用尽，仍超出 context_size
-            // 策略：对最后一条 tool 消息（SKILL.md 等超大工具返回）进行强制截断
-            // 前置检查：若需截断量超过最后一条 tool 消息的 max_truncation_ratio，则放弃截断
             const auto& et_cfg = model_config_.GetPromptOptimizationConfig().emergency_truncation;
             const auto& fid_cfg = model_config_.GetPromptOptimizationConfig().fidelity;
             bool phase4_applied = false;
 
             if (et_cfg.enabled && et_cfg.target_largest_tool_messages) {
-                // 多目标策略：在受保护区间内收集全部 tool 消息与带 tool_call 信封的 assistant
-                // 消息，按 token 数降序依次截断，直到累计释放量达到 tokens_to_free；每条自身
-                // 截断比例仍受 max_truncation_ratio 约束。
                 std::vector<int> cand_indices;
                 for (int i = 0; i < (int)final_messages.size(); i++) {
                     if (final_messages[i].role == "tool" ||
@@ -1067,7 +1026,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                         << "skipping emergency truncation" << std::endl;
                 }
             } else if (et_cfg.enabled) {
-                // 找到最后一条 tool 消息
                 int last_tool_idx = -1;
                 for (int i = (int)final_messages.size() - 1; i >= 0; i--) {
                     if (final_messages[i].role == "tool") {
@@ -1081,7 +1039,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                     size_t overflow_tokens = total_tokens - context_size;
                     size_t tokens_to_free = overflow_tokens + static_cast<size_t>(et_cfg.safety_margin_tokens);
 
-                    // 前置检查：截断量是否超过阈值
                     float truncation_ratio = (last_tool_tokens > 0)
                         ? static_cast<float>(tokens_to_free) / static_cast<float>(last_tool_tokens)
                         : 1.0f;
@@ -1096,19 +1053,15 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                         << " (max=" << et_cfg.max_truncation_ratio << ")" << std::endl;
 
                     if (truncation_ratio > et_cfg.max_truncation_ratio) {
-                        // 截断量过大，放弃 Phase 4，直接走 local_input_overflow 流程
                         My_Log{My_Log::Level::kWarning}
                             << "[FitMessagesToContext] Phase 4: Truncation ratio " << truncation_ratio
                             << " exceeds max_truncation_ratio " << et_cfg.max_truncation_ratio
                             << ", skipping emergency truncation (will trigger local_input_overflow)" << std::endl;
                     } else {
-                        // 执行紧急截断：计算目标字符数
-                        // 估算：tokens_to_free 对应的字符数（1 token ≈ 4 chars，保守估算）
                         const std::string& tool_content = final_messages[last_tool_idx].content;
                         size_t target_tokens = (last_tool_tokens > tokens_to_free)
                             ? (last_tool_tokens - tokens_to_free)
                             : 0;
-                        // 目标字符数：按 token/char 比例估算，再留 10% 余量
                         size_t target_chars = (tool_content.length() > 0 && last_tool_tokens > 0)
                             ? static_cast<size_t>(
                                 static_cast<float>(tool_content.length()) *
@@ -1117,13 +1070,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                             : 0;
 
                         if (target_chars > 0 && target_chars < tool_content.length()) {
-                            // 保真截断：高信号行提取 + 头尾双保留，确保最末尾的报错/退出码/
-                            // 结论不会像旧的 safe_utf8_truncate（保头弃尾）那样被整段丢弃。
-                            // 沿用 cfg.fidelity 的开关，与 truncate_content/truncate_tool_content
-                            // 保持一致：preserve_tail=false 时 tail_ratio 视为 0（仅保留头部），
-                            // extract_high_signal/json_head_items/json_tail_items 关闭时同样整段回退。
-                            // token_len 绑定 CountTokens：target_chars 本身已按 token/char 比例估算
-                            // 过一次，这里再用真实 tokenizer 收敛，避免估算误差导致仍然溢出。
                             CondenseBudget emergency_budget;
                             emergency_budget.max_chars = target_chars;
                             emergency_budget.max_tokens = target_tokens;
@@ -1141,7 +1087,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                             std::string truncated = condensed.text;
                             final_messages[last_tool_idx].content = truncated;
 
-                            // 重新计算 total_tokens
                             size_t new_tool_tokens = CountTokens(truncated);
                             size_t old_total = total_tokens;
                             total_tokens = total_tokens - last_tool_tokens + new_tool_tokens;
@@ -1160,7 +1105,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
                                     << "[FitMessagesToContext] Phase 4: Emergency truncation succeeded, "
                                     << "context overflow resolved" << std::endl;
                             } else {
-                                // 截断后仍超出（token 估算误差），恢复原内容，走 local_input_overflow
                                 final_messages[last_tool_idx].content = tool_content;
                                 total_tokens = old_total;
                                 My_Log{My_Log::Level::kWarning}
@@ -1227,12 +1171,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         My_Log{My_Log::Level::kDebug} << "[FitMessagesToContext] Step 3: Total tokens within context size" << std::endl;
     }
 
-    // Task Memo：在计算占位符之前用本次实际丢弃的消息更新备忘录，供占位符渲染使用最新状态。
-    // 必须把 PreFilterMessages()（同一个 pre_filter_ 实例、同一次请求）Phase 0-5 丢弃的消息
-    // 也并入——它们通常是丢弃大头，本函数自身的 dropped_for_memo 往往为空或极少，只传后者会
-    // 导致 Update() 几乎永远达不到 min_dropped_for_trigger（真实 bug，已实测复现）。
-    // memo_builder/raw_messages_for_memo 为 nullptr（Task Memo 未接入或功能关闭）时 Update()
-    // 内部直接返回默认值，不产生任何副作用。
     if (memo_builder && raw_messages_for_memo) {
         std::vector<GenieChatMessage> all_dropped_for_memo = prefilter_dropped_messages_;
         all_dropped_for_memo.insert(all_dropped_for_memo.end(), dropped_for_memo.begin(), dropped_for_memo.end());
@@ -1243,18 +1181,11 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         result.memo_pages_total = memo_result.pages_total;
     }
 
-    // 步骤 4: 最终检查
     const auto& fidelity_cfg_drop = model_config_.GetPromptOptimizationConfig().fidelity;
-    // 占位符触发条件必须统计「本次请求全部丢弃来源」，不能只看 result.dropped_count（本函数自身的
-    // Step3/Phase4 丢弃）——PreFilterMessages() 的 Step1（消息数上限）/Phase3（批量丢弃最后手段）
-    // 往往在进入本函数前就已丢掉大部分历史（同一个 pre_filter_ 实例、同一次请求，prefilter_stats_
-    // 在 PreFilterMessages() 开头 Reset() 后一直保留到本函数执行完），若只看 result.dropped_count，
-    // 会出现「响应头 Messages-Dropped > 0 但占位符从未插入」的口径不一致（真实 bug，已实测复现）。
     const size_t total_dropped_all_phases = prefilter_stats_.total_dropped + result.dropped_count;
     if (total_tokens > context_size ||
         (total_dropped_all_phases > 0 && fidelity_cfg_drop.drop_placeholder && !final_messages.empty() &&
          context_size - total_tokens < 20)) {
-        // 即使丢弃所有历史消息，仍然超出 contextSize
         result.success = false;
         result.error_message = "Context size exceeded even after dropping all history. "
                               "System prompt (" + std::to_string(system_tokens) +
@@ -1264,16 +1195,6 @@ OptimizedMessages MessagePreFilter::FitMessagesToContext(
         return result;
     }
 
-    // 整条丢弃留痕：本次请求（含 PreFilterMessages 阶段）总计有消息被丢弃且 drop_placeholder
-    // 开启时，在保留区首条消息前插入极短占位说明，避免模型对已被丢弃的历史一无所知、在后续回答里
-    // 凭空重建这些事实。占位文案用 total_dropped_all_phases（全部丢弃来源之和）而不是
-    // result.dropped_count，与响应头 X-Genie-Prompt-Messages-Dropped（pf_stats.total_dropped +
-    // optimized.dropped_count，见 model_input_builder.h）口径保持一致。
-    // GenieChatMessage::role 只能是 user/assistant/tool（ChatHistory::AddMessage/
-    // import_from_json 对其它角色会静默产出空内容或直接拒绝新消息），因此占位痕迹不新增
-    // 消息条目——作为保留区首条消息 content 的前缀注入，不占用额外角色槛位，也不改变
-    // 消息数量/角色序列（assistant+tool 配对等既有约束不受影响）。
-    // 关闭 drop_placeholder 时完全不产生这段前缀，逐字节回退到当前行为。
     if (total_dropped_all_phases > 0 && fidelity_cfg_drop.drop_placeholder && !final_messages.empty()) {
         static const std::string placeholder = "[earlier message(s) omitted]\n";
 

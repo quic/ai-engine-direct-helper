@@ -16,8 +16,8 @@
 using json = nlohmann::ordered_json;
 struct GenieChatMessage
 {
-    std::string role;        // role："user", "assistant", "tool"
-    std::string content;     // message content
+    std::string role;
+    std::string content;
 };
 
 class ModelInstanceConfig;

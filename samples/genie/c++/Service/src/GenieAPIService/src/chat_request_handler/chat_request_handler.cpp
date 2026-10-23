@@ -33,14 +33,6 @@ namespace fs = std::filesystem;
 
 namespace
 {
-// Computes the output-token budget (context window minus consumed prompt tokens, clamped between
-// the configured minimum output and the full context size) and applies it together with the
-// sampling params to the model handle. Shared by the stream and non-stream inference paths.
-//
-// Returns the model's own config.json sampler value for `key` if it is present and numeric,
-// otherwise a null json. There is no literal fallback here: a key that is neither requested
-// nor configured must be omitted from the SetParamsByConfig() call entirely (see
-// ApplyOutputSizeBudget) rather than overwritten with an arbitrary constant.
 json SamplerFallback(const ModelInstanceConfig &config, const std::string &key)
 {
     auto &sampler = config.sampler();
@@ -60,9 +52,6 @@ void ApplyOutputSizeBudget(ContextBase &handle, ModelInstanceConfig &config,
         << ", Context size: " << context_size
         << ", Max output tokens: " << available_output << std::endl;
 
-    // 只把有合法数值的采样参数塞进去；缺省的 key 直接不出现在这个 json 里，
-    // SetParamsByConfig() 自身按 model_config_.sampler() 的 key 遍历、j 不含该 key 即 continue，
-    // 会自然跳过未设置的参数，保留 SDK 创建 Dialog 时的默认值，而不是被改写成任意常量。
     json params{{"size", available_output}};
     if (temperature.is_number())
         params["temp"] = temperature;
@@ -116,11 +105,6 @@ ChatRequestHandler::ChatRequestHandler(GenieService *srv) :
         model_manager(*srv->modelManager),
         srv_{srv}
 {
-    // 按配置初始化 GenieRoutingGateway
-    // 仅当 routing.enabled=true 时才初始化 GenieRoutingGateway，与 HandleChatCompletion 中的
-    // 检查条件（routing_config_.enabled）保持一致，避免逻辑不对称。
-    // 说明：cloud_config.enabled 仅控制云端客户端是否可用，不单独触发 GenieRoutingGateway 初始化；
-    //       GenieRoutingGateway 的启用入口统一由 routing.enabled 控制。
     const auto &routing_config = model_manager.GetRoutingConfig();
     const auto &cloud_config = model_manager.GetCloudModelConfig();
     const auto &enterprise_cloud_config = model_manager.GetEnterpriseCloudModelConfig();
@@ -146,7 +130,6 @@ void ChatRequestHandler::FetchModelList(const httplib::Request &req, httplib::Re
     std::vector<json> model_list;
     const long long now_ts = static_cast<long long>(std::time(nullptr));
 
-    // 辅助函数：字符串转小写（用于大小写不敏感匹配）
     auto to_lower = [](const std::string &s) -> std::string {
         std::string r = s;
         std::transform(r.begin(), r.end(), r.begin(),
@@ -154,10 +137,6 @@ void ChatRequestHandler::FetchModelList(const httplib::Request &req, httplib::Re
         return r;
     };
 
-    // 单模型语义：本仓库已删除并发多模型托管设计（原 loaded_models_ 注册表），此接口只应
-    // 报告当前 -c 指定并成功加载的这一个模型。大小写不敏感匹配用于处理 -c 参数目录名大小写
-    // 与模型 name 字段不一致的情况（例如 -c "qwen3-8B-8K/config.json" 加载后名称为
-    // "qwen3-8B-8K"，但目录名可能是 "Qwen3-8B-8K"）。
     auto current = model_manager.GetDefaultModel();
     std::string current_name_lower, current_dir_lower;
     if (current && current->config)
@@ -167,12 +146,10 @@ void ChatRequestHandler::FetchModelList(const httplib::Request &req, httplib::Re
         current_dir_lower = to_lower(p.filename().generic_string());
     }
 
-    // 优先扫描磁盘，返回 model_root_ 下所有含 config.json 的子目录
     std::vector<json> disk_models = model_manager.ScanModelDirectory();
 
     if (!disk_models.empty())
     {
-        // 有磁盘扫描结果：返回全部磁盘模型，只把当前模型标注为已加载
         bool current_found_on_disk = false;
         for (auto &m : disk_models)
         {
@@ -194,8 +171,6 @@ void ChatRequestHandler::FetchModelList(const httplib::Request &req, httplib::Re
             model_list.push_back(m);
         }
 
-        // 当前模型的 name 可能是 config.json 里声明的运行时 ID，与磁盘目录名不一致；
-        // 磁盘扫描存在时也要把这种情况下的当前模型补充到 /models。
         if (current && current->config && !current_found_on_disk)
         {
             json m;
@@ -212,7 +187,6 @@ void ChatRequestHandler::FetchModelList(const httplib::Request &req, httplib::Re
     }
     else if (current && current->config)
     {
-        // model_root_ 未配置或为空：回退到只返回当前已加载模型
         json m;
         m["id"]             = current->config->get_model_name();
         m["object"]         = "model";
@@ -260,8 +234,6 @@ void ChatRequestHandler::ServiceExit(const httplib::Request &req, httplib::Respo
     res.set_header("Connection", "close");
     if (text == "stop")
     {
-        // Spawn a shutdown thread: unload model (release NPU), stop server, exit.
-        // The 2-second delay ensures httplib flushes the response.
         auto srv = srv_;
         std::thread([srv]() {
             std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -440,24 +412,19 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
 
     std::string modelName = data.value("model", "");
 
-    // 剥离 QAIAgentForge 添加的 "local::" 前缀（GenieAPIService 内部使用裸模型名称作为 key）
     static const std::string kLocalPrefix = "local::";
     if (modelName.size() > kLocalPrefix.size() &&
         modelName.substr(0, kLocalPrefix.size()) == kLocalPrefix)
     {
         modelName = modelName.substr(kLocalPrefix.size());
     }
-    
-    // 单模型语义：本仓库已删除并发多模型托管设计（原 loaded_models_ 注册表）。服务只维护
-    // 当前 -c 指定并成功加载的这一个模型；请求未指定模型名，或指定名称与当前模型匹配时直接
-    // 使用它，否则通过 LoadModelByName() 顺序切换（先卸载旧模型再加载新模型，不重启进程，
-    // 不是并发托管）。
+
     auto loaded_model = model_manager.GetModel(modelName);
     if (!loaded_model && modelName.empty()) {
         loaded_model = model_manager.GetDefaultModel();
     }
 
-    bool model_confirmed_missing = false;   // 本次请求内已通过磁盘扫描确定性地证明该模型名不存在
+    bool model_confirmed_missing = false;
     if (!loaded_model && !modelName.empty())
     {
         bool new_model = false;
@@ -466,13 +433,11 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
             loaded_model = model_manager.GetModel(modelName);
             if (!loaded_model)
             {
-                // LoadModelByName 成功但 GetModel 精确/大小写不敏感匹配失败，回退取当前模型
                 loaded_model = model_manager.GetDefaultModel();
             }
         }
         else
         {
-            // 区分"模型名在磁盘上确实不存在"（404）与"存在但加载失败"（500）
             auto disk_models = model_manager.ScanModelDirectory();
             bool found_on_disk = std::any_of(disk_models.begin(), disk_models.end(),
                 [&modelName](const json &dm) { return dm.value("id", std::string("")) == modelName; });
@@ -485,13 +450,8 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
         }
     }
 
-    // LoadModelByName 为同步调用，上面的分支已给出确定性结论（找到即 loaded_model 非空，
-    // 找不到即仍为空），不存在"稍后可能出现"的中间态可等待，因此不再引入轮询等待。
-
     if (!loaded_model || !loaded_model->is_loaded)
     {
-        // 附加可被程序化识别的失败原因（目前主要区分"内存不足"与其它，见 ModelManager::LoadFailureReason），
-        // 供测试脚本/客户端区分"服务优雅拒绝加载"与其它未知失败，不改变现有 error 字段语义（向后兼容）。
         json err_json;
         err_json["error"] = modelName.empty()
             ? "No model available. Please load a model first."
@@ -508,8 +468,6 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
     }
 
     auto handle = loaded_model->context;
-    // 防御性检查：context 和 config 不应为空（is_loaded=true 时应已设置），
-    // 但为了避免潜在的空指针解引用，在此处显式检查
     if (!handle || !loaded_model->config)
     {
         My_Log{My_Log::Level::kError}
@@ -539,15 +497,8 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
         My_Log{} << data << std::endl;
     }
 
-    // Create objects for request handling
-    // Use shared_ptr for objects that need to survive for streaming response callback
     auto chatHistory = std::make_shared<ChatHistory>(config);
-    // 修复：传入 &config（per-model 的 ModelInstanceConfig）给 ResponseDispatcher，
-    // 使 ResetProcessor() 使用正确的 prompt type 而非全局 IModelConfig 的 prompt type
     auto dispatcher = std::make_shared<ResponseDispatcher>(model_manager, *chatHistory, &config);
-    
-    // 将 request_data 传递给 ModelInputBuilder，以便 PromptOptimizer 可以提取 Skill 描述
-    // 使用 shared_ptr 以便在 stream 路径中被 lambda 捕获（Build() 需在 lambda 内执行以支持摘要保活）
     auto input_builder = std::make_shared<ModelInputBuilder>(*chatHistory, &config, data);
 
     if (genieRoutingGateway_ && model_manager.GetRoutingConfig().enabled)
@@ -567,20 +518,10 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
 
     if (is_stream)
     {
-        // ── Stream 路径 ──────────────────────────────────────────────────────────
-        // 长文本摘要化在 Build() 中同步执行，可能耗时数分钟。
-        // 若在 set_chunked_content_provider 注册之前调用 Build()，客户端在此期间
-        // 收不到任何 HTTP 数据，会因超时而断开连接。
-        //
-        // 修复方案：将 Build() + Prepare() 移入 chunked content provider 的 lambda 中，
-        // 在 offset==0 时先向客户端发送 "summarizing" 状态帧（保活），再执行 Build()。
-        // 这样 HTTP 响应头立即发出，客户端不会超时。
         bool routing_enabled = genieRoutingGateway_ && model_manager.GetRoutingConfig().enabled;
         json data_copy = data;
 
-        // 捕获 gateway 的 shared_ptr 副本，延长生命周期至 lambda 结束
         auto gateway = genieRoutingGateway_;
-        // 捕获 loaded_model，保证 config（ModelInstanceConfig&）的生命周期
         auto loaded_model_ref = loaded_model;
 
         res.set_chunked_content_provider(
@@ -590,25 +531,16 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
              trace_written = false]
             (size_t offset, httplib::DataSink &sink) mutable -> bool {
 
-                // offset==0：执行 Build() + Prepare()，并发送保活状态帧
                 if (offset == 0)
                 {
-                    // 立即发送 "summarizing" 状态帧，让客户端知道服务端正在处理
-                    // （Phase -1 摘要推理可能耗时较长，此帧防止客户端超时断开）
                     ResponseTools::post_stream_data(sink, "data",
                         ResponseTools::statusDataJson("summarizing", "Processing long text, please wait..."));
 
                     try
                     {
                         bool is_tool = false;
-                        // 连接存活检测 + 保活帧发送：
-                        // 每次摘要 Map 推理前调用，同时完成两件事：
-                        //   1. 向客户端发送 "summarizing" 保活帧，防止 httpx read 超时（默认 300s）
-                        //      每次 Map 推理约 1-2 分钟，多个 chunk 累计可能超过 300s
-                        //   2. 检测 sink 是否可写，若客户端已断开则返回 false 提前终止摘要
                         auto is_alive_fn = [&sink](void) -> bool {
                             if (!sink.is_writable()) return false;
-                            // 发送保活状态帧，重置客户端的 read 超时计时器
                             ResponseTools::post_stream_data(sink, "data",
                                 ResponseTools::statusDataJson("summarizing",
                                     "Processing long text, please wait..."));
@@ -617,16 +549,10 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
                         auto& model_input = input_builder->Build(
                             const_cast<json&>(data_copy), is_tool, is_alive_fn);
 
-                        // PromptLedger 可观测（流式路径）：流式响应头已在 chunked provider 进入时
-                        // 发出，无法再写响应头，改为在 Build() 完成后发一帧 status="prompt_optimized"，
-                        // payload 由 PromptLedger::ToJson() 生成，与非流式响应头共用同一套字段口径。
                         ResponseTools::post_stream_data(sink, "data",
                             ResponseTools::statusDataJson("prompt_optimized", "Prompt optimization complete",
                                                           input_builder->GetLedger().ToJson()));
 
-                        // 动态调整 temperature：请求显式传入优先；否则回退到 config.json 自身的
-                        // sampler.temp；两者都没有合法数值时保持为 null，ApplyOutputSizeBudget 会
-                        // 完全不设置该参数，不对未配置的模型注入与其无关的任意默认值。
                         json temperature = data_copy.value<json>("temp", json());
                         if (!temperature.is_number())
                         {
@@ -650,14 +576,9 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
                             ApplyOutputSizeBudget(*handle, *loaded_model_ref->config, prompt_tokens, temperature);
                         }
 
-                        // Layer2 内部隐形自纠正重试需要复用本次请求的原始消息序列（未经
-                        // PreFilter/压缩，仅经过上方的控制字符 sanitize）重新走一遍 Build()，
-                        // 因此把 data_copy 的地址传给 Prepare() 保存快照；dispatcher 内部
-                        // 会做深拷贝，data_copy 后续被其它逻辑修改不影响已保存的快照。
                         dispatcher->Prepare(model_input, is_tool, /*is_stream=*/true, req,
                                             /*is_dll_mode=*/false, &data_copy);
 
-                        // 发送 "preparing" 状态帧（Build 完成，即将开始主推理）
                         ResponseTools::post_stream_data(sink, "data",
                             ResponseTools::statusDataJson("preparing", "Preparing inference..."));
                     }
@@ -737,19 +658,13 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
     }
     else
     {
-        // ── 非 Stream 路径（保持原有同步逻辑）────────────────────────────────────
         try
         {
             bool is_tool;
             auto &model_input = input_builder->Build(data, is_tool);
 
-            // PromptLedger 可观测（非流式路径）：Build() 完成后、写响应体前写入
-            // X-Genie-Prompt-* 全部字段；与流式路径的 status="prompt_optimized" 帧共用同一套
-            // PromptLedger::ToJson()/字段口径。
             input_builder->GetLedger().WriteHeaders(res);
 
-            // 动态调整 temperature：同上（见流式路径注释），请求优先，否则回退到 config.json，
-            // 两者都没有合法数值时保持为 null，完全不设置该参数。
             json temperature = data.value<json>("temp", json());
             if (!temperature.is_number())
             {
@@ -826,7 +741,6 @@ void ChatRequestHandler::ChatCompletions(const httplib::Request &req, httplib::R
 
 void ChatRequestHandler::FetchProfile(const httplib::Request &req, httplib::Response &res)
 {
-    // GetDefaultModel 为同步调用，找不到即不存在"稍后可能出现"的中间态，因此不再引入轮询等待。
     auto loaded = model_manager.GetDefaultModel();
     if (!loaded || !loaded->context)
     {
@@ -842,10 +756,6 @@ void ChatRequestHandler::FetchProfile(const httplib::Request &req, httplib::Resp
     }
     else
     {
-        // 各后端的 HandleProfile() 在 profile 数据尚未生成时（例如推理尚未真正开始）
-        // 均返回空 json{}，此前既不设置状态码也不设置 body，httplib::Response 会把
-        // 默认状态当成 200 发出，导致"200 但 body 为空"这一违反 HTTP 语义的假象。
-        // 显式区分于上面"无模型加载"的 503，让客户端可以通过 reason 字段区分两种场景。
         res.status = 503;
         res.set_content(R"({"error": "Profile data not ready", "reason": "no_profile_data"})",
                          ResponseDispatcher::MIMETYPE_JSON);

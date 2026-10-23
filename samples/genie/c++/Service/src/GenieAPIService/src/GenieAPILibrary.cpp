@@ -22,7 +22,6 @@
 #include <unistd.h>
 #endif
 
-// Internal implementation class
 class QInterfaceImpl {
 public:
     std::unique_ptr<std::thread> inference_thread_;
@@ -41,13 +40,11 @@ public:
     std::string generated_token;
     std::function<bool(const std::string&)> stream_callback;
     
-    // Model management components
     std::unique_ptr<ModelManager> model_manager;
     std::unique_ptr<ChatHistory> chat_history;
     std::unique_ptr<ResponseDispatcher> response_dispatcher;
     std::unique_ptr<ModelInputBuilder> input_builder;
     
-    // Configuration
     std::string config_file;
     std::string lora_adapter;
     std::string log_file;
@@ -63,9 +60,6 @@ public:
     
     bool InitializeModelManager(const std::string& config_json, Level level) {
         try {
-            // config_json 可以是两种形式：
-            // 1) 内联 JSON 文本(SampleApp 宏编译内置的 QNN dialog 字符串)——保留严格的 dialog 必填校验
-            // 2) 磁盘上真实的 config.json 路径(QNN/MNN/GGUF 均可)——跳过该校验,交给底层引擎自己识别
             std::string trimmed = config_json;
             size_t start = trimmed.find_first_not_of(" \t\n\r");
             trimmed = (start != std::string::npos) ? trimmed.substr(start) : std::string();
@@ -83,8 +77,7 @@ public:
             }
 
             config_file = config_json;
-            
-            // Create model config
+
             IModelConfig model_config;
             model_config.config_file_ = config_file;
             model_config.loraAdapter = lora_adapter;
@@ -94,18 +87,11 @@ public:
             model_config.outputAllText = output_all_text;
             model_config.enableThinking = enable_thinking;
             model_config.log_level_ = level;
-            
-            // Create model manager
+
             model_manager = std::make_unique<ModelManager>(std::move(model_config));
-            
-            // Don't call InitializeConfig since we're using JSON string
-            // We'll set the necessary fields directly
             model_manager->config_file_ = config_file;
-            
-            // Create chat history
+
             chat_history = std::make_unique<ChatHistory>(*model_manager);
-            
-            // Create response dispatcher
             response_dispatcher = std::make_unique<ResponseDispatcher>(*model_manager, *chat_history);
             
             return true;
@@ -118,9 +104,6 @@ public:
 
 };
 
-// Builds the OpenAI-style request JSON from a raw prompt, reused by both api_Generate overloads:
-// if the prompt is itself valid JSON it is used as-is, otherwise it is wrapped into a single
-// user message before the stream flag is set.
 static json BuildRequestDataFromPrompt(const std::string& prompt, bool stream) {
     json request_data;
     try {
@@ -140,11 +123,8 @@ static json BuildRequestDataFromPrompt(const std::string& prompt, bool stream) {
     return request_data;
 }
 
-// api_interface implementation
-
 api_interface::api_interface(std::string& config, Level level) : config_(config), level_{level}
 {
-    // Initialize RootDir and CurrentDir for DLL usage
     if (RootDir.empty()) {
         char buffer[1024];
 #ifdef WIN32
@@ -156,7 +136,7 @@ api_interface::api_interface(std::string& config, Level level) : config_(config)
             CurrentDir = buffer;
         }
 #endif
-        RootDir = CurrentDir;  // Set RootDir to current directory for DLL
+        RootDir = CurrentDir;
     }
 }
 
@@ -184,9 +164,6 @@ bool api_interface::api_loadmodel(const std::string& model_path, std::vector<std
         status = loading;
         impl_->current_status = loading;
         
-        // config_file_ 要么是内联 JSON 文本(以 '{' 开头),要么是磁盘上真实存在的 config.json 路径,
-        // 两种情况都走 LoadSingleModel() 直连加载(等价于 GenieAPIService.exe -c 的单模型加载路径),
-        // 都能覆盖 QNN/MNN/GGUF 三种后端;其余情况才走多模型按名查找的 LoadModelByName。
         std::string trimmed = impl_->model_manager->config_file_;
         size_t start = trimmed.find_first_not_of(" \t\n\r");
         if (start != std::string::npos) {
@@ -196,13 +173,10 @@ bool api_interface::api_loadmodel(const std::string& model_path, std::vector<std
         bool is_direct_config = (!trimmed.empty() && trimmed[0] == '{') || File::IsFileExist(trimmed);
         
         if (is_direct_config) {
-            // 直连加载:model_path 是模型目录,model_name_/model_root_ 按目录名/父目录推导,
-            // 与 ModelManager::InitializeConfig() 里 -c 单模型模式的推导方式保持一致。
             impl_->model_manager->model_path_ = model_path;
             impl_->model_manager->model_name_ = std::filesystem::path(model_path).filename().generic_string();
             impl_->model_manager->model_root_ = std::filesystem::path(model_path).parent_path().generic_string();
-            // Keep config_file_ as-is (inline JSON text or disk path) - don't change it!
-            
+
             if (!impl_->model_manager->LoadSingleModel()) {
                 impl_->last_error = "Failed to load model";
                 My_Log{My_Log::Level::kError} << "[api_loadmodel] LoadSingleModel failed" << std::endl;
@@ -214,7 +188,6 @@ bool api_interface::api_loadmodel(const std::string& model_path, std::vector<std
                 impl_->response_dispatcher->ResetProcessor();
             }
         } else {
-            // Using file path config - call LoadModelByName
             bool first_load = false;
             if (!impl_->model_manager->LoadModelByName(model_path, first_load)) {
                 impl_->last_error = "Failed to load model: " + model_path;
@@ -254,7 +227,6 @@ bool api_interface::api_loadmodel_async(const std::string& model_path, std::vect
         }
     }
 
-    // Reset load state
     {
         std::lock_guard<std::mutex> lk(impl_->load_mutex);
         impl_->load_done = false;
@@ -264,7 +236,6 @@ bool api_interface::api_loadmodel_async(const std::string& model_path, std::vect
     status = loading;
     impl_->current_status = loading;
 
-    // Capture by value for thread safety
     std::string mp = model_path;
     std::string hw = hwinfo;
 
@@ -299,7 +270,6 @@ bool api_interface::api_loadmodel_async(const std::string& model_path, std::vect
             impl_->current_status = ::error;
         }
 
-        // Notify waiting threads
         {
             std::lock_guard<std::mutex> lk(impl_->load_mutex);
             impl_->load_result = result;
@@ -321,7 +291,6 @@ bool api_interface::api_wait_loaded(int timeout_ms) {
     auto pred = [this]() { return impl_->load_done; };
 
     if (timeout_ms < 0) {
-        // Wait indefinitely, but print progress every 5 seconds
         while (!impl_->load_done) {
             impl_->load_cv.wait_for(lk, std::chrono::seconds(5), pred);
             if (!impl_->load_done) {
@@ -337,7 +306,6 @@ bool api_interface::api_wait_loaded(int timeout_ms) {
         return false;
     }
 
-    // Join the load thread
     if (impl_->load_thread_ && impl_->load_thread_->joinable()) {
         lk.unlock();
         impl_->load_thread_->join();
@@ -398,19 +366,15 @@ std::string api_interface::api_Generate(const std::string& prompt) {
         
         json request_data = BuildRequestDataFromPrompt(prompt, false);
         
-        // Set parameters
         model_handle->SetParamsByConfig(request_data);
         
-        // Build model input
         bool is_tool = false;
         impl_->input_builder = std::make_unique<ModelInputBuilder>(*impl_->chat_history,  impl_->model_manager->GetDefaultInstanceConfig(), nullptr);
         auto& model_input = impl_->input_builder->Build(request_data, is_tool);
         
-        // Prepare response dispatcher
         httplib::Request dummy_req;
         impl_->response_dispatcher->Prepare(model_input, is_tool, false, dummy_req, true);
         
-        // Perform inference
         httplib::Response dummy_res;
         if (!impl_->response_dispatcher->SendResponse(0, nullptr, &dummy_res)) {
             impl_->last_error = "Inference failed";
@@ -508,47 +472,36 @@ void api_interface::api_Reset() {
 }
 
 int api_interface::api_token_num(const std::string& promptJson) {
-    // 暂未实现：token 计数，保留导出签名以保证 ABI 兼容
     return 0;
 }
 
 bool api_interface::api_loadmodel(std::vector<uint8_t*>& buffers, std::vector<size_t>& buffersSize, const std::string& hwinfo) {
-    // 暂未实现：从内存缓冲区加载模型
     return false;
 }
 
 bool api_interface::api_loadtoken(const std::string& token_fullpath) {
-    // 暂未实现：单独加载 tokenizer
     return false;
 }
 
 bool api_interface::api_warmUp() {
-    // 暂未实现：模型预热
     return false;
 }
 
 std::string api_interface::api_param_return() {
-    // 暂未实现：返回当前推理参数
     return "{}";
 }
 
 bool api_interface::api_unloadtocpu() {
-    // 暂未实现：卸载到 CPU
     return false;
 }
 
 void api_interface::api_StartLoop() {
-    // 暂未实现：启动常驻循环
 }
 
 void api_interface::api_StopLoop() {
-    // 暂未实现：停止常驻循环
 }
 
-// Private methods
-
 std::string api_interface::api_performance_statistic() {
-    // 暂未实现：性能统计
     return "{}";
 }
 
@@ -562,8 +515,6 @@ std::string api_interface::build_response_json(const std::string& response, cons
     return result.dump();
 }
 
-// Async streaming API implementations
-
 bool api_interface::api_Generate_stream(const std::string& prompt) {
     if (!impl_) {
         return false;
@@ -573,7 +524,6 @@ bool api_interface::api_Generate_stream(const std::string& prompt) {
     impl_->generated_token.clear();
     impl_->stop_requested = false;
     
-    // Start inference in a separate thread
     impl_->inference_thread_ = std::make_unique<std::thread>(&api_interface::inference_thread, this);
     
     return true;
@@ -613,14 +563,11 @@ bool api_interface::api_stop() {
 }
 
 void api_interface::stream_ask(const std::string& prompt) {
-    // This is called by inference_thread
     api_Generate(prompt, [this](const std::string& chunk) -> bool {
         if (impl_->stop_requested) {
             return false;
         }
         
-        // Append chunk to generated_token buffer
-        // The buffer will be read by api_Get_Generate_token() and cleared
         {
             std::lock_guard<std::mutex> lock(impl_->mutex);
             impl_->generated_token += chunk;

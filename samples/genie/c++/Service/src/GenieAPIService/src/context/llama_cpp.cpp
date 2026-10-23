@@ -32,30 +32,21 @@ namespace fs = std::filesystem;
 
 static std::atomic<bool> g_llama_prefix_cache_enabled{true};
 static std::atomic<int> g_llama_prefix_head_checkpoints{2};
-// prompt_engineering.json 里**显式**给出 head_checkpoints 时置位：此后规划器推导出的值不再覆盖它。
 static std::atomic<bool> g_llama_prefix_head_checkpoints_explicit{false};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 返回自 epoch 以来的毫秒数（用于 prefill/生成速率等性能日志的时间戳计算）
-// ─────────────────────────────────────────────────────────────────────────────
 static inline int64_t now_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Watermark sampling-chain adapter
-// Implements llama_sampler_i and forwards to the plugin VTable token hooks.
-// Inserted at the absolute front of the chain once during Impl construction.
-// ─────────────────────────────────────────────────────────────────────────────
 namespace {
 
 struct WatermarkSamplerData {
     const GenieWatermarkProviderVTable* vtable;
     GenieWatermarkTokenHook*             hook;
-    uint32_t                             n_vocab; // stored for clone()
-    uint64_t                             seed;    // stored for clone()
+    uint32_t                             n_vocab;
+    uint64_t                             seed;
 };
 
 static const char* wm_name(const llama_sampler * /*smpl*/)
@@ -335,7 +326,6 @@ public:
     {
         auto t_query_start = std::chrono::steady_clock::now();
 
-        // 截取 prompt 前 100 字符作为标识（安全检查 prompt 以 "You are a security classifier" 开头）
         std::string prompt_prefix = prompt.substr(0, std::min(prompt.size(), size_t(100)));
         for (auto &c : prompt_prefix) if (c == '\n') c = ' ';
 
@@ -349,7 +339,6 @@ public:
             done = false;
         }
 
-        // Fix: 重置输出限制状态
         stopped_by_output_limit_ = false;
         if (!is_aux_inference)
         {
@@ -358,8 +347,6 @@ public:
         int n_generated = 0;
         bool should_stop = false;
 
-        // GenieAPIService 特有：每次 Query() 调用都要重置状态，因为同一个 Impl 实例要
-        // 串行处理多个独立请求（completion.cpp 是单进程单次运行，从不需要这个）。
         n_past = 0;
         n_consumed = 0;
         embd.clear();
@@ -375,7 +362,6 @@ public:
         const bool had_prefix_cache = prefix_cache_valid_;
         prefix_cache_valid_ = false;
 
-        // 重置性能计数器，确保每次 Query 的统计数据是独立的
         llama_perf_context_reset(ctx);
 
         const int n_ctx = llama_n_ctx(ctx);
@@ -424,8 +410,6 @@ public:
         int total_decode_batches = 0;
         int64_t t_gen_start_ms = 0;
         std::string generated_text_buf;  // 累积生成文本（用于日志）
-        // 投机解码可观测性：逐轮累计草稿 token 数与被接受 token 数，供 Query DONE 日志汇报
-        // 命中率证据（对齐本次交付测试方案要求的“接受计数 > 0”验收标准）；单模型路径下恒为 0。
         int64_t n_draft_proposed_total = 0;
         int64_t n_draft_accepted_total = 0;
         std::vector<int64_t> draft_accept_hist;
@@ -435,9 +419,6 @@ public:
         int64_t spec_readback_ms = 0;
         int64_t spec_rounds = 0;
 
-        // Prefill 阶段心跳计时：记录上次发送心跳的时间点
-        // 每隔 kPrefillHeartbeatIntervalMs 毫秒向客户端发送一次保活消息，
-        // 防止客户端或中间代理因 prefill 期间长时间无数据而超时断开连接。
         auto t_last_prefill_heartbeat = std::chrono::steady_clock::now();
         constexpr int64_t kPrefillHeartbeatIntervalMs = 5000; // 每 5 秒发一次心跳
 
@@ -695,7 +676,6 @@ public:
                                      << ", elapsed_ms=" << elapsed_hb << "\n";
                             if (!prefill_heartbeat())
                             {
-                                // 连接已断开，立即中止 prefill
                                 My_Log{My_Log::Level::kWarning}
                                     << "[LLAMACpp] " << query_type
                                     << " Prefill aborted: connection broken at n_past=" << n_past
@@ -716,7 +696,6 @@ public:
 
             embd.clear();
 
-            // is_generated_token：区分"采样出的新 token"与"转发摄入的 prompt token"，仅回显前者
             bool is_generated_token = false;
             if (effective_prompt_len <= n_consumed)
             {
@@ -868,16 +847,7 @@ public:
                     spec_draft_ms += now_ms() - t_draft0;
                     n_draft_proposed_total += (int64_t) draft.size();
 
-                    // 对齐官方参考实现 examples/speculative-simple/speculative-simple.cpp:206-213——
-                    // common_speculative_draft() 对 dflash/dflash2 drafter 而言，无条件把整块
-                    // n_max+1 个 token（id_last + n_max 个 mask token）一次性 decode 进 drafter
-                    // 自己的 KV cache（fork common/speculative.cpp 的
-                    // common_speculative_impl_draft_dflash::draft()，单次 llama_decode 覆盖
-                    // pos0..pos0+n_max，与实际采样/接受了多少 token 无关）。这段写入只是"投机性
-                    // 噪声块"，验证前必须立即回滚到 pos0，否则 drafter ctx 的 KV 水位线会比预期
-                    // 多出恰好 n_max，导致后续 llama_decode 命中 M-RoPE 位置一致性校验失败
-                    // （llama_decode: failed to decode, ret=-1，X-Y 恒等于 spec_draft_n_max）。
-                    // 回滚位置对齐参考实现的 ckpt.pos_max+1，即本轮起始时的 n_past（此刻尚未 ++）。
+                    // dflash drafter 草稿块必须立即回滚到 pos0，依据见 llama_cpp.cpp.notes.md
                     if (params_.speculative.draft.ctx_dft)
                     {
                         llama_memory_seq_rm(llama_get_memory(params_.speculative.draft.ctx_dft), kSpecSeqId, n_past, -1);
@@ -987,13 +957,7 @@ public:
         double gen_rate_llama = (perf_ctx.t_eval_ms > 0) ?
             (perf_ctx.n_eval * 1000.0) / perf_ctx.t_eval_ms : 0.0;
 
-        // 投机解码下 target context 的 decode() 调用永远是"批量验证草稿窗口"，从不做单 token 调用；
-        // llama.cpp 内部 perf 计数器按"这次 decode 排队了多少 token"分类（==1 才计入 n_eval/生成，
-        // >1 全部计入 n_p_eval/prefill，见 fork src/llama-context.cpp::decode()），导致 n_eval 恒为
-        // 0（llama_gen 恒为 0.0 tok/s），且 llama_prefill 被真实 prompt prefill 与后续每一轮 draft
-        // 验证批次混在一起，两者在投机模式下都不再是"每 token"含义。这是 llama.cpp/fork 底层计数
-        // 器的口径限制（批大小驱动的分类，非我们代码的计时遗漏），故用 n/a 标注，避免被误读为"生成
-        // 失败"；真实吞吐看 gen_rate（我们自己端到端计时）与 draft_accepted（详见 llama_cpp.md）。
+        // 投机模式下 llama.cpp 内部 perf 计数器口径失真（见 llama_cpp.md「HandleProfile()」一节），用 n/a 标注
         std::ostringstream llama_perf_oss;
         if (spec_)
         {
@@ -1021,7 +985,6 @@ public:
                  << "\n";
 
         if (is_aux_inference && !generated_text_buf.empty()) {
-            // 打印完整生成文本（辅助推理结果）
             My_Log{} << "[LLAMACpp] " << query_type
                      << " Full generated text: \"" << generated_text_buf << "\"\n";
         }
@@ -1157,9 +1120,7 @@ public:
     std::condition_variable cv;
     bool done{false};
 
-    // Fix: 最大输出 token 数（由 SetParams 设置；0 表示按剩余上下文）
     int max_length_ = 0;
-    // Fix: 是否因输出 token 限制而停止生成
     bool stopped_by_output_limit_ = false;
 
     json last_trace_metrics_ = nullptr;
@@ -1408,8 +1369,6 @@ public:
     }
 
 private:
-    // 把 ggml/llama 内部日志按 ggml_log_level 映射到项目统一日志体系（My_Log::Level）转发，
-    // 遵循项目默认日志级别（kWarning）过滤，不再使用裸时间戳 fprintf 直接写 stderr。
     static void RegisterLogAdapter()
     {
         llama_log_set([](ggml_log_level level, const char *text, void * /*user_data*/)
@@ -1450,10 +1409,7 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         }
     }
 
-    // 投机解码检测必须在构造 argv 之前完成：-fa/-c/--reasoning-budget 等用户给定的激进参数
-    // 需要在 common_params_parse 阶段就生效（这些 flag 本身在白名单内）；而 -md/--spec-type/
-    // --spec-draft-n-max/--spec-draft-p-min 这 4 个投机专用 flag 不在 LLAMA_EXAMPLE_COMPLETION 白名单
-    // 内，必须在 parse 成功后用 C++ 代码直接赋值（见下方）。完整契约见同名文档 llama_cpp.md。
+    // 投机检测必须在构造 argv 之前完成；LLAMA_EXAMPLE_SERVER 切换的完整依据见 llama_cpp.cpp.notes.md。
     llama_speculative::DraftModelConfig draft_config;
     int configured_n_batch = 0;
     int configured_n_ubatch = 0;
@@ -1498,13 +1454,7 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     }
     const bool speculative_requested = draft_config.present && !draft_config.path.empty();
 
-    // 在初始化 llama.cpp 后端之前设置该 OpenCL Adreno 大缓冲区环境变量。该后端只看变量是否存在、
-    // 不看取值。现有单模型 GGUF 路径（gemma4/gpt-oss-20b 等）本就一直设为 "1"，此处统一为无条件
-    // 设置，不再区分投机解码分支。用 llama-completion.exe 对 Qwen3.8-27B 主模型（不含草稿）单独
-    // 验证发现：当前驱动的 OpenCL 编译器拒绝大缓冲区扩展（日志 "large buffer mode is off"），该
-    // 变量在这台机器上实际未生效，-ngl 99 下无论是否设置该变量都稳定复现 "q6_K set_tensor: temp
-    // upload buffer alloc failed" 崩溃，且与 n_ctx 大小无关——这是驱动/ggml-opencl 后端层面的独立
-    // 问题，不属于本次改动范围，细节见同名 llama_cpp.cpp.notes.md，此处维持无条件设置不变。
+    // 该后端只看变量是否存在、不看取值；在本机实际未生效的原因见 llama_cpp.cpp.notes.md。
 #if defined(_WIN32)
     _putenv_s("GGML_OPENCL_ADRENO_USE_LARGE_BUFFER", "1");
 #else
@@ -1512,9 +1462,6 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
 #endif
     My_Log{} << "[Env] GGML_OPENCL_ADRENO_USE_LARGE_BUFFER=1 set\n";
 
-    // 上下文窗口大小：非投机分支未配置时回退 8192；投机分支优先使用模型自身 config.json 配置值，
-    // 仅在未配置/为 0 时才回退 32768，与 -ngld 99（下方 C++ 直接赋值 params.speculative.draft.*）
-    // 同属一组只在声明了 draft_model 时才生效的硬编码值。
     size_t configured_context_size = model_config_.get_context_size();
     int n_ctx;
     if (speculative_requested)
@@ -1530,15 +1477,11 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     std::transform(device.begin(), device.end(), device.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-    // 运行参数规划结果（GGUFVerify 在加载门槛阶段算好并挂在 ModelInstanceConfig 上）。
-    // 这里**只消费、不重算**：两处各算一遍正是旧代码口径漂移的来源。
-    // 为空的两种情况（非投机模型、或 draft_model.planner: "off"）一律走原有路径，零行为变化。
     const llama_runtime::RuntimePlan *plan =
         (speculative_requested && model_config_.has_runtime_plan()) ? &model_config_.runtime_plan()
                                                                     : nullptr;
     if (plan)
     {
-        // ctx 可能被规划器按可行上限钳制过（显存装不下请求的长度时），以它为准。
         if (plan->ctx_effective > 0 && static_cast<int>(plan->ctx_effective) != n_ctx)
         {
             My_Log{My_Log::Level::kWarning}
@@ -1550,15 +1493,6 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
                                         << std::endl;
     }
 
-    // 直接构造与 llama-completion.exe（非投机分支）/llama-server.exe（投机分支）完全等价的
-    // 命令行参数，交给 common_params_parse 走与 CLI 工具完全相同的解析/后处理路径——避免手动
-    // 逐字段赋值遗漏只在参数解析时才生效的设置（如 --device），GPU/CPU 取值均已用
-    // llama-completion.exe 反复 A/B 实测验证为最快组合。
-    // -fa 的取值由规划器决定（判据：非 FA 的注意力矩阵 kq 是否超过设备单次分配上限；超限时
-    // supports_op 返回 false、算子整段落 CPU，48K 实测 CPU compute buffer 2616 MiB、splits 34）。
-    // 主模型与草稿分开给：草稿只占每轮 7.5% 的时间，而实测草稿开 FA 每条慢 24–33%。
-    // 没有 plan 时退回原有语义：仅在 draft_model.flash_attn / draft_flash_attn 显式给出时才拼/覆盖，
-    // 其余留给 llama.cpp 自己的 LLAMA_FLASH_ATTN_TYPE_AUTO。
     auto parse_flash_attn = [](const std::string &value, llama_flash_attn_type fallback) {
         if (value == "on")
         {
@@ -1593,29 +1527,12 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
     }
     if (!speculative_requested)
     {
-        // --fit（自动显存/上下文拟合）在投机解码分支必须保持 llama.cpp 官方默认值 on：原生
-        // llama-server.exe 用同一批模型+同一套激进参数跑通时，日志里的 "failed to measure the
-        // memory of the extra model, fitting without it" 正是 fitting 阶段的正常输出——dflash
-        // drafter 的 context 必须在 target ctx 之后才能建立，fitting 逻辑对此有专门容错。强制
-        // --fit off 会让 target/draft 双 context 一次性按满额申请显存，在本机（大缓冲区模式实际
-        // 被驱动编译器拒绝）直接抛 std::bad_alloc。
         arg_strings.insert(arg_strings.end(), {"--fit", "off"});
 
-        // -no-cnv 的 .set_examples() 只注册了 LLAMA_EXAMPLE_COMPLETION，投机分支下面会切到
-        // LLAMA_EXAMPLE_SERVER 解析（该 example 不认识这个 flag，会直接 invalid argument 导致
-        // parse 失败），因此只在非投机分支拼接；我们代码从不读 params.conversation_mode，去掉
-        // 对非投机分支零影响。
         arg_strings.push_back("-no-cnv");
     }
     if (speculative_requested)
     {
-        // 用户给定的原始 llama-server.exe 命令行：
-        // --spec-draft-n-max 7 --spec-draft-p-min 0 -fa 0 -ngl 99 -ngld 99 -c 32768
-        // --reasoning-budget 3072，以及 -md/--spec-type。这 5 个投机专用 flag（-md/--spec-type/
-        // --spec-draft-n-max/--spec-draft-p-min/-ngld）的 .set_examples() 范围包含
-        // LLAMA_EXAMPLE_SERVER、不包含 LLAMA_EXAMPLE_COMPLETION，因此本分支下面把
-        // common_params_parse 的 example 切到 LLAMA_EXAMPLE_SERVER，让它们走原生 argv 解析，
-        // 不再需要 parse 后手动二次赋值 params.speculative.*。
         if (model_config_.is_thinking_model())
         {
             arg_strings.insert(arg_strings.end(), {"--reasoning-budget", "3072"});
@@ -1821,10 +1738,6 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
         argv.push_back(s.data());
     }
 
-    // 声明了 draft_model 的模型走 LLAMA_EXAMPLE_SERVER（与真实 llama-server.exe 入口
-    // tools/server/server.cpp 的 common_params_parse 调用完全一致），使 -md/--spec-type/
-    // --spec-draft-n-max/--spec-draft-p-min/-ngld 直接原生解析生效；不含该字段的模型继续走
-    // LLAMA_EXAMPLE_COMPLETION，零回归风险。
     common_params params;
     const enum llama_example example = speculative_requested ? LLAMA_EXAMPLE_SERVER : LLAMA_EXAMPLE_COMPLETION;
     if (!common_params_parse((int) argv.size(), argv.data(), params, example, nullptr))
@@ -1834,33 +1747,12 @@ LLAMACppBuilder::LLAMACppBuilder(const ModelInstanceConfig &config) :
 
     params.verbosity = 0;           // 禁用详细日志
 
-    // 复刻原生 llama-server.exe 入口（tools/server/server.cpp:152-157）对 "auto" 槽位数的归一化：
-    // common_params_parser_init()（common/arg.cpp:1391-1400）只在 ex == LLAMA_EXAMPLE_SERVER 时把
-    // params.n_parallel 预置为 -1 表示 auto，真正把它变成合法值的代码在 llama-server 的 main() 里，
-    // 而不是在 common_params_parse() 内部。我们自己建 context、不经过那个 main()，因此这个 -1 会
-    // 原样流到 common_context_params_to_llama()（common/common.cpp:1723 `cparams.n_seq_max =
-    // params.n_parallel`）被隐式转成 uint32_t 4294967295，两条路径由此同源失败：CPU 路径撞上
-    // llama-context.cpp 的 `n_seq_max must be <= 256`（LLAMA_MAX_SEQ）早期校验直接抛异常；GPU 路径
-    // 没有等价早期校验，继续按这个天量序列数分配 KV/计算缓冲，抛 std::bad_alloc（表现为
-    // "the context is being destroyed" + "bad allocation"）。
-    // 非投机分支走 LLAMA_EXAMPLE_COMPLETION，n_parallel 保持默认 1，此处条件恒不成立，零回归。
-    // 取值不照搬原生的 4：原生那 4 是 llama-server 的并发请求槽位数，而本服务的一个
-    // LLAMACppContext 恒定只解码一条序列（seq_id 0）。而 n_seq_max 会同时放大 KV cache 与
-    // dflash 的 recurrent-state（rs）cache——实测取 4 时 rs cache 单块需 1995 MiB OpenCL buffer，
-    // 在多轮加载/切换后会撞上 Adreno 单 context 分配上限而失败（"failed to allocate buffer for
-    // rs cache"）。取 1 语义等价且显存占用降到 1/4，是本服务真实用法下的正确值。
-    // kv_unified 一并置 true，与原生保持一致：统一 KV 池语义在单序列下等价，且避免按序列分池。
     if (params.n_parallel < 0)
     {
         params.n_parallel = 1;
         params.kv_unified = true;
     }
 
-    // 线程数：运行时动态获取物理/逻辑核心数，替代旧的硬编码值 10，零配置适配不同机器
-    // （已通过专项测试确认：GPU 全量卸载场景下线程数在合理范围内影响很小，CPU 场景下
-    // 用满核心数是稳妥的默认策略）。
-    // 全 GPU 的投机档不再覆盖它（D6）：CPU 侧没有常驻权重，-t/-tb 实测 6/8/12/18 差 < 2%
-    // （CPU 卡在带宽上），覆盖只会让日志显得「它在调参」。此时留给 llama.cpp 自己的默认值。
     const bool skip_thread_override = plan && plan->full_gpu && draft_config.n_threads <= 0 &&
                                       draft_config.n_threads_batch <= 0;
     if (skip_thread_override)
@@ -2002,7 +1894,6 @@ bool LLAMACppBuilder::Query(const ModelInput &model_input, const Callback& callb
     impl_->think_ctx_reserve_ = model_input.think_ctx_reserve_;
     bool result = impl_->Query(prompt, callback, prefill_heartbeat,
                                 query_type_bracketed.c_str(), is_aux_inference);
-    // Fix: 将 Impl 内部的 stopped_by_output_limit_ 状态传播到外部
     stopped_by_output_limit_ = impl_->stopped_by_output_limit_;
     return result;
 }
@@ -2098,23 +1989,19 @@ json LLAMACppBuilder::HandleProfile()
             return result;
         }
         
-        // 从 llama.cpp 获取性能统计数据
         llama_perf_context_data perf_ctx = llama_perf_context(ctx);
         
         std::ostringstream oss;
         
-        // time_to_first_token (prompt 处理时间,转换为秒)
         oss << std::fixed << std::setprecision(2)
             << perf_ctx.t_p_eval_ms / 1000.0;
         result["time_to_first_token"] = oss.str();
         
-        // token_generation_time (生成时间,转换为秒)
         oss.str("");
         oss << std::fixed << std::setprecision(2)
             << perf_ctx.t_eval_ms / 1000.0;
         result["token_generation_time"] = oss.str();
         
-        // prompt_processing_rate (tokens/秒)
         oss.str("");
         oss << std::fixed << std::setprecision(2);
         if (perf_ctx.t_p_eval_ms > 0)
@@ -2127,7 +2014,6 @@ json LLAMACppBuilder::HandleProfile()
         }
         result["prompt_processing_rate"] = oss.str();
         
-        // token_generation_rate (tokens/秒)
         oss.str("");
         oss << std::fixed << std::setprecision(2);
         if (perf_ctx.t_eval_ms > 0)
@@ -2150,18 +2036,12 @@ json LLAMACppBuilder::HandleProfile()
 
 size_t LLAMACppBuilder::TokenLength(const std::string &text)
 {
-    // 对输入文本进行 tokenize，并返回 token 数。
-    // 注意：embd_inp 是对话/推理过程中的输入缓冲，和外部传入 text 无关。
-    // 这里必须基于当前模型/上下文的 vocab 来做编码。
     llama_context *ctx = impl_->llama_init->context();
     if (ctx == nullptr)
     {
         return 0;
     }
 
-    // common_tokenize 会基于 ctx 的 vocab 进行编码。
-    // add_special=false: 不额外添加 BOS/EOS 等特殊 token（仅统计 text 自身的编码长度）
-    // parse_special=true: 允许文本中包含类似 <|...|> 这类特殊 token 时按 token 解析
     const auto tokens = common_tokenize(ctx, text, /* add_special = */ false, /* parse_special = */ true);
     return tokens.size();
 }

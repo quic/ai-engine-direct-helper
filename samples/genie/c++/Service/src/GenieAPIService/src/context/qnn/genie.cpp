@@ -21,20 +21,6 @@
 #include <system_error>
 #include <vector>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QNN custom-sampler watermark integration.
-//
-// QNN/Genie（`Genie.dll`）不像 GGUF 那样暴露一条可直接改分布、交给下游继续选词的
-// `llama_sampler_chain`——它只提供进程级全局注册的 `GenieSampler_registerUserDataCallback`
-// 自定义采样回调，回调拿到的是"完整反量化后的词表 logits"，且必须自己完成 argmax 选词
-// 并写回 `tokens[0]`（SDK 不做任何选词兜底）。这是与 GGUF 侧适配器语义上最大的差异，
-// 详见同区域文档 `context/qnn/genie.md`。
-//
-// 每个 GenieContext 实例持有一份独立的 QnnWatermarkState（vtable 指针 + 插件侧
-// GenieWatermarkTokenHook* + 懒初始化标记 + 缓存的 identity ids 数组），通过实例
-// 唯一的 callback-name 注册进 SDK 的全局回调表；HasTokenHook() 为 false 时不创建、
-// 不注册任何东西，现有 sampler 配置/Dialog 创建流程零改动。
-// ─────────────────────────────────────────────────────────────────────────────
 struct QnnWatermarkState
 {
     const GenieWatermarkProviderVTable *vtable{nullptr};
@@ -44,12 +30,6 @@ struct QnnWatermarkState
     bool hook_created{false};
     std::vector<int32_t> ids_cache;
 
-    // Prompt-replay 缓冲：Query() 在触发生成之前把当次请求完整 prompt（含既有
-    // 历史，`chat_request_handler.cpp` 的 "History is stateless per request" 架构
-    // 决定了每次请求都会重放全部历史）分词后的 token id 序列写入这里；采样回调在
-    // 每次生成开始时（`prompt_pending==true`）先把这些 id 通过 token_hook_accept
-    // 重放一遍再处理当前候选词，使 QNN 侧水印上下文哈希链与 GGUF 侧
-    // common_sampler_accept(smpl, embd_inp[...], false) 的 prompt 消费重放对齐。
     std::vector<int32_t> pending_prompt_ids;
     bool prompt_pending{false};
 };
@@ -57,30 +37,18 @@ struct QnnWatermarkState
 namespace
 {
 
-// SDK 内部的 `samplerCbFunctionMap` 是进程级全局、非线程安全的 `unordered_map`。
-// 用 shared_mutex 而非普通 mutex：注册（写）阶段与其它已运行模型持续触达该表的
-// 生成调用（读）之间也存在数据竞争——普通 mutex 只序列化我们自己发起的注册调用
-// 之间的写-写竞争，完全无法覆盖"模型 A 生成中 SDK 内部无锁读表" 与
-// "模型 B 同时注册对同一张表无锁写入（可能触发 rehash）"之间的读写竞态。注册
-// 用独占锁，每次触发生成的 GenieDialogQuery() 调用（`inference_thread()`）用共享锁
-// 包裹其调用期间：多个模型的生成调用之间可并发，但任何新的注册会与全部正在进行的
-// 生成调用互斥，从根本上消除这条竞态，不依赖修改闭源 SDK 本身。
 std::shared_mutex &QnnWatermarkRegistryMutex()
 {
     static std::shared_mutex m;
     return m;
 }
 
-// 没有任何 unregister API，按进程内自增计数器生成的 callback-name 会随模型反复
-// 加载单调增长（体量很小，非阻塞，已记录为已知限制，详见 genie.md）。
 std::string GenerateQnnWatermarkCallbackName()
 {
     static std::atomic<uint64_t> s_counter{0};
     return "genie_wm_" + std::to_string(s_counter.fetch_add(1, std::memory_order_relaxed));
 }
 
-// SDK custom 采样回调：`logits` 是已反量化的完整词表 float 数组（`logitsSize` 是
-// 字节数），回调必须自己完成插件打分 + argmax 选词并写回 `tokens[0]`。
 void QnnWatermarkSamplerCallback(const uint32_t logitsSize, const void *logits,
                                  const uint32_t numTokens, int32_t *tokens,
                                  const void *userData)
@@ -105,7 +73,6 @@ void QnnWatermarkSamplerCallback(const uint32_t logitsSize, const void *logits,
     }
 
     // n_vocab 不提前从配置里取，直接用回调收到的维度懒初始化插件侧状态
-    // （与 GGUF 侧 CreateTokenHook 的传参约定保持一致，seed 固定为 0）。
     if (!state->hook_created)
     {
         state->hook = state->vtable->token_hook_create(n_vocab, state->seed);
@@ -113,10 +80,6 @@ void QnnWatermarkSamplerCallback(const uint32_t logitsSize, const void *logits,
         state->hook_created = true;
     }
 
-    // Prompt replay：本次生成开始前（Query() 里写入 pending_prompt_ids/prompt_pending）
-    // 缓冲的历史 token 序列，在第一次真正处理候选词之前重放进插件状态。放在 hook
-    // 创建之后、apply/argmax 之前，无论 hook 是否创建成功都要消费掉这份缓冲，
-    // 避免残留状态泄漏进下一次请求。
     if (state->prompt_pending)
     {
         if (state->hook)
@@ -224,9 +187,6 @@ void GenieContext::inference_thread()
 
         try
         {
-            // 见 QnnWatermarkRegistryMutex() 注释：仅当本实例真正启用了水印时才取共享锁
-            // 包裹这次触达 SDK 全局 samplerCbFunctionMap 的调用，未启用水印的模型
-            // 完全不受影响，不额外加锁开销。
             std::shared_lock<std::shared_mutex> wm_read_lock;
             if (watermark_active_)
             {
@@ -245,11 +205,6 @@ void GenieContext::inference_thread()
                 inference_succeed_ = true;
                 if (GENIE_STATUS_WARNING_CONTEXT_EXCEEDED == status)
                 {
-                    // 模型自身未能在真实上下文耗尽前主动收尾,这是模型输出质量层面的缺陷
-                    // (而不是服务缺陷),SDK 已把这个状态归类为警告(非错误)。这里不再当作
-                    // 请求失败(inference_succeed_ 保持 true,已生成内容按正常成功路径原样
-                    // 返回给客户端),但仍以 error 级别打一条带 [MODEL_DEFECT] 标记的日志,
-                    // 供 test_service.py 侧扫描服务端日志、归类为模型缺陷诊断信息。
                     stopped_by_output_limit_ = true;
                     My_Log{My_Log::Level::kError} << "[MODEL_DEFECT] reason=sdk_context_exceeded model="
                                                   << model_config_.get_model_name()
@@ -280,7 +235,7 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
     // 注意：QNN/Genie 后端目前不支持 prefill 阶段心跳（Genie SDK 不提供批次级回调）。
     // prefill_heartbeat 参数保留以满足接口兼容性，暂不使用。
 
-    // [修复] 序列化 Query() 调用：与 llama_cpp.cpp 保持一致，加 query_mutex_ 锁。
+    // 序列化 Query() 调用：与 llama_cpp.cpp 保持一致，加 query_mutex_ 锁。
     // QNN/Genie 模型上下文不是线程安全的，安全检查、复杂度评估和主推理
     // 都通过同一个模型句柄调用 Query()，必须通过此锁保证互斥。
     // 缺少此锁会导致：
@@ -320,14 +275,6 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
         return false;
     }
 
-    // Prompt replay（问题 1 修复）：`chat_request_handler.cpp` 的 "History is stateless
-    // per request" 架构决定了每次请求都会重放完整对话历史，GGUF 侧通过
-    // common_sampler_accept(smpl, embd_inp[n_consumed], false) 在 prompt 消费阶段隐式
-    // 把完整 prompt 重放进了水印适配器；QNN 侧没有等价的 prompt 消费钩子，这里显式用
-    // 已有的 GenerateTextToken()（GenieDialog_getTokenizer + GenieTokenizer_encode）把
-    // 当次完整 prompt 分词，缓冲进 wm_state_，由采样回调在本次生成的第一个候选词处理
-    // 之前重放进插件状态（见 QnnWatermarkSamplerCallback 的 prompt_pending 分支），使
-    // QNN 的水印上下文哈希链与 GGUF 对齐（都能感知完整对话历史）。
     if (watermark_active_ && wm_state_)
     {
         const int32_t *prompt_buf = nullptr;
@@ -349,7 +296,7 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
     m_request_cond.notify_one();
 
     std::string response;
-    bool callback_rejected = false;  // Fix 2: track whether callback refused further data
+    bool callback_rejected = false;  // track whether callback refused further data
     auto last_output_time = std::chrono::steady_clock::now();  // Heartbeat: track last output time
 
     while (m_inference_busy)
@@ -392,7 +339,7 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
 
         if (!callback(response))
         {
-            callback_rejected = true;  // Fix 2: mark rejection
+            callback_rejected = true;
             // 连接断开时 genie_callback 已调用 handle->Stop()（发送 ABORT 信号）
             // 这里再调用一次 Stop() 作为保险，确保推理线程能尽快退出
             Stop();
@@ -402,21 +349,18 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
         response.clear();
     }
 
-    // [修复] 竞态条件：callback 返回 false 触发 Stop()+break 后，
+    // 竞态条件：callback 返回 false 触发 Stop()+break 后，
     // inference_thread_ 中的 GenieDialogQuery() 可能仍在处理 ABORT 信号，
     // m_inference_busy 尚未变为 false。
     // 若此时立即释放 query_mutex_，下一个 Query() 调用的 GenieDialog_reset()
     // 会与仍在运行的 GenieDialogQuery() 产生竞态，导致 SSD 模型状态混乱。
-    // 修复：等待 inference_thread_ 真正完成（m_inference_busy 变为 false）后再继续。
-    // 超时保护：最多等待 5 秒，防止 ABORT 信号未被响应时永久阻塞。
+    // 等待 inference_thread_ 真正完成（m_inference_busy 变为 false）后再继续，
+    // 超时保护最多等待 5 秒，防止 ABORT 信号未被响应时永久阻塞。
     if (callback_rejected && m_inference_busy)
     {
         My_Log{My_Log::Level::kInfo}
                 << "[Query] Waiting for inference_thread_ to finish after Stop()..." << std::endl;
         const int kMaxWaitMs = 5000;
-        // [性能优化] 使用 m_stream_cond 等待推理线程完成，避免 sleep_for 轮询延迟。
-        // inference_thread 在设置 m_inference_busy=false 后会调用 m_stream_cond.notify_one()，
-        // 因此这里可以立即被唤醒，而不是最多等待 10ms。
         std::unique_lock<std::mutex> wait_lock(m_stream_lock);
         bool finished = m_stream_cond.wait_for(wait_lock,
                                                std::chrono::milliseconds(kMaxWaitMs),
@@ -439,7 +383,6 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
         return false;
     }
 
-    // Fix 2: only send remainder data if callback has not rejected
     if (!callback_rejected && !m_stream_answer.empty())
     {
         callback(m_stream_answer);
@@ -450,7 +393,7 @@ bool GenieContext::Query(const ModelInput &model_input, const Callback &callback
         m_stream_answer.clear();  // discard buffered data when connection is broken
     }
 
-    // [修复] SSD 模型 KV cache 污染问题：
+    // SSD 模型 KV cache 污染问题：
     // 对于非主推理类型（安全检查、复杂度评估、脱敏、Phase-1 摘要等），推理完成后额外调用一次
     // GenieDialog_reset，确保 SSD（Speculative Decoding）的 forecast buffer 和
     // branch 状态被彻底清除，不会污染后续的主推理。
@@ -484,11 +427,6 @@ GenieContext::GenieContext(const ModelInstanceConfig &model_config) :
 {
     auto fixer = ConfigFixer{model_config};
 
-    // 水印：注册必须发生在 GenieDialog_create 之前（第一次真正触发采样之前）——SDK 内部
-    // 按 callback-name 查全局表，若采样时名字还没注册过会静默调用一个空函数指针直接崩溃，
-    // 注册/配置阶段完全不会报错提示。这里在任何 Genie* 句柄创建之前完成注册，并直接把
-    // 生成的 callback-name 写进即将传给 GenieDialogConfig_createFromJson 的 sampler JSON
-    // （custom + callback-name，剔除 temp/top-k/top-p/greedy），不依赖运行期 applyConfig 切换。
     std::string wm_callback_name;
     watermark_active_ = WatermarkProviderHost::Instance().HasTokenHook();
     if (watermark_active_)
@@ -518,10 +456,6 @@ GenieContext::GenieContext(const ModelInstanceConfig &model_config) :
         }
     }
 
-    // [修复] 构造函数任意一步抛异常都会导致对象被视为未完成构造，~GenieContext() 永不会
-    // 被调用（C++ 语义），此前已成功创建的句柄（含 GenieDialog_create 内部已在驱动侧完成的
-    // memRegister 注册）会被静默泄漏、从未释放。用 try/catch 包裹全部句柄创建步骤，失败时
-    // 显式复用 ReleaseHandles()（与析构函数共用同一套释放逻辑）清理已创建的部分，再重新抛出。
     try
     {
         Genie_Status_t status = 0;
@@ -645,24 +579,20 @@ GenieContext::~GenieContext()
 {
     My_Log{} << "GenieContext::~GenieContext():\n";
 
-    // [修复] 析构顺序竞态：必须先 join 推理线程，确保线程完全退出后再释放任何 SDK 句柄。
-    // 原始代码在 notify_one() 后立即释放 m_DialogHandle，而推理线程可能刚被唤醒正在执行
-    // GenieDialogQuery()，访问已释放的 SDK 内部 mutex，导致
-    // "exits with 2147483647, undefined m_mutex handle object" 崩溃。
+    // 析构顺序：必须先 join 推理线程，确保线程完全退出后再释放任何 SDK 句柄，
+    // 否则推理线程可能正在执行 GenieDialogQuery() 时访问已释放的 SDK 内部 mutex，崩溃。
     if (m_stream_thread)
     {
         m_thread_exit = true;
         m_request_ready = true;
         m_request_cond.notify_one();
 
-        // 先 join，等推理线程完全退出后再释放 SDK 句柄
         m_stream_thread->join();
         m_stream_thread = nullptr;
         m_request_ready = false;
         m_thread_exit = false;
     }
 
-    // 推理线程已退出，现在安全地释放所有 SDK 句柄（与构造函数失败路径共用同一套释放逻辑）
     ReleaseHandles();
     ReleaseWatermarkState();
 
@@ -724,8 +654,6 @@ void GenieContext::ReleaseHandles()
 
 void GenieContext::ReleaseWatermarkState()
 {
-    // 已注册的 callback-name 无法从 SDK 全局表中撤销（无 unregister API），这是已知限制，
-    // 不在此处理；这里只释放插件侧状态（`token_hook_free`）与本实例持有的 QnnWatermarkState。
     if (wm_state_ != nullptr)
     {
         if (wm_state_->vtable && wm_state_->hook)
@@ -883,30 +811,25 @@ json GenieContext::HandleProfile()
                 {
                     std::ostringstream oss;
 
-                    // time_to_first_token (Genie SDK value unit: μs, convert to s)
                     oss << std::fixed << std::setprecision(2)
                         << last_event.at("time-to-first-token")["value"].get<double>() / 1000000.0;
                     result["time_to_first_token"] = oss.str();
 
-                    // token_generation_time (Genie SDK value unit: μs, convert to s)
                     oss.str("");
                     oss << std::fixed << std::setprecision(2)
                         << last_event.at("token-generation-time")["value"].get<double>() / 1000000.0;
                     result["token_generation_time"] = oss.str();
 
-                    // prompt_processing_rate
                     oss.str("");
                     oss << std::fixed << std::setprecision(2)
                         << last_event.at("prompt-processing-rate")["value"].get<double>();
                     result["prompt_processing_rate"] = oss.str();
 
-                    // token_generation_rate
                     oss.str("");
                     oss << std::fixed << std::setprecision(2)
                         << last_event.at("token-generation-rate")["value"].get<double>();
                     result["token_generation_rate"] = oss.str();
 
-                    // integer values
                     result["num_prompt_tokens"] = last_event.at("num-prompt-tokens")["value"];
                     result["num_generated_tokens"] = last_event.at("num-generated-tokens")["value"];
                 }

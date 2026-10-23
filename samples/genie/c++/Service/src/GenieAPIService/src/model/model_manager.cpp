@@ -34,30 +34,11 @@
 
 namespace fs = std::filesystem;
 
-// ── Windows Credential Manager API Key 读取辅助函数 ──────────────────────────
-// 服务名与 QAIAgentForge/backend/keyring_helper.py 中的 SERVICE_NAME 保持一致。
-// account 格式：
-//   "global::cloud_model"            → cloud_model.api_key
-//   "global::enterprise_cloud_model" → enterprise_cloud_model.api_key
-//
-// keyring 库（WinVaultKeyring）的存储规则：
-//   - 第一次存储：TargetName = SERVICE_NAME（"QAIAgentForge"），UserName = account
-//   - 有冲突时：TargetName = "{account}@{SERVICE_NAME}"（"global::cloud_model@QAIAgentForge"）
-//   - CredentialBlob 编码：UTF-16 LE（keyring 库写入时使用 UTF-16）
-//
-// 优先级：Credential Manager > JSON 文件（fallback）
-// 若 Credential Manager 中无值或平台不支持，返回空字符串，由调用方 fallback 到 JSON 值。
 static std::string LoadApiKeyFromCredentialManager(const std::string &account)
 {
 #ifdef _WIN32
-    // Credential Manager 服务名（与 keyring_helper.py 中 SERVICE_NAME = "QAIAgentForge" 一致）
     const std::wstring service_name = L"QAIAgentForge";
     const std::wstring account_w(account.begin(), account.end());
-
-    // keyring WinVaultKeyring 的读取逻辑（_resolve_credential）：
-    //   1. 先尝试 TargetName = SERVICE_NAME，检查 UserName 是否匹配
-    //   2. 若不匹配，再尝试 TargetName = "{account}@{SERVICE_NAME}"
-    // 此处按相同顺序尝试两个 target name。
 
     auto try_read = [&](const std::wstring &target) -> std::string
     {
@@ -66,14 +47,11 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
             return "";
 
         std::string result;
-        // 验证 UserName 是否与 account 匹配（keyring 存储时 UserName = account）
         bool user_match = (pcred->UserName != nullptr &&
                            std::wstring(pcred->UserName) == account_w);
 
         if (user_match && pcred->CredentialBlobSize > 0 && pcred->CredentialBlob != nullptr)
         {
-            // keyring 库写入时使用 UTF-16 LE 编码
-            // 将 UTF-16 LE 字节序列转换为 UTF-8 std::string
             const wchar_t *blob_w = reinterpret_cast<const wchar_t *>(pcred->CredentialBlob);
             int blob_wchars = static_cast<int>(pcred->CredentialBlobSize / sizeof(wchar_t));
             int utf8_len = WideCharToMultiByte(CP_UTF8, 0, blob_w, blob_wchars,
@@ -89,7 +67,6 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
         return result;
     };
 
-    // 尝试1：TargetName = "QAIAgentForge"（单账号场景，keyring 默认存储位置）
     std::string key = try_read(service_name);
     if (!key.empty())
     {
@@ -98,7 +75,6 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
         return key;
     }
 
-    // 尝试2：TargetName = "global::cloud_model@QAIAgentForge"（多账号冲突场景）
     std::wstring compound_target = account_w + L"@" + service_name;
     key = try_read(compound_target);
     if (!key.empty())
@@ -111,10 +87,6 @@ static std::string LoadApiKeyFromCredentialManager(const std::string &account)
     return "";
 }
 
-// ── API Key 解析辅助函数 ──────────────────────────────────────────────────────
-// 优先从 Windows Credential Manager 读取，若无值则 fallback 到 JSON 中的值。
-// json_api_key: 从 service_config.json 中读取的原始值（可能为空字符串）
-// account:      Credential Manager 账号名（如 "global::cloud_model"）
 static std::string ResolveApiKey(const std::string &json_api_key, const std::string &account)
 {
     std::string cm_key = LoadApiKeyFromCredentialManager(account);
@@ -122,7 +94,6 @@ static std::string ResolveApiKey(const std::string &json_api_key, const std::str
     {
         return cm_key;
     }
-    // fallback：使用 JSON 中的值（用户直接编辑配置文件的场景）
     if (!json_api_key.empty())
     {
         My_Log{} << "[CredMgr] API Key fallback to JSON value: account=" << account << std::endl;
@@ -132,19 +103,16 @@ static std::string ResolveApiKey(const std::string &json_api_key, const std::str
 
 #include <LibAppBuilder.hpp>
 
-// 前向声明：ParsePromptFile 定义在文件后部，LoadModel 和 LoadPromptTemplates 均调用此函数
 static void ParsePromptFile(const std::string &prompt_path,
                             const std::string &model_name,
                             json &out_prompt,
                             PromptType &out_pt,
                             int &out_ctx_size);
 
-// 前向声明：ParseContextSizeFromConfigJson 定义在文件后部，LoadModel 和 LoadPromptTemplates 均调用此函数
 static int ParseContextSizeFromConfigJson(const std::string &config_json_path,
                                           const std::string &model_name,
                                           const std::string &log_prefix);
 
-// 前向声明：ParseBackendDeviceFromConfigJson 定义在文件后部，LoadSingleModel 调用此函数
 static void ParseBackendDeviceFromConfigJson(const std::string &config_json_path,
                                              const std::string &model_name,
                                              const std::string &log_prefix,
@@ -497,9 +465,6 @@ struct ModelManager::ModeVerifier
 
             if (!j.contains(json::json_pointer("/dialog/embedding/datatype")))
             {
-                // 校验失败前必须先清理已成功创建的视觉/音频 HTP 会话（ModelInitialize 已在
-                // QNNImpl::TryCreate 内部完成），否则该会话会随异常直接抛出而静默泄漏，
-                // 从未被 ModelDestroy() 释放。
                 self_->qnn_embedding_.Clean();
                 throw std::runtime_error("qnn embedding has bad config in datatype");
             }
@@ -516,7 +481,6 @@ struct ModelManager::ModeVerifier
 
             if (self_->qnn_embedding_.data_type == EmbeddingDataType::None)
             {
-                // 同上：datatype 字符串未匹配到任何已知类型时，也要先清理已创建的 HTP 会话再抛出。
                 self_->qnn_embedding_.Clean();
                 throw std::runtime_error("qnn embedding has bad datatype");
             }
@@ -539,8 +503,6 @@ struct ModelManager::ModeVerifier
         {
             uint64_t required = MNNContext::EstimateMnnMemoryRequirement(config_->get_model_path());
             uint64_t available_raw = MNNContext::GetAvailablePhysicalMemoryBytes();
-            // 增强：扣除同进程内已加载的其它模型（任意后端）的估算内存占用，
-            // 降低多模型并发场景下预检查失效的概率（见 EstimateOtherLoadedModelsMemoryBytes 注释）。
             uint64_t other_models_reserved = self_->EstimateOtherLoadedModelsMemoryBytes();
             bool available_unknown = (available_raw == UINT64_MAX);
             uint64_t available = available_unknown
@@ -597,10 +559,6 @@ struct ModelManager::ModeVerifier
             std::transform(requested_device.begin(), requested_device.end(), requested_device.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-            // 模型自身 config.json 是可选的：缺失/为空/解析失败/不含 "backend" 键都静默忽略，
-            // 只有明确写 {"backend": "cpu"} 时才强制走 CPU（与 service_config.json 的 device 是"或"关系）。
-            // j 声明在 try 外部：draft_model 字段块解析（见下方）需要复用同一份已解析的 json，
-            // 避免 Step 4 的投机解码路径重复解析这份 config.json。
             json j;
             try
             {
@@ -622,8 +580,6 @@ struct ModelManager::ModeVerifier
                 }
                 else if (!File::IsFileExist(self_->config_file_))
                 {
-                    // config.json 只允许精确匹配、不允许前缀匹配回退；GGUF 模型的 config.json 本身是可选的，
-                    // 缺失时直接在模型目录下创建空文件占位，而不是借用其它模型的模板。
                     std::ofstream(self_->config_file_).close();
                 }
 
@@ -645,8 +601,6 @@ struct ModelManager::ModeVerifier
                         << std::endl;
             }
 
-            // draft_model 字段块存在即触发投机解码路径的硬件门槛检查（Step 3）：不含该字段的
-            // 模型（现有全部 GGUF 模型）完全不触发下面这段新增逻辑，零行为变化。
             llama_speculative::DraftModelConfig draft_config = llama_speculative::DraftModelConfig::ParseFrom(j);
             config_->set_speculative_draft_configured(draft_config.present);
             bool full_gpu_fits = false;
@@ -658,8 +612,6 @@ struct ModelManager::ModeVerifier
                 uint64_t required = 0;
                 uint64_t available = llama_speculative::GetAvailablePhysicalMemoryBytes();
 
-                // draft_model.planner: "off" 是本阶段的回退开关：走旧的两处各算一遍的口径。
-                // 默认（未配置）走规划器——GGUFVerify 与 LLAMACppBuilder 消费同一份 RuntimePlan。
                 if (draft_config.planner == "off")
                 {
                     uint64_t gpu_required = 0;
@@ -682,8 +634,6 @@ struct ModelManager::ModeVerifier
                     full_gpu_fits = plan.full_gpu;
 
                     const llama_runtime::MemoryLedger &led = plan.ledger;
-                    // 逐项打印，不是一个汇总数字：r26 那次 OOM 之所以难定位，正是因为旧日志
-                    // 只有一个 required，看不出是哪一项估错了。
                     My_Log{} << "[Planner] weights=" << (led.weights_tgt + led.weights_dft)
                               << " kv=" << (led.kv_attn_tgt + led.kv_attn_dft)
                               << " rs=" << (led.recurrent_tgt + led.recurrent_dft)
@@ -694,17 +644,11 @@ struct ModelManager::ModeVerifier
                               << " free=" << plan.gpu_free_observed
                               << std::endl;
                     My_Log{} << "[Planner] " << plan.rationale << std::endl;
-                    // 保留这一行的原有措辞：调优文档与日志解析脚本都按它判读加载形态。
                     My_Log{} << "[GGUFVerify] full GPU check: required=" << led.gpu_required()
                               << " bytes, gpu_available=" << plan.gpu_free_observed
                               << " bytes, fits=" << (full_gpu_fits ? 1 : 0) << std::endl;
-                    // 本 SoC 的 CPU/GPU 共用同一条 LPDDR，所以 host 门槛与 GPU 账本同量级；
-                    // 另加 host 侧常驻的前缀检查点（见 MemoryLedger::host_checkpoints）。
                     required = led.gpu_required() + led.host_checkpoints;
 
-                    // 检查点份数按主机可用内存推导；prompt_engineering.json 里显式给出的值优先。
-                    // 必须 #ifdef：LLAMACppBuilder 只在 USE_GGUF 构建里有实现（Linux/Android 是
-                    // QNN-only，llama_cpp.cpp 不参与编译），否则会变成链接错误。
 #ifdef USE_GGUF
                     const bool applied = LLAMACppBuilder::ApplyPlannedHeadCheckpoints(plan.head_checkpoints);
 #else
@@ -861,16 +805,10 @@ struct ModelManager::ModeVerifier
         };
         /* @formatter:on */
 
-        // 修复：若 config 中指定了 backend，优先只尝试该 backend，
-        // 避免在多模型场景下（同一路径不同 backend/device）加载错误的后端。
-        // 例如：同一 GGUF 模型路径可以用 CPU 或 GPU 后端加载，
-        // 必须按 service_config.json 中的 backend 字段决定使用哪个后端。
-        // 若指定的 backend 不在编译支持列表中，则回退到自动检测（向后兼容）。
         std::vector<Checker> checkers;
         const std::string &specified_backend = config->get_backend();
         if (!specified_backend.empty() && specified_backend != "auto")
         {
-            // 将 backend 字符串映射到 ModelFormat
             ModelFormat target_format{};
             bool format_found = false;
             if (specified_backend == "qnn" || specified_backend == "QNN")
@@ -892,7 +830,6 @@ struct ModelManager::ModeVerifier
 
             if (format_found)
             {
-                // 只保留匹配 backend 的 checker
                 for (const auto &c: all_checkers)
                 {
                     if (c.model_format_ == target_format)
@@ -923,7 +860,6 @@ struct ModelManager::ModeVerifier
         }
         else
         {
-            // 未指定 backend 或 backend="auto"：自动检测（向后兼容）
             checkers = all_checkers;
         }
 
@@ -969,20 +905,6 @@ ModelManager::ModelManager(IModelConfig &&config) : IModelConfig{std::move(confi
 
 ModelManager::~ModelManager()
 {
-    // 修复：显式析构，确保无论进程以何种方式退出（优雅关闭时 UnloadModel() 已清空 current_model_，
-    // 这里只是空操作；但若通过测试框架/编排工具直接终止进程、或从未显式调用过 UnloadModel()，
-    // 仍会残留驻留的 QNN/NPU 模型，届时只能靠这里的隐式成员析构去释放），都会在真正释放
-    // 最后一份引用之前完成 QNN/HTP 驱动异步释放资源所需的等待。
-    //
-    // 根因（已通过 minidump 复现确认）：Clean() 里的等待只在 genieModelHandle 被置空、
-    // 且此时确实是最后一份引用时才有意义；而编译器为 current_model_ 生成的隐式析构完全不会
-    // 触发这段等待。此前该等待只存在于 UnloadModel()/UnloadModelsByDevice() 等显式调用路径，
-    // atexit 析构链（`~ModelManager()` 从未显式定义、直接进入成员的隐式析构）完全没有保护，
-    // 崩溃点位于释放 current_model_ 底层对象时。
-    //
-    // 修复方式：先在锁内清空 current_model_（记录其是否为 QNN 后端），再处理
-    // genieModelHandle——保证无论哪一份引用恰好是最后一份，其对应的等待都在这里完成，
-    // 而不是被推迟到本函数返回之后的隐式成员析构阶段（那时已无法插入等待）。
     bool had_qnn = false;
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
@@ -994,7 +916,7 @@ ModelManager::~ModelManager()
     }
     if (genieModelHandle != nullptr)
     {
-        Clean();  // Clean() 内部已包含针对 QNN/NPU 的等待逻辑
+        Clean();
     }
     else if (had_qnn)
     {
@@ -1044,11 +966,6 @@ bool ModelManager::LoadModelByName(const std::string &new_model, bool &first_loa
     return LoadSingleModel();
 }
 
-// ============================================================
-// ParsePromptSectionsConfig: 从 prompt_optimization 配置对象中解析指定 key（如
-// "prompt_sections" / "subagent_prompt_sections"）对应的段落过滤规则，填充到
-// sections_cfg 中。InitializeConfig 中两处调用点共用此函数，避免重复代码。
-// ============================================================
 static void ParsePromptSectionsConfig(const json &po, PromptSectionsConfig &sections_cfg, const std::string &tag)
 {
     if (!po.contains(tag) || !po[tag].is_object())
@@ -1115,8 +1032,6 @@ bool ModelManager::InitializeConfig()
         return false;
     }
 
-    // 尝试加载 prompt_engineering.json 中的本地提示词工程参数与调试开关
-    // （与 service_config.json 完全独立：与端云/路由无关，无条件生效，不受 -n 取值影响）
     {
         fs::path prompt_engineering_path = fs::path(RootDir) / "config" / "prompt_engineering.json";
         if (File::IsFileExist(prompt_engineering_path.generic_string()) &&
@@ -1209,10 +1124,6 @@ bool ModelManager::InitializeConfig()
                         cb_cfg.consecutive_layer3_threshold = cb.value("consecutive_layer3_threshold", 3);
                         cb_cfg.cooldown_seconds = cb.value("cooldown_seconds", 300);
                     }
-                    // 同步配置进程内单例存储（会话+模型维度 LRU+TTL，语义见
-                    // ToolCallCircuitBreakerStore 类注释）；即使 tool_call_repair.enabled=false，
-                    // 阈值仍照常同步（真正受 enabled 门控的是"是否读取熔断状态并降级 system
-                    // prompt"这一后果，见 model_input_builder.h::Build()），避免留下过期默认值。
                     ToolCallCircuitBreakerStore::GetInstance().Configure(tool_call_repair_config_.circuit_breaker);
 
                     if (tcr.contains("redundant_call_guard") && tcr["redundant_call_guard"].is_object())
@@ -1269,8 +1180,6 @@ bool ModelManager::InitializeConfig()
                 {
                     bool prefix_cache_enabled = true;
                     int head_checkpoints = 2;
-                    // 区分「显式给了」与「取了默认值」：只有显式给出时才压制规划器按主机
-                    // 可用内存推导出的份数（见 LLAMACppBuilder::ApplyPlannedHeadCheckpoints）。
                     bool head_checkpoints_explicit = false;
                     if (pe_json.contains("llama_prefix_cache") && pe_json["llama_prefix_cache"].is_object())
                     {
@@ -1314,7 +1223,6 @@ bool ModelManager::InitializeConfig()
                         }
                     }
 
-                    // 紧急截断配置
                     if (po.contains("emergency_truncation") && po["emergency_truncation"].is_object())
                     {
                         const auto &et = po["emergency_truncation"];
@@ -1337,7 +1245,6 @@ bool ModelManager::InitializeConfig()
                                  << std::endl;
                     }
 
-                    // [fidelity] 保真截断配置（旧配置文件中没有该节时使用默认值，不报错）
                     if (po.contains("fidelity") && po["fidelity"].is_object())
                     {
                         const auto &fid = po["fidelity"];
@@ -1350,7 +1257,6 @@ bool ModelManager::InitializeConfig()
                         fid_cfg.json_head_items = fid.value("json_head_items", (size_t) 3);
                         fid_cfg.json_tail_items = fid.value("json_tail_items", (size_t) 1);
                         fid_cfg.max_token_probe_per_message = fid.value("max_token_probe_per_message", (size_t) 8);
-                        // P1：CJK 感知 byte↔token 换算比例（单位 UTF-8 字节）；均改回 4.0 即逐字节回退到旧的 length()/4 估算
                         fid_cfg.cjk_bytes_per_token = fid.value("cjk_bytes_per_token", 3.0);
                         fid_cfg.ascii_bytes_per_token = fid.value("ascii_bytes_per_token", 4.0);
                         My_Log{} << "[Config] fidelity loaded: "
@@ -1367,7 +1273,6 @@ bool ModelManager::InitializeConfig()
                                  << std::endl;
                     }
 
-                    // [budget_partition] D3：skills/tools 竞争时才生效的分区预算配置（旧配置文件中没有该节时使用默认值，不报错）
                     if (po.contains("budget_partition") && po["budget_partition"].is_object())
                     {
                         const auto &bp = po["budget_partition"];
@@ -1382,7 +1287,6 @@ bool ModelManager::InitializeConfig()
                                  << std::endl;
                     }
 
-                    // [relevance_filter] 相关性过滤配置（旧配置文件中没有该节时使用默认值，不报错）
                     if (po.contains("relevance_filter") && po["relevance_filter"].is_object())
                     {
                         const auto &rf = po["relevance_filter"];
@@ -1396,7 +1300,6 @@ bool ModelManager::InitializeConfig()
                                 rf.value("zero_hit_keep_all", true);
                         prompt_optimization_config_.relevance_filter.cjk_bigram =
                                 rf.value("cjk_bigram", true);
-                        // D4：跨语言别名表 + tags 参与打分（缺字段时按结构体默认值工作）
                         prompt_optimization_config_.relevance_filter.intent_aliases_enabled =
                                 rf.value("intent_aliases_enabled", true);
                         prompt_optimization_config_.relevance_filter.tag_weight =
@@ -2362,9 +2265,6 @@ bool ModelManager::LoadSingleModel()
     config->set_prompt_template(prompt_);
     config->set_prompt_type(prompt_type_);
     config->set_thinking_model(thinking_model_);
-    // 单模型命令行加载路径默认保持旧版本的“自动识别模型格式”行为。
-    // config.json 顶层可选声明的 backend/device 字段是唯一权威来源（本轮新增，取代已删除的
-    // service_config.json 覆盖机制）；字段缺失时回退 "auto"，走 ModeVerifier::TryCreate() 的自动探测。
     std::string config_json_backend, config_json_device;
     ParseBackendDeviceFromConfigJson(config_file_, model_name_, "[LoadSingleModel]",
                                       config_json_backend, config_json_device);
@@ -2373,10 +2273,6 @@ bool ModelManager::LoadSingleModel()
     {
         config->set_device(config_json_device);
     }
-    // context_size_ 已由上面 LoadPromptTemplates 从 config.json 的 dialog.context.size 解析得到，
-    // 是模型编译时固化的真实上限，本轮删除 service_config.json 覆盖机制后，它是唯一权威来源，
-    // 不再存在第二个下调/上调通道，此处无需额外处理。
-    // Copy other config fields as needed
     config->set_lora_adapter(loraAdapter);
     config->set_lora_alpha(loraAlpha);
     config->set_output_all_text(outputAllText);
@@ -2397,30 +2293,22 @@ bool ModelManager::LoadSingleModel()
         return false;
     }
 
-    // Sync back properties determined during creation
     model_format_ = config->get_model_format();
 
-    // 修复：根据实际检测到的模型格式推断 backend 和 device，
-    // 而非使用 ModelInstanceConfig 的默认值（"GGUF"/"gpu"）。
-    // LoadSingleModel() 通过 ModeVerifier::TryCreate() 自动检测模型格式，
-    // 需要将检测结果同步回 config 的 backend/device 字段。
     {
         ModelFormat fmt = config->get_model_format();
         if (fmt == ModelFormat::QNN)
         {
-            // QNN 模型只能跑在 NPU 上
             config->set_backend("qnn");
             config->set_device("npu");
         }
         else if (fmt == ModelFormat::MNN)
         {
-            // MNN 模型跑在 CPU 上
             config->set_backend("mnn");
             config->set_device("cpu");
         }
         else if (fmt == ModelFormat::GGUF)
         {
-            // GGUF 模型通过 llama.cpp 后端运行，优先 GPU，可 fallback CPU。
             config->set_backend("GGUF");
             std::string gguf_device = config->get_device();
             std::transform(gguf_device.begin(), gguf_device.end(), gguf_device.begin(),
@@ -2439,7 +2327,6 @@ bool ModelManager::LoadSingleModel()
                  << ", device=" << config->get_device() << std::endl;
     }
 
-    // Also register this as the currently active single model
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
         auto loaded_model = std::make_shared<LoadedModel>();
@@ -2460,11 +2347,6 @@ bool ModelManager::LoadSingleModel()
 
 void ModelManager::UnloadModel()
 {
-    // 主动信号任何在飞的 Query() 调用尽快退出：在真正清空引用/触发析构之前，对每个
-    // 已加载模型的 context 调用一次 Stop()。这是对既有 /reload 类接口（ModelStop）
-    // 已在用的能力的复用，让优雅关闭路径（GenieService::ServiceStop）能尽量缩短等待
-    // 时间——尤其是 MNN 后端在内存压力下 generate() 调用可能长时间阻塞的场景，Stop()
-    // 让其生成循环在下一次检查 m_stop 时尽快退出，而不是从未被通知过。
     if (genieModelHandle != nullptr)
     {
         genieModelHandle->Stop();
@@ -2477,7 +2359,6 @@ void ModelManager::UnloadModel()
         }
     }
 
-    // 清理全局单模型句柄（向后兼容路径）
     if (genieModelHandle != nullptr)
     {
         Clean();
@@ -2488,7 +2369,6 @@ void ModelManager::UnloadModel()
         My_Log{My_Log::Level::kWarning} << "UnloadModel: genieModelHandle is null" << std::endl;
     }
 
-    // 同时清空当前活跃模型指针，确保资源完整释放
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
         if (current_model_)
@@ -2536,8 +2416,6 @@ std::vector<json> ModelManager::ScanModelDirectory() const
         std::string backend = "unknown";
         std::string device = "unknown";
 
-        // 从 config.json 推断格式和 context_size
-        // 空文件是 GGUF 模型的正常情况（仅作目录标识），直接跳过解析
         if (File::IsFileEmpty(config_path))
         {
             backend = "GGUF";
@@ -2545,9 +2423,6 @@ std::vector<json> ModelManager::ScanModelDirectory() const
         }
         else
         {
-            // 优先检查目录内是否存在 *.gguf 权重文件：这是比 config.json 字段更可靠的判据，
-            // 因为部分 GGUF 模型目录沿用了 MNN 风格的占位 config.json（含 llm_model 字段），
-            // 若仅凭字段判断会被误判为 MNN 格式，导致按错误后端加载失败。
             bool has_gguf_file = false;
             for (const auto &sub_entry: fs::directory_iterator(entry.path(), ec))
             {
@@ -2574,21 +2449,18 @@ std::vector<json> ModelManager::ScanModelDirectory() const
 
                     if (cfg.contains("dialog") && cfg["dialog"].contains("context"))
                     {
-                        // QNN / SSD 格式：dialog.context.size
                         ctx = cfg["dialog"]["context"].value("size", 0);
                         backend = "qnn";
                         device = "npu";
                     }
                     else if (cfg.contains("llm_model"))
                     {
-                        // MNN 格式
                         ctx = cfg.value("context_size", cfg.value("context_length", 0));
                         backend = "mnn";
                         device = "cpu";
                     }
                     else
                     {
-                        // GGUF 格式（config.json 存在但无已知格式标识字段）
                         backend = "GGUF";
                         device = "gpu";
                     }
@@ -2598,14 +2470,12 @@ std::vector<json> ModelManager::ScanModelDirectory() const
                     My_Log{My_Log::Level::kWarning}
                             << "[ScanModelDirectory] Failed to parse config.json for model '" << name
                             << "': " << e.what() << std::endl;
-                    // 解析失败时保守地视为 GGUF 格式
                     backend = "GGUF";
                     device = "gpu";
                 }
             }
         }
 
-        // 若 config.json 未提供 context_size，尝试 prompt.json
         if (ctx == 0)
         {
             std::string prompt_path = entry.path().generic_string() + "/prompt.json";
@@ -2637,8 +2507,6 @@ std::vector<json> ModelManager::ScanModelDirectory() const
 
 void ModelManager::UnloadModelsByDevice(const std::string &device)
 {
-    // 用于在锁外持有被移除模型的 shared_ptr，确保析构在锁外发生，
-    // 同时保证在本函数返回前析构完成（NPU/GPU/CPU 内存完全释放后再允许加载新模型）。
     std::shared_ptr<LoadedModel> removed_model;
     {
         std::lock_guard<std::mutex> lock(models_mutex_);
@@ -2647,20 +2515,16 @@ void ModelManager::UnloadModelsByDevice(const std::string &device)
             My_Log{} << "[UnloadModelsByDevice] Unloading model '"
                      << (current_model_->config ? current_model_->config->get_model_name() : "")
                      << "' (device=" << device << ")" << std::endl;
-            // 先将 shared_ptr 移出到局部变量，再清空 current_model_，
-            // 这样析构会在锁外、函数返回前发生，避免持锁析构死锁。
             removed_model = std::move(current_model_);
             current_model_.reset();
         }
     }
-    // 若被卸载的模型中包含当前全局单模型句柄所指向的模型，同步清理（向后兼容路径）
-    // 不限于 npu：GGUF 模型也可能通过 LoadSingleModel 注册到全局句柄
     if (removed_model && genieModelHandle != nullptr)
     {
         bool should_clean = false;
         if (device == "npu")
         {
-            should_clean = true;  // NPU 模型必然是 QNN，全局句柄指向 QNN 模型
+            should_clean = true;
         }
         else if (removed_model->config && removed_model->config->get_model_name() == model_name_)
         {
@@ -2668,20 +2532,11 @@ void ModelManager::UnloadModelsByDevice(const std::string &device)
         }
         if (should_clean)
         {
-            // Clean() 将 genieModelHandle 置为 nullptr，减少引用计数。
-            // 若 genieModelHandle 是最后一个持有者，GenieContext 在此处析构。
             Clean();
             model_name_.clear();
         }
         else
         {
-            // 名字匹配不足以判定全局句柄是否指向被卸载的模型，必须再按**指针身份**兜底判定：
-            // ModeVerifier::TryCreate() 的三个 Verifier（GenieContext/MNNContext/LLAMACppBuilder）
-            // 都会无条件执行 `self_->genieModelHandle = std::make_shared<...>(...)`，把全局句柄改指
-            // 到刚创建的 context 上；理论上单模型语义下 current_model_/genieModelHandle/model_name_
-            // 应始终指向同一模型，但仍保留此兜底以防御未来引入的间接赋值路径。
-            // 这里刻意**不**调用 Clean()：Clean() 会连带清空 qnn_embedding_（可能仍被驻留的 NPU
-            // 多模态模型使用）并额外 sleep，对 gpu/cpu 卸载路径是过度动作；只需释放这一份引用。
             if (removed_model->context == genieModelHandle)
             {
                 My_Log{My_Log::Level::kWarning}
@@ -2692,16 +2547,6 @@ void ModelManager::UnloadModelsByDevice(const std::string &device)
             }
         }
     }
-    // 在锁外、函数返回前，显式析构被移除的模型（释放硬件资源）。
-    // removed_model 超出作用域时其引用计数降为零，触发 GenieContext/MNNContext/LLAMACppBuilder
-    // 析构，完全释放 NPU/GPU/CPU 内存。这保证了调用方在本函数返回后可以安全地加载新模型，不会
-    // 出现内存不足。
-    //
-    // 修复：这里才是 removed_model 真正的最后一份引用被释放、~GenieContext() 真正执行的时刻
-    // （上面 Clean() 归零的只是 genieModelHandle 这一份引用，若该模型同时也是 removed_model，
-    // 此时引用计数还没到 0）。QNN/HTP 驱动异步释放资源需要显式等待才安全，此前这里完全没有
-    // 等待保护——这是与 Clean() 处已确认的竞态型堆损坏（STATUS_HEAP_CORRUPTION）同一缺陷模式
-    // 在模型切换路径上的重复，需要同等对待。
     bool had_qnn_backend = removed_model && removed_model->backend == "qnn";
     removed_model.reset();
     if (had_qnn_backend)

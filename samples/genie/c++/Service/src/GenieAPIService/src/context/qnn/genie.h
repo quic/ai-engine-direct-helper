@@ -115,7 +115,7 @@ private:
     // Inference thread.
     std::unique_ptr<std::thread> m_stream_thread{nullptr};
     std::mutex m_request_lock;
-    // [修复] 以下四个变量在主线程（Query/析构）和推理线程之间并发读写，
+    // 以下四个变量在主线程（Query/析构）和推理线程之间并发读写，
     // 必须声明为 std::atomic<bool> 以避免数据竞争（data race）UB。
     // 在 ARM 弱内存模型（Android/Snapdragon）上，普通 bool 的跨线程读写
     // 可能导致主线程 while(m_inference_busy) 永远读到缓存旧值，造成死循环。
@@ -136,16 +136,13 @@ private:
     bool watermark_active_{false};
     QnnWatermarkState *wm_state_{nullptr};
 
-    // Fix 5: track whether generation was stopped due to output token limit
     bool stopped_by_output_limit_{false};
     std::string m_model_dir_;
     std::string kv_path_;
 
 public:
-    // Override ContextBase::was_stopped_by_output_limit()
     bool was_stopped_by_output_limit() const override { return stopped_by_output_limit_; }
 
-    // Expose model name for logging in QInterfaceImpl
     const std::string &get_model_name() const { return model_config_.get_model_name(); }
 
     const char *get_query_type_label(const ModelInput &model_input) const
@@ -162,14 +159,11 @@ public:
         // 防止摘要推理的 KV cache 状态污染后续主推理。
         if (prompt.find("You are a compression assistant") != std::string::npos)
             return "SUMMARIZATION";
-        // 使用 ModelInput 中由 ModelInputBuilder 预先检测并设置的 agent_type_ 字段
-        // "main" = 主 Agent，"sub" = 子 Agent（默认）
         if (model_input.agent_type_ == "main")
             return "MAINAGENT_INFERENCE";
         return "SUBAGENT_INFERENCE";
     }
 
-    // Heartbeat interval: send keep-alive message to client if no output for this duration
     static constexpr int HEARTBEAT_INTERVAL_MS = 5000;
 };
 

@@ -35,7 +35,6 @@ public:
 
     int SetParams(const std::string &key, const std::string &value) override;
 
-    // Fix: 报告是否因输出 token 限制而停止生成
     bool was_stopped_by_output_limit() const override { return stopped_by_output_limit_; }
 
     json GetLastQueryTraceMetrics() const override;
