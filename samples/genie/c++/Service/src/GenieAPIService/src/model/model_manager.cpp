@@ -1224,6 +1224,7 @@ bool ModelManager::InitializeConfig()
                         rg_cfg.ttl_seconds = rg.value("ttl_seconds", 300);
                         rg_cfg.consecutive_failure_threshold = rg.value("consecutive_failure_threshold", 3);
                         rg_cfg.non_contiguous_repeat_threshold = rg.value("non_contiguous_repeat_threshold", 4);
+                        rg_cfg.non_contiguous_ttl_seconds = rg.value("non_contiguous_ttl_seconds", 3600);
                     }
                     ToolCallRepetitionStore::GetInstance().Configure(tool_call_repair_config_.redundant_call_guard);
 

@@ -41,10 +41,11 @@ private:
     int passed_ = 0;
 };
 
-void ConfigureStore(int ttl_seconds)
+void ConfigureStore(int ttl_seconds, int non_contiguous_ttl_seconds)
 {
     ToolCallRepairConfig::RedundantToolCallConfig cfg;
     cfg.ttl_seconds = ttl_seconds;
+    cfg.non_contiguous_ttl_seconds = non_contiguous_ttl_seconds;
     ToolCallRepetitionStore::GetInstance().Configure(cfg);
 }
 
@@ -59,7 +60,7 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     // ── 场景1：首次调用不触发（计数为1） ────────────────────────────────────
     {
-        ConfigureStore(300);
+        ConfigureStore(300, 3600);
         store.Clear();
         const std::string key = ToolCallRepetitionStore::MakeKey("scenario1_session", "modelX");
 
@@ -71,7 +72,7 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     // ── 场景2：相同签名第二次调用，计数累加到2（命中重复阈值） ───────────────
     {
-        ConfigureStore(300);
+        ConfigureStore(300, 3600);
         const std::string key = ToolCallRepetitionStore::MakeKey("scenario2_session", "modelX");
         store.RecordCall(key, "read|{\"path\":\"a.txt\"}");
         int c2 = store.RecordCall(key, "read|{\"path\":\"a.txt\"}");
@@ -82,7 +83,7 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     // ── 场景3：参数不同（签名不同）重置为1，不触发 ──────────────────────────
     {
-        ConfigureStore(300);
+        ConfigureStore(300, 3600);
         const std::string key = ToolCallRepetitionStore::MakeKey("scenario3_session", "modelX");
         store.RecordCall(key, "read|{\"path\":\"a.txt\"}");
         store.RecordCall(key, "read|{\"path\":\"a.txt\"}");
@@ -96,7 +97,7 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     // ── 场景4：跨会话/模型不互相污染 ────────────────────────────────────────
     {
-        ConfigureStore(300);
+        ConfigureStore(300, 3600);
         const std::string keyA = ToolCallRepetitionStore::MakeKey("scenario4_session_same", "model_A");
         const std::string keyB = ToolCallRepetitionStore::MakeKey("scenario4_session_same", "model_B");
         const std::string keyC = ToolCallRepetitionStore::MakeKey("scenario4_session_other", "model_A");
@@ -127,7 +128,7 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     // ── 场景6：超过 ttl_seconds 后视为新序列重新计数（真实短 sleep） ─────────
     {
-        ConfigureStore(/*ttl_seconds=*/1);
+        ConfigureStore(/*ttl_seconds=*/1, /*non_contiguous_ttl_seconds=*/1);
         const std::string key = ToolCallRepetitionStore::MakeKey("scenario6_session", "modelX");
         store.RecordCall(key, "read|{\"path\":\"a.txt\"}");
         int c2 = store.RecordCall(key, "read|{\"path\":\"a.txt\"}");
@@ -145,7 +146,7 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
 
     // ── 场景7：非连续回访计数（中间穿插其它签名不清零） ──────────────────────
     {
-        ConfigureStore(300);
+        ConfigureStore(300, 3600);
         const std::string key = ToolCallRepetitionStore::MakeKey("scenario7_session", "modelX");
 
         store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
@@ -165,19 +166,49 @@ bool RunToolCallRepetitionSelfTest(std::ostream &out)
                      store.GetRepeatCount(key) == 1);
     }
 
-    // ── 场景8：非连续回访计数同样受 ttl_seconds 门控 ──────────────────────────
+    // ── 场景8：非连续回访计数拥有独立于连续计数的 TTL（短连续TTL过期不清空非连续历史） ──
     {
-        ConfigureStore(/*ttl_seconds=*/1);
+        ConfigureStore(/*ttl_seconds=*/1, /*non_contiguous_ttl_seconds=*/300);
         const std::string key = ToolCallRepetitionStore::MakeKey("scenario8_session", "modelX");
         store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
         store.RecordCall(key, "exec|{\"command\":\"cmd_B\"}");
         store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
-        runner.Check("scenario8_pre_ttl_total", "TTL窗口内绕回cmd_A的非连续总次数应为2",
+        runner.Check("scenario8_pre_ttl_total", "短连续TTL窗口内绕回cmd_A的非连续总次数应为2",
                      store.GetNonContiguousRepeatCount(key) == 2);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-        runner.Check("scenario8_post_ttl_zero", "超过ttl_seconds后GetNonContiguousRepeatCount应返回0",
+        runner.Check("scenario8_contiguous_ttl_expired", "短连续TTL过期后GetRepeatCount应返回0",
+                     store.GetRepeatCount(key) == 0);
+        runner.Check("scenario8_non_contiguous_survives_short_ttl",
+                     "连续TTL过期不应清空非连续历史（因非连续TTL更长、尚未过期）",
+                     store.GetNonContiguousRepeatCount(key) == 2);
+
+        int c4 = store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario8_non_contiguous_accumulates_after_contiguous_expiry",
+                     "连续TTL过期后再次绕回cmd_A，非连续总次数应继续累加为3",
+                     store.GetNonContiguousRepeatCount(key) == 3);
+        (void) c4;
+    }
+
+    store.Clear();
+
+    // ── 场景9：非连续回访计数自身的 TTL 过期后才清空历史 ─────────────────────
+    {
+        ConfigureStore(/*ttl_seconds=*/300, /*non_contiguous_ttl_seconds=*/1);
+        const std::string key = ToolCallRepetitionStore::MakeKey("scenario9_session", "modelX");
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        store.RecordCall(key, "exec|{\"command\":\"cmd_B\"}");
+        store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario9_pre_ttl_total", "非连续TTL窗口内绕回cmd_A的非连续总次数应为2",
+                     store.GetNonContiguousRepeatCount(key) == 2);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        runner.Check("scenario9_post_ttl_zero", "超过non_contiguous_ttl_seconds后GetNonContiguousRepeatCount应返回0",
                      store.GetNonContiguousRepeatCount(key) == 0);
+
+        int c3 = store.RecordCall(key, "exec|{\"command\":\"cmd_A\"}");
+        runner.Check("scenario9_restarts_after_ttl", "非连续TTL过期后下一次调用应视为全新历史从1开始",
+                     c3 == 1);
     }
 
     store.Clear();

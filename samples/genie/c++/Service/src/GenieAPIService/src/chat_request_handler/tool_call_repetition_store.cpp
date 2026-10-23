@@ -18,6 +18,7 @@ void ToolCallRepetitionStore::Configure(const ToolCallRepairConfig::RedundantToo
 {
     std::lock_guard<std::mutex> lock(mutex_);
     ttl_seconds_ = cfg.ttl_seconds > 0 ? cfg.ttl_seconds : 300;
+    non_contiguous_ttl_seconds_ = cfg.non_contiguous_ttl_seconds > 0 ? cfg.non_contiguous_ttl_seconds : 3600;
 }
 
 std::string ToolCallRepetitionStore::MakeKey(const std::string& session_key, const std::string& model_name)
@@ -64,6 +65,7 @@ int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::strin
         entry.last_signature = signature;
         entry.repeat_count = 1;
         entry.last_call_time = now;
+        entry.non_contiguous_last_active_time = now;
         RecordSignatureTotal(entry, signature);
         lru_list_.push_front(key);
         cache_[key] = {entry, lru_list_.begin()};
@@ -75,13 +77,11 @@ int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::strin
     it->second.second = lru_list_.begin();
 
     Entry& entry = it->second.first;
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - entry.last_call_time).count();
-    if (elapsed >= ttl_seconds_)
+    auto elapsed_contiguous = std::chrono::duration_cast<std::chrono::seconds>(now - entry.last_call_time).count();
+    if (elapsed_contiguous >= ttl_seconds_)
     {
         entry.repeat_count = 1;
         entry.last_signature = signature;
-        entry.signature_totals.clear();
-        entry.signature_order.clear();
     }
     else if (entry.last_signature != signature)
     {
@@ -93,6 +93,16 @@ int ToolCallRepetitionStore::RecordCall(const std::string& key, const std::strin
         entry.repeat_count += 1;
     }
     entry.last_call_time = now;
+
+    auto elapsed_non_contiguous =
+            std::chrono::duration_cast<std::chrono::seconds>(now - entry.non_contiguous_last_active_time).count();
+    if (elapsed_non_contiguous >= non_contiguous_ttl_seconds_)
+    {
+        entry.signature_totals.clear();
+        entry.signature_order.clear();
+    }
+    entry.non_contiguous_last_active_time = now;
+
     RecordSignatureTotal(entry, signature);
     return entry.repeat_count;
 }
@@ -128,8 +138,8 @@ int ToolCallRepetitionStore::GetNonContiguousRepeatCount(const std::string& key)
 
     const Entry& entry = it->second.first;
     auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - entry.last_call_time).count();
-    if (elapsed >= ttl_seconds_)
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - entry.non_contiguous_last_active_time).count();
+    if (elapsed >= non_contiguous_ttl_seconds_)
         return 0;
 
     return entry.last_signature_total;

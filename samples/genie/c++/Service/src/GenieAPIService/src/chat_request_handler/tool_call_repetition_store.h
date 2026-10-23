@@ -46,6 +46,7 @@ private:
         std::string last_signature;
         int repeat_count = 0;
         std::chrono::steady_clock::time_point last_call_time;
+        std::chrono::steady_clock::time_point non_contiguous_last_active_time;
         std::unordered_map<std::string, int> signature_totals;
         std::list<std::string> signature_order;
         int last_signature_total = 0;
@@ -63,6 +64,7 @@ private:
 
     size_t max_entries_ = 2000;
     int ttl_seconds_ = 300;
+    int non_contiguous_ttl_seconds_ = 3600;
 };
 
 #endif
