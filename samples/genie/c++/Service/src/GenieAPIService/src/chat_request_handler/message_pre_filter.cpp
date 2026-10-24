@@ -23,6 +23,47 @@
 
 using json = nlohmann::ordered_json;
 
+std::string CanonicalToolCallKey(const json& tool_call)
+{
+    if (!tool_call.is_object() || !tool_call.contains("function") || !tool_call["function"].is_object())
+        return "";
+    const json& fn = tool_call["function"];
+    const std::string name = fn.value("name", std::string());
+    if (name.empty()) return "";
+    std::string args;
+    if (fn.contains("arguments")) {
+        nlohmann::json parsed;
+        if (fn["arguments"].is_string()) {
+            const std::string raw = fn["arguments"].get<std::string>();
+            parsed = nlohmann::json::parse(raw, nullptr, false);
+            if (parsed.is_discarded()) return name + "\x01" + raw;
+        } else {
+            parsed = nlohmann::json(fn["arguments"]);
+        }
+        if (parsed.is_object()) {
+            nlohmann::json norm = nlohmann::json::object();
+            for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+                if (it.value().is_null()) continue;
+                const bool path_like = it.value().is_string() && [&]() {
+                    const std::string& s = it.value().get_ref<const std::string&>();
+                    return !s.empty() && s.find_first_of(" \t\r\n") == std::string::npos &&
+                           s.find_first_of("/\\") != std::string::npos;
+                }();
+                if (path_like) {
+                    std::string p = it.value().get<std::string>();
+                    std::replace(p.begin(), p.end(), '/', '\\');
+                    norm[it.key()] = p;
+                } else {
+                    norm[it.key()] = it.value();
+                }
+            }
+            parsed = std::move(norm);
+        }
+        args = parsed.dump();
+    }
+    return name + "\x01" + args;
+}
+
 namespace {
 
 constexpr float kEvictionLowWaterRatio = 0.5f;
@@ -207,47 +248,6 @@ struct RepeatState {
 
 std::mutex g_repeat_mutex;
 std::unordered_map<std::string, RepeatState> g_repeat_states;
-
-std::string CanonicalToolCallKey(const json& tool_call)
-{
-    if (!tool_call.is_object() || !tool_call.contains("function") || !tool_call["function"].is_object())
-        return "";
-    const json& fn = tool_call["function"];
-    const std::string name = fn.value("name", std::string());
-    if (name.empty()) return "";
-    std::string args;
-    if (fn.contains("arguments")) {
-        nlohmann::json parsed;
-        if (fn["arguments"].is_string()) {
-            const std::string raw = fn["arguments"].get<std::string>();
-            parsed = nlohmann::json::parse(raw, nullptr, false);
-            if (parsed.is_discarded()) return name + "\x01" + raw;
-        } else {
-            parsed = nlohmann::json(fn["arguments"]);
-        }
-        if (parsed.is_object()) {
-            nlohmann::json norm = nlohmann::json::object();
-            for (auto it = parsed.begin(); it != parsed.end(); ++it) {
-                if (it.value().is_null()) continue;
-                const bool path_like = it.value().is_string() && [&]() {
-                    const std::string& s = it.value().get_ref<const std::string&>();
-                    return !s.empty() && s.find_first_of(" \t\r\n") == std::string::npos &&
-                           s.find_first_of("/\\") != std::string::npos;
-                }();
-                if (path_like) {
-                    std::string p = it.value().get<std::string>();
-                    std::replace(p.begin(), p.end(), '/', '\\');
-                    norm[it.key()] = p;
-                } else {
-                    norm[it.key()] = it.value();
-                }
-            }
-            parsed = std::move(norm);
-        }
-        args = parsed.dump();
-    }
-    return name + "\x01" + args;
-}
 
 void ApplyRepeatResultStubs(json& msg, const std::string& key, const void* model,
                              const std::unordered_set<size_t>& evicted_raw_idx,
