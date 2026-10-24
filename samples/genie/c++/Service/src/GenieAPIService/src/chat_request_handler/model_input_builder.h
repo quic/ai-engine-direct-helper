@@ -23,6 +23,7 @@
 #include "tool_call_circuit_breaker_store.h"
 #include "tool_call_repetition_store.h"
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <regex>
 #include <unordered_map>
@@ -2104,12 +2105,19 @@ private:
     {
         std::unordered_set<std::string> seen_paths;
         std::unordered_set<const GenieChatMessage*> duplicate_messages;
-        std::string last_assistant_content;
+        std::deque<std::string> pending_tool_calls;
         for (const auto& m : full_messages) {
             if (m.role == "assistant") {
-                last_assistant_content = m.content;
+                if (m.content.find("<tool_call>") != std::string::npos ||
+                    m.content.find("to=functions.") != std::string::npos)
+                    pending_tool_calls.push_back(m.content);
             } else if (m.role == "tool") {
-                std::string path = TaskMemoBuilder::ExtractReadToolPath(last_assistant_content);
+                std::string call_content;
+                if (!pending_tool_calls.empty()) {
+                    call_content = std::move(pending_tool_calls.front());
+                    pending_tool_calls.pop_front();
+                }
+                std::string path = TaskMemoBuilder::ExtractReadToolPath(call_content);
                 if (path.empty())
                     continue;
                 if (seen_paths.count(path)) {

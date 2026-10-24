@@ -87,7 +87,8 @@ public:
     static std::string RenderNonContiguousRepeatNote(int repeat_count);
 
 private:
-    json BuildRuleLayer(const json& prev, const std::vector<GenieChatMessage>& dropped_messages) const;
+    json BuildRuleLayer(const json& prev, const std::vector<GenieChatMessage>& dropped_messages,
+                        const std::vector<std::string>& dropped_tool_call_content) const;
     bool ShouldTriggerModelLayer(const std::vector<GenieChatMessage>& dropped_messages,
                                   bool has_prev, double prev_confidence) const;
     std::string BuildModelPrompt(const json& prev, const json& rule_layer_result) const;

@@ -130,6 +130,93 @@ namespace {
     constexpr size_t kMaxTriedQueriesPerResource = 6;
     constexpr size_t kMaxCommandResourceKeyChars = 120;
 
+    std::unordered_map<size_t, std::string> BuildToolCallContentByRawIndex(const json& raw_messages)
+    {
+        std::unordered_map<std::string, std::string> content_by_id;
+        if (!raw_messages.is_array())
+            return {};
+
+        for (size_t i = 0; i < raw_messages.size(); ++i) {
+            const auto& message = raw_messages[i];
+            if (!message.is_object() || message.value("role", "") != "assistant"
+                    || !message.contains("tool_calls") || !message["tool_calls"].is_array())
+                continue;
+            for (const auto& tool_call : message["tool_calls"]) {
+                if (!tool_call.is_object() || !tool_call.contains("id") || !tool_call["id"].is_string())
+                    continue;
+                std::string name;
+                std::string arguments;
+                if (tool_call.contains("function") && tool_call["function"].is_object()) {
+                    const auto& function = tool_call["function"];
+                    name = function.value("name", "");
+                    if (function.contains("arguments") && !function["arguments"].is_null())
+                        arguments = function["arguments"].is_string()
+                            ? function["arguments"].get<std::string>() : function["arguments"].dump();
+                } else {
+                    name = tool_call.value("name", "");
+                    if (tool_call.contains("arguments") && !tool_call["arguments"].is_null())
+                        arguments = tool_call["arguments"].is_string()
+                            ? tool_call["arguments"].get<std::string>() : tool_call["arguments"].dump();
+                }
+                if (name.empty())
+                    continue;
+                if (arguments.empty())
+                    arguments = "{}";
+                content_by_id[tool_call["id"].get<std::string>()] =
+                    "<tool_call>\n{\"name\": \"" + name + "\", \"arguments\": " + arguments +
+                    "}\n</tool_call>";
+            }
+        }
+
+        std::unordered_map<size_t, std::string> result;
+        for (size_t i = 0; i < raw_messages.size(); ++i) {
+            const auto& message = raw_messages[i];
+            if (!message.is_object() || message.value("role", "") != "tool"
+                    || !message.contains("tool_call_id") || !message["tool_call_id"].is_string())
+                continue;
+            auto it = content_by_id.find(message["tool_call_id"].get<std::string>());
+            if (it != content_by_id.end())
+                result[i] = it->second;
+        }
+        return result;
+    }
+
+    bool MatchesDroppedToolContent(const std::string& raw_content, const std::string& dropped_content)
+    {
+        return raw_content == dropped_content
+            || "<tool_response>\n" + raw_content + "\n</tool_response>\n" == dropped_content;
+    }
+
+    std::vector<std::string> MatchDroppedToolCallContent(
+        const json& raw_messages, const std::vector<GenieChatMessage>& dropped_messages)
+    {
+        const auto content_by_raw_index = BuildToolCallContentByRawIndex(raw_messages);
+        std::vector<std::string> result(dropped_messages.size());
+        size_t raw_cursor = 0;
+        for (size_t i = 0; i < dropped_messages.size(); ++i) {
+            if (dropped_messages[i].role != "tool")
+                continue;
+            bool matched = false;
+            while (raw_cursor < raw_messages.size()) {
+                const size_t raw_index = raw_cursor++;
+                const auto& raw_message = raw_messages[raw_index];
+                if (!raw_message.is_object() || raw_message.value("role", "") != "tool"
+                        || !raw_message.contains("content") || !raw_message["content"].is_string()
+                        || !MatchesDroppedToolContent(raw_message["content"].get<std::string>(),
+                                                       dropped_messages[i].content))
+                    continue;
+                auto it = content_by_raw_index.find(raw_index);
+                if (it != content_by_raw_index.end())
+                    result[i] = it->second;
+                matched = true;
+                break;
+            }
+            if (!matched)
+                raw_cursor = raw_messages.size();
+        }
+        return result;
+    }
+
     std::string FullToolCall(const std::string& assistant_content) {
         std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
         const size_t tc = visible.find("<tool_call>");
@@ -538,7 +625,9 @@ bool TaskMemoBuilder::LooksLikeToolFailure(const std::string& content)
     return LooksLikeFailure(content);
 }
 
-json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieChatMessage>& dropped_messages) const
+json TaskMemoBuilder::BuildRuleLayer(
+    const json& prev, const std::vector<GenieChatMessage>& dropped_messages,
+    const std::vector<std::string>& dropped_tool_call_content) const
 {
     json entry = prev.is_object() ? prev : json::object();
     if (!entry.contains("current_plan") || !entry["current_plan"].is_string())
@@ -555,7 +644,8 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
 
     size_t tool_seq = entry["tool_state"].size();
     std::string last_assistant_content;
-    for (const auto& m : dropped_messages) {
+    for (size_t i = 0; i < dropped_messages.size(); ++i) {
+        const auto& m = dropped_messages[i];
         std::string preview = ReplaceInvalidUtf8(ExtractKeyFacts(m.content, config_.rule_layer_preview_chars));
         if (m.role == "user") {
             AppendCapped(entry["facts_constraints"], "用户提及: " + preview, kMaxItemsPerField);
@@ -574,14 +664,19 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             entry["tool_state"]["tool_result_" + std::to_string(tool_seq++)] =
                 (failed ? "失败: " : "成功: ") + preview;
             CapObjectSize(entry["tool_state"], kMaxItemsPerField);
-            const std::string call = ExtractToolCallSummary(last_assistant_content);
+            std::string call_content;
+            if (i < dropped_tool_call_content.size())
+                call_content = dropped_tool_call_content[i];
+            if (call_content.empty())
+                call_content = last_assistant_content;
+            const std::string call = ExtractToolCallSummary(call_content);
             AppendCapped(entry["completed"], (failed ? "失败: " : "成功: ") +
                 (call.empty() ? std::string() : ReplaceInvalidUtf8(safe_utf8_truncate(call, 200, "...")) + " -> ") + preview, kMaxItemsPerField);
             if (!failed && !call.empty()) {
                 const std::string tool = call.substr(0, call.find(' '));
                 if (!entry.contains("last_success") || !entry["last_success"].is_object())
                     entry["last_success"] = json::object();
-                entry["last_success"][tool] = ReplaceInvalidUtf8(safe_utf8_truncate(FullToolCall(last_assistant_content), kMaxLastSuccessChars, "..."));
+                entry["last_success"][tool] = ReplaceInvalidUtf8(safe_utf8_truncate(FullToolCall(call_content), kMaxLastSuccessChars, "..."));
                 CapObjectSize(entry["last_success"], 6);
             }
             const std::string tool_name = call.substr(0, call.find(' '));
@@ -597,7 +692,7 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             // 只如实记录模型自己发出过的调用，交给模型自己判断要不要换个角度，不代为丢弃
             // 或合并任何内容——这与"去重/占位"是两条独立的路，互不替代。
             if (!call.empty() && !reads_content) {
-                const std::string query_path = ExtractAnyToolPathArg(last_assistant_content);
+                const std::string query_path = ExtractAnyToolPathArg(call_content);
                 if (!query_path.empty()) {
                     if (!entry.contains("tried_queries") || !entry["tried_queries"].is_object())
                         entry["tried_queries"] = json::object();
@@ -620,7 +715,7 @@ json TaskMemoBuilder::BuildRuleLayer(const json& prev, const std::vector<GenieCh
             // 已读文件索引：被驱逐的 read 类工具结果不再丢弃全部痕迹，而是在 Task Memo 里
             // 留一条「路径 + 关键事实摘要」，供模型在原始内容已不在上下文时判断是否要重读。
             if (!failed) {
-                std::string read_path = ExtractReadToolPathImpl(last_assistant_content);
+                std::string read_path = ExtractReadToolPathImpl(call_content);
                 if (!read_path.empty()) {
                     entry["read_files"][read_path] = preview;
                     CapObjectSize(entry["read_files"], kMaxItemsPerField);
@@ -857,7 +952,13 @@ TaskMemoBuilder::UpdateResult TaskMemoBuilder::Update(const json& raw_messages,
         return res;
     }
 
-    json entry = BuildRuleLayer(has_prev ? *prev : json::object(), new_dropped);
+    const std::vector<std::string> all_dropped_tool_call_content =
+        MatchDroppedToolCallContent(raw_messages, dropped_messages);
+    const std::vector<std::string> new_dropped_tool_call_content(
+        all_dropped_tool_call_content.begin() + (long long) already_folded,
+        all_dropped_tool_call_content.end());
+    json entry = BuildRuleLayer(has_prev ? *prev : json::object(), new_dropped,
+                                new_dropped_tool_call_content);
 
     // 原始目标锚点：只在尚未捕获过时抓取一次；一旦捕获，后续轮次通过 entry/prev 透传，
     // 永不被规则层或模型层的后续更新覆盖（BuildRuleLayer 已经把 prev 的既有字段原样
