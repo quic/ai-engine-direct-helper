@@ -415,13 +415,63 @@ namespace {
         return "";
     }
 
+    std::string ExtractRangeSuffixFrom(const std::string& assistant_content, size_t search_from) {
+        static const char* kRangeKeys[] = {
+            "\"offset\"", "\"limit\"", "\"start_line\"", "\"end_line\"", "\"lines\""
+        };
+        std::string suffix;
+        for (const char* key : kRangeKeys) {
+            const size_t key_pos = assistant_content.find(key, search_from);
+            if (key_pos == std::string::npos)
+                continue;
+            const size_t colon = assistant_content.find(':', key_pos + strlen(key));
+            if (colon == std::string::npos)
+                continue;
+            size_t value_start = colon + 1;
+            while (value_start < assistant_content.size() &&
+                   std::isspace(static_cast<unsigned char>(assistant_content[value_start])))
+                ++value_start;
+            if (value_start >= assistant_content.size())
+                continue;
+            size_t value_end = value_start;
+            if (assistant_content[value_start] == '"') {
+                value_end = assistant_content.find('"', value_start + 1);
+                if (value_end == std::string::npos)
+                    continue;
+                ++value_end;
+            } else if (assistant_content[value_start] == '[') {
+                value_end = assistant_content.find(']', value_start + 1);
+                if (value_end == std::string::npos)
+                    continue;
+                ++value_end;
+            } else {
+                while (value_end < assistant_content.size() &&
+                       assistant_content[value_end] != ',' && assistant_content[value_end] != '}')
+                    ++value_end;
+                while (value_end > value_start &&
+                       std::isspace(static_cast<unsigned char>(assistant_content[value_end - 1])))
+                    --value_end;
+            }
+            if (value_end <= value_start)
+                continue;
+            if (suffix.empty())
+                suffix = "#range:";
+            else
+                suffix += ",";
+            suffix += std::string(key + 1, strlen(key) - 2) + "=" +
+                      assistant_content.substr(value_start, value_end - value_start);
+        }
+        return suffix;
+    }
+
     std::string ExtractReadToolPathImpl(const std::string& assistant_content) {
         const std::string visible = TaskMemoBuilder::StripThinkBlock(assistant_content);
         std::string name;
         size_t search_from = 0;
         if (!ExtractToolNameAndSearchFrom(visible, name, search_from) || !IsReadLikeToolName(name))
             return "";
-        return ExtractPathArgFrom(visible, search_from);
+        const std::string path = ExtractPathArgFrom(visible, search_from);
+        return path.empty() ? path : path + ExtractRangeSuffixFrom(visible, search_from);
     }
 
     // 已尝试查询索引专用：与 ExtractReadToolPathImpl 唯一区别是不做 IsReadLikeToolName
@@ -1221,7 +1271,7 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
     double reserve_ratio = entry.value("memo_reserve_ratio", 0.0);
     size_t budget_for_high_priority = max_chars;
     if (max_chars > 0 && reserve_ratio > 0.0) {
-        const size_t reserve_want = tried_queries_block.size() + tool_state_block.size();
+        const size_t reserve_want = read_files_block.size() + tried_queries_block.size() + tool_state_block.size();
         const size_t reserve_cap = static_cast<size_t>(static_cast<double>(max_chars) * reserve_ratio);
         const size_t reserved_for_memory = std::min(reserve_want, reserve_cap);
         budget_for_high_priority = (max_chars > reserved_for_memory) ? (max_chars - reserved_for_memory) : 0;
@@ -1233,7 +1283,8 @@ std::string TaskMemoBuilder::Render(const json& entry, size_t max_chars)
         const char* block_name = kBlockNames[slot];
         if (block.empty())
             continue;
-        const bool is_reserved_block = (std::strcmp(block_name, "tried_queries") == 0
+        const bool is_reserved_block = (std::strcmp(block_name, "read_files") == 0
+                                         || std::strcmp(block_name, "tried_queries") == 0
                                          || std::strcmp(block_name, "tool_state") == 0);
         const size_t slot_budget = is_reserved_block ? max_chars : budget_for_high_priority;
         if (max_chars > 0 && out.size() + block.size() > slot_budget) {

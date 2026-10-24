@@ -2092,15 +2092,6 @@ private:
         return optimized;
     }
 
-    // 通用"重复读取"提示：只对幸存在当前上下文窗口内（未被驱逐）的 read 类工具结果生效——
-    // 已被驱逐的那次读取由 TaskMemoBuilder 的 read_files 索引承接，不在这里重复提示，
-    // 两者判定依据天然互斥（这里只看 FitMessagesToContext 之后仍存活的消息）。
-    //
-    // 重复判定必须基于本次请求的完整原始消息列表（驱逐之前），不能基于幸存消息重新计算：
-    // 否则当某个 path 的"第一次读取"消息在后续某轮被驱逐、而它的重复读取消息幸存下来时，
-    // 该幸存消息会从"已标注"变为"未标注"（反之亦然），导致同一条消息在前缀复用区的文本
-    // 跨轮不一致，使前缀命中率归零。做法：先在完整原始列表上一次性判定每条 tool 消息是否
-    // 为重复，再用双指针按内容匹配回幸存列表，只对"本来就是重复"的幸存消息追加提示。
     void AnnotateRepeatedReads(OptimizedMessages& optimized, const std::vector<GenieChatMessage>& full_messages) const
     {
         std::unordered_set<std::string> seen_paths;
@@ -2128,22 +2119,27 @@ private:
             }
         }
 
-        size_t full_idx = 0;
-        for (auto& m : optimized.messages) {
+        if (optimized.messages.size() > full_messages.size())
+            return;
+        const size_t full_offset = full_messages.size() - optimized.messages.size();
+        for (size_t optimized_index = 0; optimized_index < optimized.messages.size(); ++optimized_index) {
+            auto& m = optimized.messages[optimized_index];
             if (m.role != "tool")
                 continue;
-            while (full_idx < full_messages.size() &&
-                   !(full_messages[full_idx].role == m.role && full_messages[full_idx].content == m.content)) {
-                ++full_idx;
+            const size_t full_index = full_offset + optimized_index;
+            if (full_index >= full_messages.size())
+                continue;
+            if (full_messages[full_index].role != m.role) {
+                My_Log{My_Log::Level::kWarning}
+                    << "[AnnotateRepeatedReads] Message alignment role mismatch at optimized_index="
+                    << optimized_index << std::endl;
+                continue;
             }
-            if (full_idx >= full_messages.size())
-                break;
-            if (duplicate_messages.count(&full_messages[full_idx])) {
-                m.content += "\n\n[Note: this file was already read at an earlier turn and its "
-                             "result is still present earlier in this context; re-reading it was "
-                             "not necessary unless the file may have changed since then.]";
+            if (duplicate_messages.count(&full_messages[full_index])) {
+                m.content += "\n\n[Note: this file was already read at an earlier turn; its result may still be "
+                             "present in the conversation or summarized in the Task Memo above. Check "
+                             "those before re-reading it unless the file may have changed since then.]";
             }
-            ++full_idx;
         }
     }
 
